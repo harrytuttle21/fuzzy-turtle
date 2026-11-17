@@ -1,3 +1,5 @@
+<p align="center"><img src="assets/branding/fuzzy-turtle-badge.png" width="240" alt="Fuzzy Turtle Software"></p>
+
 # Fuzzy Turtle Software 🐢
 
 **Light, independent and connected creative apps for audio, video, VJing and music — for macOS, Linux and Raspberry Pi.**
