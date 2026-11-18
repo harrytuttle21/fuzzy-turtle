@@ -22,5 +22,5 @@ juce_add_console_app(fuzzy_pad_sound PRODUCT_NAME "Fuzzy Pad Sound")
 target_sources(fuzzy_pad_sound PRIVATE main.cpp)
 target_compile_definitions(fuzzy_pad_sound PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
 target_link_libraries(fuzzy_pad_sound
-    PRIVATE juce::juce_audio_devices juce::juce_audio_basics juce::juce_events PkgConfig::HIDAPI
+    PRIVATE juce::juce_audio_devices juce::juce_audio_basics juce::juce_events juce::juce_osc PkgConfig::HIDAPI
     PUBLIC juce::juce_recommended_config_flags juce::juce_recommended_warning_flags)

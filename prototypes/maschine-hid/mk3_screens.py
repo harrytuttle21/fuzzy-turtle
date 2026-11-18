@@ -188,11 +188,13 @@ def font(size: int):
         return ImageFont.load_default()
 
 
-def header(d: ImageDraw.ImageDraw, title: str, right: str) -> None:
-    d.rectangle((0, 0, W, 26), fill=ORANGE)
-    d.text((8, 4), title, font=font(16), fill='black')
+def header(d: ImageDraw.ImageDraw, title: str, right: str, color=ORANGE) -> None:
+    d.rectangle((0, 0, W, 26), fill=color)
+    r, g, b = color                                # texte noir sur fond clair, blanc sur fond fonce
+    ink = 'black' if 0.299 * r + 0.587 * g + 0.114 * b > 110 else 'white'
+    d.text((8, 4), title, font=font(16), fill=ink)
     f = font(14)
-    d.text((W - 8 - d.textlength(right, font=f), 5), right, font=f, fill='black')
+    d.text((W - 8 - d.textlength(right, font=f), 5), right, font=f, fill=ink)
 
 
 def left_demo() -> Image.Image:

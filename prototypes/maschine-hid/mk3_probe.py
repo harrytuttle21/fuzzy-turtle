@@ -24,11 +24,16 @@ HID_INTERFACE = 4
 
 # --- Protocole (extrait du pilote r22yb3m, MIT) -----------------------------
 CONTROL_BITS = {**{f'group_{chr(97+i)}': 8+i for i in range(8)},
-                'shift': 6, 'midi_channel': 56, 'mute': 37, 'browser': 58,
+                'shift': 6, 'midi_channel': 56, 'mute': 37, 'solo': 36,   # SOLO suppose, a confirmer
+                'browser': 58,
                 'restart': 41, 'tap': 43, 'play': 45, 'rec': 46, 'stop': 47,
                 'tempo': 19, 'pad_mode': 24, 'keyboard': 25, 'chords': 26,
                 'scene': 29, 'pattern': 30, 'mixer': 52, 'plug_in': 53,
-                'nav_prev': 59, 'nav_next': 50}
+                'nav_prev': 59, 'nav_next': 50,
+                'screen_5': 68, 'screen_6': 69,
+                # Molette 4D poussee dans une direction / cliquee (octet 1, pilote r22yb3m)
+                'nav_click': 0, 'nav_up': 2, 'nav_right': 3, 'nav_down': 4, 'nav_left': 5,
+                'step': 27}       # STEP : bit suppose (apres CHORDS 26), a confirmer   # bouton 5 au-dessus des ecrans (pilote r22yb3m)
 
 def pad_number_for_id(pad_id: int) -> int:
     return (3 - pad_id // 4) * 4 + pad_id % 4 + 1
@@ -51,6 +56,8 @@ class Decoder:
     def __init__(self, exponent: float = 0.5):
         self.exponent = exponent
         self.bits = 0
+        self.unknown = 0
+        self.jog = None
         self.down: set[int] = set()
         self.knobs: dict[int, int] = {}
 
@@ -58,7 +65,7 @@ class Decoder:
         if not r:
             return []
         if r[0] == 0x01 and len(r) >= 7:
-            return self._buttons(r) + self._knobs(r)
+            return self._buttons(r) + self._knobs(r) + self._jog(r)
         if r[0] == 0x02 and len(r) >= 4:
             return self._pads(r)
         return []
@@ -74,7 +81,28 @@ class Decoder:
             if pressed != bool(self.bits & mask):
                 self.bits ^= mask
                 out.append(('button', name, pressed))
+        # Boutons pas encore identifies : on signale le numero de bit (aide a la calibration)
+        known = set(CONTROL_BITS.values())
+        for bit in range(72):
+            if bit in known or 1 + bit // 8 >= len(r):
+                continue
+            pressed = bool(r[1 + bit // 8] & (1 << (bit % 8)))
+            mask = 1 << bit
+            if pressed != bool(self.unknown & mask):
+                self.unknown ^= mask
+                out.append(('unknown_button', bit, pressed))
         return out
+
+    def _jog(self, r):
+        """Grosse molette 4D : compteur sur les 4 bits faibles de l'octet 11 (pilote r22yb3m)."""
+        if len(r) < 12:
+            return []
+        v = r[11] & 0x0F
+        before, self.jog = self.jog, v
+        if before is None:
+            return []
+        d = ((v - before + 8) % 16) - 8
+        return [('jog', d)] if d and -3 <= d <= 3 else []
 
     def _knobs(self, r):
         out = []
@@ -102,9 +130,12 @@ class Decoder:
             status, raw = hi >> 4, ((hi & 0x0F) << 8) | lo
             num = pad_number_for_id(pid)
             if status in (0, 1) and raw > 0:
-                self.down.add(num)
-                out.append(('pad_on', num, velocity(raw, self.exponent)))
-            elif status in (2, 3) and num in self.down:
+                # Un pad tenu envoie sa pression en continu : on ne declenche
+                # qu'a la premiere frappe, pas a chaque mise a jour.
+                if num not in self.down:
+                    self.down.add(num)
+                    out.append(('pad_on', num, velocity(raw, self.exponent)))
+            elif (status in (2, 3) or raw == 0) and num in self.down:
                 self.down.discard(num)
                 out.append(('pad_off', num, 0))
         return out
@@ -156,6 +187,7 @@ def main() -> int:
                 elif kind == 'pad_off': print(f'PAD {ev[1]:2d}  OFF')
                 elif kind == 'button':  print(f"BOUTON {ev[1]} {'appuye' if ev[2] else 'relache'}")
                 elif kind == 'knob':    print(f'ENCODEUR {ev[1]} {ev[2]:+d}')
+                elif kind == 'unknown_button': print(f"BOUTON INCONNU bit {ev[1]} {'appuye' if ev[2] else 'relache'}")
             if any(e[0] in ('pad_on', 'pad_off') for e in events):
                 refresh()
     except KeyboardInterrupt:

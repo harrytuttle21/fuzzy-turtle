@@ -7,9 +7,12 @@
 // Usage :  ./fuzzy_pad_sound
 //          ./fuzzy_pad_sound --buffer 64   (plus reactif, plus exigeant pour l'ordinateur)
 //          (sans option : 96 echantillons)
+//          ./fuzzy_pad_sound --osc         (ne lit pas la Maschine : recoit les notes de
+//                                           mk3_live.py par OSC sur le port 57390)
 // Licence : GPLv3 (JUCE utilise sous AGPLv3).
 
 #include <juce_audio_devices/juce_audio_devices.h>
+#include <juce_osc/juce_osc.h>
 #include <hidapi.h>
 
 #include <array>
@@ -29,10 +32,13 @@ std::atomic<bool> gRunning { true };
 
 // ----------------------------------------------------------------------------
 // Evenement "pad frappe", transmis du lecteur HID au moteur audio sans verrou.
+constexpr int kPanic = -1;   // evenement special : couper toutes les voix
+
 struct PadEvent
 {
     int pad = 0;          // 1..16
     int velocity = 0;     // 1..127
+    int note = -1;        // hauteur MIDI pour les pads 5-16 (-1 = hauteur par defaut du pad)
     juce::int64 ticks = 0; // instant de la lecture USB
 };
 
@@ -60,6 +66,14 @@ private:
 
 // ----------------------------------------------------------------------------
 // Synthe minimal : une voix par pad.
+// Hauteur par defaut des pads 5-16 : C mineur pentatonique a partir de C3
+int defaultNote (int pad)
+{
+    static constexpr int scale[] = { 0, 3, 5, 7, 10 };
+    const int deg = std::max (0, pad - 5);
+    return 48 + scale[deg % 5] + 12 * (deg / 5);
+}
+
 struct Voice
 {
     bool active = false;
@@ -69,8 +83,11 @@ struct Voice
     float hpState = 0;
     double fade = 1, fadeStep = 0;   // fondu de sortie quand le meme pad est rejoue
 
-    void start (int p, int velocity)
+    int note = 60;
+
+    void start (int p, int velocity, int midiNote)
     {
+        note = midiNote >= 0 ? midiNote : defaultNote (p);
         pad = p; active = true; phase = 0; time = 0; fade = 1; fadeStep = 0;
         amp = 0.35 * velocity / 127.0;   // volume par voix : laisse de la marge a plusieurs notes
     }
@@ -107,10 +124,7 @@ struct Voice
                 s = (float) (hp * 0.5 * env (pad == 3 ? 0.04 : 0.3));
                 break;
             }
-            default: { // notes : C mineur pentatonique a partir de C3
-                static constexpr int scale[] = { 0, 3, 5, 7, 10 };
-                const int deg = pad - 5;
-                const int note = 48 + scale[deg % 5] + 12 * (deg / 5);
+            default: { // notes
                 const double f = 440.0 * std::pow (2.0, (note - 69) / 12.0);
                 phase += 2 * juce::MathConstants<double>::pi * f * dt;
                 s = (float) ((std::sin (phase) + 0.3 * std::sin (2 * phase)) * 0.6 * env (0.6));
@@ -153,7 +167,13 @@ public:
         PadEvent e;
         while (queue.pop (e))
         {
-            trigger (e.pad, e.velocity);
+            if (e.pad == kPanic)
+            {
+                for (auto& v : voices)
+                    if (v.active) v.release (sampleRate);   // fondu de 10 ms, sans clic
+                continue;
+            }
+            trigger (e.pad, e.velocity, e.note);
             // Temps passe dans le programme entre la lecture USB et le depart du son
             const auto waited = juce::Time::highResolutionTicksToSeconds (
                                     juce::Time::getHighResolutionTicks() - e.ticks) * 1000.0;
@@ -180,21 +200,23 @@ public:
 
 private:
     EventQueue& queue;
-    // Un pad rejoue fait s'eteindre son son precedent en 10 ms (fondu, pas de coupure),
+    // Un pad rejoue (meme note) fait s'eteindre son son precedent en 10 ms (fondu),
     // comme sur une Maschine. 48 voix laissent la place a ces fondus.
     std::array<Voice, 48> voices {};
 
-    void trigger (int pad, int velocity)
+    void trigger (int pad, int velocity, int note)
     {
+        // Meme pad ET meme note : on eteint l'ancienne (un accord garde toutes ses notes)
+        const int wanted = note >= 0 ? note : defaultNote (pad);
         for (auto& v : voices)
-            if (v.active && v.pad == pad) v.release (sampleRate);
+            if (v.active && v.pad == pad && v.note == wanted) v.release (sampleRate);
         Voice* chosen = nullptr;
         for (auto& v : voices)
             if (! v.active) { chosen = &v; break; }
         if (chosen == nullptr)                       // toutes occupees : la plus ancienne
             for (auto& v : voices)
                 if (chosen == nullptr || v.time > chosen->time) chosen = &v;
-        chosen->start (pad, velocity);
+        chosen->start (pad, velocity, note);
     }
 };
 
@@ -238,29 +260,66 @@ void readPads (hid_device* dev, EventQueue& queue)
             if ((status == 0 || status == 1) && raw > 0 && ! down[(size_t) pad])
             {
                 down[(size_t) pad] = true;
-                queue.push ({ pad, velocityFromRaw (raw), ticks });
+                queue.push ({ pad, velocityFromRaw (raw), -1, ticks });
             }
             else if (status == 2 || status == 3)
                 down[(size_t) pad] = false;
         }
     }
 }
+// ----------------------------------------------------------------------------
+// Mode --osc : les notes arrivent de mk3_live.py (message /fuzzy/proto/hit son velocite note).
+// Le rappel "temps reel" les transmet tout de suite au moteur, sans attendre l'interface.
+class OscInput : private juce::OSCReceiver::Listener<juce::OSCReceiver::RealtimeCallback>
+{
+public:
+    explicit OscInput (EventQueue& q) : queue (q) {}
+    bool start (int port)
+    {
+        if (! receiver.connect (port)) return false;
+        receiver.addListener (this);
+        return true;
+    }
+private:
+    void oscMessageReceived (const juce::OSCMessage& m) override
+    {
+        const auto address = m.getAddressPattern().toString();
+        if (address == "/fuzzy/proto/panic")          // Shift + MUTE : tout couper
+        {
+            queue.push ({ kPanic, 0, -1, juce::Time::getHighResolutionTicks() });
+            return;
+        }
+        if (address != "/fuzzy/proto/hit") return;
+        if (m.size() < 3 || ! m[0].isInt32() || ! m[1].isInt32() || ! m[2].isInt32()) return;
+        const int pad = m[0].getInt32();
+        if (pad < 1 || pad > 16) return;
+        queue.push ({ pad, juce::jlimit (1, 127, m[1].getInt32()), m[2].getInt32(),
+                      juce::Time::getHighResolutionTicks() });
+    }
+    EventQueue& queue;
+    juce::OSCReceiver receiver;
+};
 } // namespace
 
 // ----------------------------------------------------------------------------
 int main (int argc, char* argv[])
 {
     int wantedBuffer = 96;   // compromis entre 128 (tres sur) et 64 (tres reactif)
-    for (int i = 1; i + 1 < argc; ++i)
-        if (juce::String (argv[i]) == "--buffer")
-            wantedBuffer = juce::String (argv[i + 1]).getIntValue();
+    bool oscMode = false;
+    constexpr int kOscPort = 57390;   // port de test des prototypes (hors plage 57300-57306 des apps)
+    for (int i = 1; i < argc; ++i)
+    {
+        const juce::String arg (argv[i]);
+        if (arg == "--buffer" && i + 1 < argc) wantedBuffer = juce::String (argv[++i]).getIntValue();
+        else if (arg == "--osc") oscMode = true;
+    }
 
     std::signal (SIGINT, [] (int) { gRunning.store (false); });
     juce::ScopedJuceInitialiser_GUI juceInit;
 
     if (hid_init() != 0) { std::puts ("hidapi : initialisation impossible"); return 1; }
-    hid_device* dev = openMaschine();
-    if (dev == nullptr)
+    hid_device* dev = oscMode ? nullptr : openMaschine();
+    if (dev == nullptr && ! oscMode)
     {
         std::puts ("Maschine introuvable. Branchee ? Si un prototype a pris les ecrans (sudo), "
                    "debranche / rebranche-la.");
@@ -279,6 +338,11 @@ int main (int argc, char* argv[])
     audio.addAudioCallback (&engine);
 
     auto* device = audio.getCurrentAudioDevice();
+    if (device == nullptr)
+    {
+        std::puts ("Aucune sortie audio disponible : choisis une sortie dans Reglages Systeme > Son.");
+        return 1;
+    }
     const double sr = device->getCurrentSampleRate();
     const int buffer = device->getCurrentBufferSizeSamples();
     const int outLat = device->getOutputLatencyInSamples();
@@ -287,7 +351,19 @@ int main (int argc, char* argv[])
                  device->getName().toRawUTF8(), sr, buffer, buffer / sr * 1000.0, outLat / sr * 1000.0);
     std::puts ("Pads 1-4 : batterie ; pads 5-16 : notes. Ctrl+C pour quitter.");
 
-    std::thread reader (readPads, dev, std::ref (queue));
+    OscInput osc (queue);
+    std::thread reader;
+    if (oscMode)
+    {
+        if (! osc.start (kOscPort))
+        {
+            std::printf ("Port OSC %d deja utilise : un autre fuzzy_pad_sound tourne-t-il ?\n", kOscPort);
+            return 1;
+        }
+        std::printf ("Mode OSC : en attente de mk3_live.py sur le port %d.\n", kOscPort);
+    }
+    else
+        reader = std::thread (readPads, dev, std::ref (queue));
     int seen = 0;
     while (gRunning.load())
     {
@@ -307,10 +383,10 @@ int main (int argc, char* argv[])
         std::fflush (stdout);
     }
 
-    reader.join();
+    if (reader.joinable()) reader.join();
     audio.removeAudioCallback (&engine);
     audio.closeAudioDevice();
-    hid_close (dev);
+    if (dev != nullptr) hid_close (dev);
     hid_exit();
     std::puts ("\nArrete.");
     return 0;
