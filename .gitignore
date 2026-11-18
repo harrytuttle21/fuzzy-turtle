@@ -66,3 +66,13 @@ vcpkg_installed/
 # test output & cache
 Testing/
 .cache/
+
+# Python
+.venv/
+__pycache__/
+
+# macOS
+.DS_Store
+
+# Build
+build/
