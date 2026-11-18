@@ -1,4 +1,4 @@
-<p align="center"><img src="assets/branding/fuzzy-turtle-badge.png" width="240" alt="Fuzzy Turtle Software"></p>
+<p align="center"><img src="assets/branding/fuzzy-turtle-badge_noir" width="240" alt="Fuzzy Turtle Software"></p>
 
 # Fuzzy Turtle Software 🐢
 
