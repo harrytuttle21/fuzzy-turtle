@@ -30,7 +30,11 @@ VID, PID_MK3 = 0x17CC, 0x1600
 DISPLAY_INTERFACE, DISPLAY_ENDPOINT = 5, 0x04
 W, H = 480, 272
 USB_TIMEOUT_MS = 2500
-ORANGE = (255, 121, 0)          # couleur d'accent Fuzzy #FF7900
+ORANGE = (252, 95, 0)           # couleur d'accent Fuzzy #FC5F00 (celle du logo)
+# Correction de couleur propre aux ecrans Maschine (plus pales / jaunes qu'un ecran PC) :
+# on assombrit le vert avec un gamma. Choisir la valeur avec l'action 'couleurs'.
+GREEN_GAMMAS = (1.0, 1.3, 1.6, 2.0, 2.4, 2.8, 3.2, 3.6)
+GREEN_GAMMA = GREEN_GAMMAS[2]     # case 3, choisie sur la vraie Maschine (18/11)
 
 
 class MK3Error(RuntimeError):
@@ -57,6 +61,15 @@ def to_rgb565_be(img: Image.Image) -> bytes:
     hi = ImageChops.add(r.point(lambda v: v & 0xF8), g.point(lambda v: v >> 5))
     lo = ImageChops.add(g.point(lambda v: (v << 3) & 0xE0), b.point(lambda v: v >> 3))
     return Image.merge('LA', (hi, lo)).tobytes()
+
+
+def correct(img: Image.Image, gamma: float | None = None) -> Image.Image:
+    """Applique la correction de couleur des ecrans Maschine (gamma sur le vert)."""
+    g = GREEN_GAMMA if gamma is None else gamma
+    if g == 1.0:
+        return img
+    lut = list(range(256)) + [round(255 * (v / 255) ** g) for v in range(256)] + list(range(256))
+    return img.convert('RGB').point(lut)
 
 
 # --- Transport libusb ------------------------------------------------------
@@ -128,6 +141,7 @@ class Screens:
         self.claimed = True
 
     def send(self, index: int, img: Image.Image, x: int = 0, y: int = 0) -> None:
+        img = correct(img)
         w, h = img.size
         payload = screen_packet(index, x, y, w, h, to_rgb565_be(img))
         data = (C.c_ubyte * len(payload)).from_buffer_copy(payload)
@@ -269,14 +283,19 @@ def run_fps(dev, seconds: float = 5.0) -> None:
 
 
 def main() -> int:
+    global GREEN_GAMMA
     p = argparse.ArgumentParser(description='Fuzzy Turtle - ecrans Maschine MK3')
-    p.add_argument('action', nargs='?', default='demo', choices=('demo', 'image', 'mire', 'fps', 'clear'))
+    p.add_argument('action', nargs='?', default='demo', choices=('demo', 'image', 'mire', 'couleurs', 'fps', 'clear'))
     p.add_argument('file', nargs='?', help="image a afficher (action 'image')")
     p.add_argument('--screen', type=int, choices=(0, 1), default=0, help='0 = gauche, 1 = droit')
     p.add_argument('--preview', action='store_true', help='sans Maschine : enregistrer des PNG')
     p.add_argument('--detach', action='store_true',
                    help="liberer l'interface ecran du pilote systeme (avec sudo sur macOS)")
+    p.add_argument('--vert', type=int, choices=range(1, 9), metavar='1-8',
+                   help="correction de couleur choisie avec l'action 'couleurs'")
     a = p.parse_args()
+    if a.vert:
+        GREEN_GAMMA = GREEN_GAMMAS[a.vert - 1]
 
     try:
         dev = Preview() if a.preview else Screens(detach=a.detach)
@@ -304,6 +323,25 @@ def main() -> int:
             send = lambda: (dev.send(0, box, 120, 96), dev.send(1, box, 120, 96))
             send()
             print('Mire 240x80 envoyee au centre des deux ecrans.')
+            hold(dev, send)
+        elif a.action == 'couleurs':
+            # 8 cases du meme orange, chacune avec une correction differente.
+            # La correction globale est desactivee pour cette mire.
+            GREEN_GAMMA = 1.0
+            img = Image.new('RGB', (W, H), 'black')
+            d = ImageDraw.Draw(img)
+            d.text((10, 6), 'Quelle case ressemble le plus a l\'orange du PC ?', font=font(14), fill='white')
+            for i, g in enumerate(GREEN_GAMMAS):
+                x, y = 10 + (i % 4) * 117, 34 + (i // 4) * 118
+                sw = correct(Image.new('RGB', (106, 90), ORANGE), g)
+                img.paste(sw, (x, y))
+                d.text((x + 44, y + 94), str(i + 1), font=font(16), fill='white')
+            logo = None
+            if a.file and os.path.exists(a.file):
+                logo = fit(a.file)
+            send = lambda: (dev.send(0, img), dev.send(1, logo or img))
+            send()
+            print('Mire de couleurs affichee : note le numero de la case la plus proche.')
             hold(dev, send)
         elif a.action == 'fps':
             if a.preview:

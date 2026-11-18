@@ -458,7 +458,12 @@ def main() -> int:
     ap = argparse.ArgumentParser(description='Fuzzy Turtle - mini DAW Pulses sur Maschine MK3')
     ap.add_argument('--preview', action='store_true', help='sans Maschine : enregistrer des PNG')
     ap.add_argument('--curve', choices=CURVES, default='soft')
+    ap.add_argument('--vert', type=int, choices=range(1, 9), metavar='1-8',
+                    help="correction de couleur des ecrans (voir mk3_screens.py couleurs)")
     a = ap.parse_args()
+    if a.vert:
+        import mk3_screens
+        mk3_screens.GREEN_GAMMA = mk3_screens.GREEN_GAMMAS[a.vert - 1]
     st = State()
 
     if a.preview:
