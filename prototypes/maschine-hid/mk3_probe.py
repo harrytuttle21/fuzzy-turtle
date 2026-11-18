@@ -89,7 +89,7 @@ class Decoder:
                 continue
             d = (v - before) % 1000
             if d > 500: d -= 1000
-            if d and abs(d) <= 12:
+            if d and abs(d) <= 200:   # 200 max : ignore seulement les sauts aberrants
                 out.append(('knob', i + 1, d))
         return out
 

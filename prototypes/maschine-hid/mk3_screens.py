@@ -24,7 +24,7 @@ quitter les logiciels Native Instruments (Maschine, NI Hardware Agent).
 from __future__ import annotations
 import argparse, ctypes as C, ctypes.util, os, struct, sys, time
 
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageChops, ImageDraw, ImageFont
 
 VID, PID_MK3 = 0x17CC, 0x1600
 DISPLAY_INTERFACE, DISPLAY_ENDPOINT = 5, 0x04
@@ -52,17 +52,11 @@ def screen_packet(index: int, x: int, y: int, w: int, h: int, body: bytes) -> by
 
 
 def to_rgb565_be(img: Image.Image) -> bytes:
-    """Image Pillow -> octets RGB565 big-endian."""
-    raw = img.convert('RGB').tobytes()
-    out = bytearray(len(raw) // 3 * 2)
-    j = 0
-    for i in range(0, len(raw), 3):
-        r, g, b = raw[i], raw[i + 1], raw[i + 2]
-        v = ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3)
-        out[j] = v >> 8
-        out[j + 1] = v & 0xFF
-        j += 2
-    return bytes(out)
+    """Image Pillow -> octets RGB565 big-endian (calcul fait par Pillow, rapide)."""
+    r, g, b = img.convert('RGB').split()
+    hi = ImageChops.add(r.point(lambda v: v & 0xF8), g.point(lambda v: v >> 5))
+    lo = ImageChops.add(g.point(lambda v: (v << 3) & 0xE0), b.point(lambda v: v >> 3))
+    return Image.merge('LA', (hi, lo)).tobytes()
 
 
 # --- Transport libusb ------------------------------------------------------
