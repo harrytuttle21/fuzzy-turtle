@@ -34,9 +34,8 @@ import argparse, sys, time
 from PIL import Image, ImageDraw
 
 from mk3_probe import Decoder, CURVES, pad_led_frame
-from mk3_screens import Screens, Preview, MK3Error, W, H, ORANGE, font, header
+from mk3_screens import Screens, Preview, MK3Error, W, H, font, header
 
-DIM, BRIGHT = 29, 30                     # couleurs LED validees au prototype 1
 ROWS, VISIBLE = 32, 11
 NOTES = ['C-', 'C#', 'D-', 'D#', 'E-', 'F-', 'F#', 'G-', 'G#', 'A-', 'A#', 'B-']
 DRUMS = ['Kick', 'Snare', 'Clap', 'HH fer', 'HH ouv', 'Tom 1', 'Tom 2', 'Rim',
@@ -213,17 +212,27 @@ class UsbHid:
 
 
 # --- Dessin des ecrans ---------------------------------------------------------
+def group_rgb(st: State):
+    """Couleur du theme sur les ecrans : celle du groupe choisi."""
+    return GROUP_RGB[GROUPS.index(st.group)]
+
+
+def shade(color, k: float):
+    return tuple(round(c * k) for c in color)
+
+
 def draw_left(st: State) -> Image.Image:
+    acc = group_rgb(st)
     img = Image.new('RGB', (W, H), 'black')
     d = ImageDraw.Draw(img)
-    header(d, f'FUZZY TURTLE  -  Groupe {st.group}', f'{st.bpm} BPM')
+    header(d, f'FUZZY TURTLE  -  Groupe {st.group}', f'{st.bpm} BPM', acc)
     f = font(13)
     for i in range(16):
         pad = 13 + i % 4 - 4 * (i // 4)            # pad 13 en haut a gauche, comme sur la Maschine
         x, y = 8 + (i % 4) * 117, 34 + (i // 4) * 34
         lit = pad in st.down or st.flash.get(pad, 0) > time.monotonic()
-        d.rectangle((x, y, x + 110, y + 28), fill=(90, 45, 0) if lit else None,
-                    outline=ORANGE if pad == st.sound else (70, 70, 70), width=2)
+        d.rectangle((x, y, x + 110, y + 28), fill=shade(acc, 0.36) if lit else None,
+                    outline=acc if pad == st.sound else (70, 70, 70), width=2)
         d.text((x + 6, y + 7), f'{pad:02d} {st.sound_name(pad)}', font=f, fill='white')
     vals = st.params[(st.group, st.sound)]
     for i, name in enumerate(PARAMS):
@@ -231,25 +240,27 @@ def draw_left(st: State) -> Image.Image:
         d.text((x + 10, 176), name, font=f, fill=(180, 180, 180))
         d.text((x + 82, 176), f'{vals[i]:3d}', font=f, fill='white')
         d.rectangle((x + 10, 198, x + 110, 208), outline=(90, 90, 90))
-        d.rectangle((x + 10, 198, x + 10 + round(100 * vals[i] / 127), 208), fill=ORANGE)
-    d.text((10, 222), f'Son choisi : {st.sound:02d} {st.sound_name(st.sound)}', font=font(15), fill=ORANGE)
+        d.rectangle((x + 10, 198, x + 10 + round(100 * vals[i] / 127), 208), fill=acc)
+    d.text((10, 222), f'Son choisi : {st.sound:02d} {st.sound_name(st.sound)}', font=font(15), fill=acc)
     state = ('REC ' if st.recording else '') + ('PLAY' if st.playing else 'STOP')
     d.text((10, 248), f'{state}   Shift+pad = effacer la ligne', font=font(12), fill=(140, 140, 140))
     return img
 
 
 def draw_tracker(st: State) -> Image.Image:
+    acc = group_rgb(st)
     img = Image.new('RGB', (W, H), (12, 12, 16))
     d = ImageDraw.Draw(img)
-    header(d, 'VUE TRACKER', ('REC ' if st.recording else '') + f'Groupe {st.group}')
+    header(d, 'VUE TRACKER', ('REC ' if st.recording else '') + f'Groupe {st.group}',
+           group_rgb(st))
     f = font(14)
-    d.text((8, 31), 'Lig  Note Ins Vol', font=f, fill=ORANGE)
+    d.text((8, 31), 'Lig  Note Ins Vol', font=f, fill=acc)
     top = min(max(0, st.cursor - VISIBLE // 2), ROWS - VISIBLE)
     for k in range(VISIBLE):
         r = top + k
         y = 50 + k * 18
         if r == st.cursor:
-            d.rectangle((0, y - 1, W, y + 16), fill=(110, 50, 0) if st.recording else (70, 35, 0))
+            d.rectangle((0, y - 1, W, y + 16), fill=shade(acc, 0.44) if st.recording else shade(acc, 0.28))
         elif st.playing and r == st.playhead:
             d.rectangle((0, y - 1, W, y + 16), fill=(0, 60, 40))
         elif r % 4 == 0:
@@ -286,24 +297,26 @@ WHITE = (0, 2, 4, 5, 7, 9, 11)
 
 
 def draw_keyboard(st: State) -> Image.Image:
+    acc = group_rgb(st)
     img = Image.new('RGB', (W, H), (12, 12, 16))
     d = ImageDraw.Draw(img)
     scale_name, scale = SCALES[st.scale_idx]
-    header(d, 'VUE CLAVIER', f'{KEY_NAMES[st.root]} {scale_name}')
+    header(d, 'VUE CLAVIER', f'{KEY_NAMES[st.root]} {scale_name}  -  Groupe {st.group}',
+           group_rgb(st))
     low = 12 * (st.octave + 1)                     # 3 octaves a partir du C de l'octave
     high = low + 36
     notes = st.active_notes()
     # Nom de l'accord ou de la note, et fleches si une note sort de la plage
     name = chord_name(notes) if notes else ''
-    d.text((W // 2 - d.textlength(name, font=font(26)) // 2, 34), name, font=font(26), fill=ORANGE)
+    d.text((W // 2 - d.textlength(name, font=font(26)) // 2, 34), name, font=font(26), fill=acc)
     if any(n < low for n in notes):
-        d.text((8, 38), '<', font=font(24), fill=ORANGE)
+        d.text((8, 38), '<', font=font(24), fill=acc)
     if any(n >= high for n in notes):
-        d.text((W - 22, 38), '>', font=font(24), fill=ORANGE)
+        d.text((W - 22, 38), '>', font=font(24), fill=acc)
 
     def lit(v):                                    # orange plus ou moins vif selon la velocite
         k = 0.35 + 0.65 * v / 127
-        return tuple(round(c * k) for c in ORANGE)
+        return shade(acc, k)
 
     kw, top, bottom = W / 21, 76, 236
     in_scale = {(st.root + i) % 12 for i in scale}
@@ -334,6 +347,8 @@ def draw_keyboard(st: State) -> Image.Image:
     for i, t in enumerate(labels):
         d.text((i * 120 + 10, 254), t, font=font(12), fill=(180, 180, 180))
     return img
+
+
 
 
 def draw_right(st: State) -> Image.Image:
@@ -429,8 +444,17 @@ def tick(st: State) -> bool:
 # niveaux repris du pilote r22yb3m (MIT). Boutons mono : 4 = doux, 7 = vif.
 # Groupes A-H : couleurs de la palette NI, (douce, vive) pour chaque groupe.
 BUTTON_SLOTS = {'play': 41, 'rec': 42, 'stop': 43, 'shift': 44, 'keyboard': 47}
-GROUP_PALETTE = ((5, 6), (9, 10), (21, 22), (29, 30), (27, 31), (37, 38), (45, 42), (53, 50))
+# Palette NI : 16 teintes, 4 nuances chacune ; teinte n -> indices 4+4n a 7+4n
+# (+1 = douce, +2 = vive, +3 = pale). Le pilote d'origine melangeait deux teintes
+# pour E, G et H (bouton jaune puis vert clair) : corrige ici.
+# Couleurs des groupes comme sur la Maschine+, choisies au nuancier (--palette) le 18/11 :
+# numero de pad du nuancier - 1 = teinte.  A 2, B 3, C 6, D 7, E 10, F 13, G 14, H 16
+GROUP_HUES = tuple(p - 1 for p in (2, 3, 6, 7, 10, 13, 14, 16))
+GROUP_PALETTE = tuple((5 + 4 * h, 6 + 4 * h) for h in GROUP_HUES)
 GROUP_SLOT = 29
+# Couleur d'ecran de chaque groupe, proche de celle de son bouton (meme ordre).
+GROUP_RGB = ((235, 35, 25), (252, 95, 0), (235, 200, 40), (0, 200, 165),
+             (25, 90, 240), (105, 55, 240), (230, 40, 225), (240, 20, 70))
 BTN_DIM, BTN_BRIGHT = 4, 7
 
 
@@ -449,9 +473,52 @@ def button_frame(st: State) -> bytes:
 
 
 def led_frame(st: State) -> bytes:
+    """Pads dans la couleur du groupe : douce au repos, vive si frappe, joue ou choisi."""
     now = time.monotonic()
-    return pad_led_frame({p: BRIGHT if (p in st.down or st.flash.get(p, 0) > now or p == st.sound)
-                          else DIM for p in range(1, 17)})
+    dim, bright = GROUP_PALETTE[GROUPS.index(st.group)]
+    return pad_led_frame({p: bright if (p in st.down or st.flash.get(p, 0) > now or p == st.sound)
+                          else dim for p in range(1, 17)})
+
+
+def palette_mode(dev, screens, dec) -> int:
+    """Nuancier : pad n = teinte n-1 en vif. Frapper un pad l'affiche en doux / vif / pale."""
+    shown = {p: 6 + 4 * (p - 1) for p in range(1, 17)}
+    def draw():
+        img = Image.new('RGB', (W, H), 'black')
+        d = ImageDraw.Draw(img)
+        header(d, 'NUANCIER MASCHINE', 'pad = teinte')
+        for i in range(16):
+            pad = 13 + i % 4 - 4 * (i // 4)
+            x, y = 8 + (i % 4) * 117, 34 + (i // 4) * 58
+            d.rectangle((x, y, x + 110, y + 52), outline=(90, 90, 90), width=2)
+            d.text((x + 6, y + 16), f'Pad {pad}', font=font(15), fill='white')
+        return img
+    img = draw()
+    screens.send(0, img); screens.send(1, img)
+    print('Nuancier : chaque pad montre une teinte. Frappe un pad pour voir ses nuances '
+          '(douce, vive, pale). Ctrl+C pour quitter.')
+    level = {p: 2 for p in range(1, 17)}
+    try:
+        dev.write(pad_led_frame(shown))
+        while True:
+            data = dev.read()
+            for ev in dec.parse(data) if data else []:
+                if ev[0] == 'pad_on':
+                    p = ev[1]
+                    level[p] = level[p] % 3 + 1          # 1 douce -> 2 vive -> 3 pale
+                    shown[p] = 4 + 4 * (p - 1) + level[p]
+                    print(f'Pad {p:2d} : nuance '
+                          f'{("douce", "vive", "pale")[level[p] - 1]}, code {shown[p]}')
+                    dev.write(pad_led_frame(shown))
+            if not data:
+                time.sleep(0.005)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        try: dev.write(pad_led_frame({}))
+        except Exception: pass
+        dev.close(); screens.close()
+    return 0
 
 
 def main() -> int:
@@ -460,6 +527,8 @@ def main() -> int:
     ap.add_argument('--curve', choices=CURVES, default='soft')
     ap.add_argument('--vert', type=int, choices=range(1, 9), metavar='1-8',
                     help="correction de couleur des ecrans (voir mk3_screens.py couleurs)")
+    ap.add_argument('--palette', action='store_true',
+                    help='nuancier : les 16 pads montrent les 16 teintes de la Maschine')
     a = ap.parse_args()
     if a.vert:
         import mk3_screens
@@ -486,6 +555,8 @@ def main() -> int:
             screens.close()
         return 1
     dec = Decoder(CURVES[a.curve])
+    if a.palette:
+        return palette_mode(dev, screens, dec)
     print('Mini DAW Pulses lance. Ctrl+C pour quitter.')
 
     dirty, last_draw, last_leds, last_buttons = True, 0.0, b'', b''
