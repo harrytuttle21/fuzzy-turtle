@@ -11,5 +11,65 @@
  },
  "pad_hue": {
   "A:15": 1
- }
+ },
+ "keys": {
+  "A": {
+   "root": 2,
+   "octave": 2,
+   "bank_idx": 0,
+   "type_idx": 8
+  },
+  "B": {
+   "root": 2,
+   "octave": 2,
+   "bank_idx": 0,
+   "type_idx": 8
+  },
+  "C": {
+   "root": 2,
+   "octave": 2,
+   "bank_idx": 0,
+   "type_idx": 8
+  },
+  "D": {
+   "root": 2,
+   "octave": 2,
+   "bank_idx": 0,
+   "type_idx": 8
+  },
+  "E": {
+   "root": 2,
+   "octave": 2,
+   "bank_idx": 0,
+   "type_idx": 8
+  },
+  "F": {
+   "root": 2,
+   "octave": 2,
+   "bank_idx": 0,
+   "type_idx": 8
+  },
+  "G": {
+   "root": 2,
+   "octave": 2,
+   "bank_idx": 0,
+   "type_idx": 8
+  },
+  "H": {
+   "root": 2,
+   "octave": 2,
+   "bank_idx": 0,
+   "type_idx": 8
+  }
+ },
+ "linked": [
+  "A",
+  "B",
+  "C",
+  "D",
+  "E",
+  "F",
+  "G",
+  "H"
+ ]
 }

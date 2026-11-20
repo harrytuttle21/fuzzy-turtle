@@ -18,6 +18,9 @@ Modes, comme sur Maschine :
   MIXER         8 voies : sons du groupe (Pad Mode) ou groupes ; encodeurs 1-8 = volumes ;
                 molette 4D = volume master ; 4D gauche / droite = page 1 / 2.
   VOLUME        tenu + molette 4D = volume master
+  Bouton 7      (Keyboard / Chords) LINK : chaque groupe a sa tonalite (root, octave, gamme) ;
+                bouton 7 puis boutons de groupe = lier des groupes (ils partagent la tonalite) ;
+                Shift + 7 = tous les groupes / aucun ; bouton 7 = termine
   Shift + MIDI  SETTINGS > COLORS : encodeur 1 cible GROUP / PADS ; GROUP : pad n = couleur n ;
                 PADS : choisir des pads puis encodeur 2 = leur couleur, Shift + pad = couleur du
                 groupe ; Shift + MIDI a nouveau = fermer : bouton 5 YES (sauvegarde dans
@@ -56,7 +59,10 @@ Commandes :
                            6 root, 8 octave ;
                            Shift + pad 13 / 14 : root -/+ ; Shift + pad 15 / 16 : octave -/+
 
-Son : lancer d'abord le moteur C++ dans un autre terminal :
+Son : le moteur C++ (prototypes/pad-sound) est demarre automatiquement apres la prise de la
+      Maschine, sur une sortie autre que la Maschine (--output "nom" pour l'imposer,
+      --no-sound pour s'en passer). Lancement en une commande : prototypes/start.sh
+      Ancienne methode, moteur a la main dans un autre terminal :
          prototypes/pad-sound/build/fuzzy_pad_sound_artefacts/Release/fuzzy_pad_sound --osc
       mk3_live.py lui envoie chaque note par OSC (port 57390). Sans moteur : interface muette.
 
@@ -66,7 +72,7 @@ A la fin : debrancher / rebrancher la Maschine pour rendre les ecrans au pilote 
 Necessite mk3_probe.py et mk3_screens.py dans le meme dossier (hidapi n'est pas utilise ici).
 """
 from __future__ import annotations
-import argparse, json, queue, random, socket, struct, sys, threading, time
+import argparse, json, os, queue, random, signal, socket, struct, subprocess, sys, threading, time
 from pathlib import Path
 
 from PIL import Image, ImageDraw
@@ -239,6 +245,10 @@ def load_settings(st) -> None:
     try:
         data = json.loads(SETTINGS_FILE.read_text())
         st.group_hue.update({g: int(h) for g, h in data.get('group_hue', {}).items() if g in GROUPS})
+        for g, k in data.get('keys', {}).items():
+            if g in GROUPS:
+                st.keys[g].update({n: int(v) for n, v in k.items() if n in st.keys[g]})
+        st.linked = set(data.get('linked', [])) & set(GROUPS)
         for key, h in data.get('pad_hue', {}).items():
             g, p = key.split(':')
             st.pad_hue[(g, int(p))] = int(h)
@@ -250,7 +260,8 @@ def save_settings(st) -> None:
     try:
         SETTINGS_FILE.write_text(json.dumps({
             'group_hue': st.group_hue,
-            'pad_hue': {f'{g}:{p}': h for (g, p), h in st.pad_hue.items() if h is not None}},
+            'pad_hue': {f'{g}:{p}': h for (g, p), h in st.pad_hue.items() if h is not None},
+            'keys': st.keys, 'linked': sorted(st.linked)},
             indent=1))
     except OSError as e:
         print('Sauvegarde des reglages impossible :', e)
@@ -337,7 +348,6 @@ class State:
         self.set_target = 'GROUP'                    # GROUP ou PADS (encodeur 1)
         self.set_selected: set[int] = set()          # pads choisis (cible PADS)
         self.set_knobs = {0: Knob(40), 1: Knob(30)}
-        load_settings(self)
         # Follow : l'affichage suit la lecture (bouton FOLLOW)
         self.follow = True
         # Note Repeat (tenu) et arpegiateur (Shift + Note Repeat)
@@ -365,8 +375,11 @@ class State:
         self.playhead, self.next_row_time = 0, 0.0
         self.down: set[int] = set()
         self.right_view = 'tracker'                  # ou 'keyboard' (bouton Keyboard)
-        self.octave, self.root = 3, 0                         # a partir de C-3
-        self.bank_idx, self.type_idx = 0, 2                   # Main / Minor
+        # Tonalite PAR GROUPE (root, octave, gamme) ; des groupes peuvent etre lies (LINK)
+        self.keys = {g: {'root': 0, 'octave': 3, 'bank_idx': 0, 'type_idx': 2} for g in GROUPS}
+        self.linked: set[str] = set()                         # groupes qui partagent la tonalite
+        self.link_edit = False                                # bouton 7 : choisir les groupes
+        load_settings(self)                                   # couleurs, tonalites, liens
         self.held_notes: dict[int, list[tuple[int, int]]] = {}   # pad -> [(note, velocite)]
         self.chord_set = 0                                    # mode CHORDS : Chord Set choisi
         self.note_flash: dict[int, tuple[float, int]] = {}   # note -> (fin, velocite)
@@ -381,6 +394,34 @@ class State:
         self.ch_knobs = {4: Knob(30), 5: Knob(50), 6: Knob(40), 7: Knob(40)}
         # Vue 16 pistes : ligne, piste, note, volume
         self.trk_knobs = {0: Knob(12), 1: Knob(25), 2: Knob(14), 3: Knob(6)}
+
+    # --- tonalite du groupe choisi (propagee aux groupes lies) ---
+    def _key_get(name):
+        return property(lambda self: self.keys[self.group][name],
+                        lambda self, v: self._key_set(name, v))
+
+    root = _key_get('root')
+    octave = _key_get('octave')
+    bank_idx = _key_get('bank_idx')
+    type_idx = _key_get('type_idx')
+
+    def _key_set(self, name, value):
+        targets = self.linked if self.group in self.linked else {self.group}
+        for g in targets:
+            self.keys[g][name] = value
+
+    def link_toggle(self, g: str) -> None:
+        """LINK : ajouter / retirer un groupe ; il prend la tonalite du groupe choisi."""
+        self.linked.add(self.group)
+        if g == self.group:
+            return
+        if g in self.linked:
+            self.linked.discard(g)
+        else:
+            self.linked.add(g)
+            self.keys[g] = dict(self.keys[self.group])
+        if self.linked == {self.group}:
+            self.linked.clear()
 
     @property
     def grid(self):
@@ -937,7 +978,8 @@ def draw_keyboard(st: State) -> Image.Image:
         if st.chord_mode != 'HARM':
             scale = ()                             # points de gamme seulement en Harmonizer
     else:
-        softkey_header(d, st, step_label(st) + f'Oct {st.octave}  {KEY_NAMES[st.root]} {scale_name}')
+        softkey_header(d, st, step_label(st) + f'{KEY_NAMES[st.root]}{st.octave} {scale_name}'[:24])
+        d.text((10, 30), link_label(st), font=font(11), fill=(150, 150, 150))
     low = 12 * (st.octave + 1)                     # 3 octaves a partir du C de l'octave
     high = low + 36
     notes = st.active_notes()
@@ -1014,7 +1056,10 @@ def _draw_right(st: State) -> Image.Image:
     if st.tracker16:
         return draw_tracks(st, 8)
     if st.right_view == 'chords':
-        return draw_keyboard(st) if st.chord_keyboard else draw_chords(st)
+        img = draw_keyboard(st) if st.chord_keyboard else draw_chords(st)
+        return link_overlay(st, img)
+    if st.right_view == 'keyboard':
+        return link_overlay(st, draw_keyboard(st))
     return draw_keyboard(st) if st.right_view == 'keyboard' else draw_tracker(st)
 
 
@@ -1028,7 +1073,7 @@ def draw_chords(st: State) -> Image.Image:
     img = Image.new('RGB', (W, H), (10, 10, 14))
     d = ImageDraw.Draw(img)
     header(d, 'CHORDS', '', acc)
-    d.text((130, 5), f'{st.chord_mode}  {st.chord_set_label()}', font=font(14), fill='black')
+    d.text((130, 5), f'{st.chord_mode} {st.chord_set_label()}'[:13], font=font(14), fill='black')
     if st.chord_mode == 'USER':
         softkey(d, st, 3, 'EDIT', st.user_edit)
     if st.user_edit:
@@ -1061,6 +1106,34 @@ def draw_chords(st: State) -> Image.Image:
     for k, t in enumerate(labels):
         d.text((k * 120 + 10, 254), t, font=font(12), fill=(180, 180, 180))
     scale_dropdown(st, d)
+    return img
+
+
+def link_label(st: State) -> str:
+    if not st.linked:
+        return f'Key: group {st.group} only'
+    if len(st.linked) == len(GROUPS):
+        return 'Key: all groups'
+    return 'Key: ' + ' '.join(sorted(st.linked))
+
+
+def link_overlay(st: State, img: Image.Image) -> Image.Image:
+    """Etiquette LINK sous le bouton 7 ; en mode LINK, panneau de choix des groupes."""
+    d = ImageDraw.Draw(img)
+    softkey(d, st, 2, 'LINK', st.link_edit)
+    if not st.link_edit:
+        return img
+    acc = group_rgb(st)
+    rounded(d, (40, 40, 440, 230), fill=(14, 14, 20), outline=acc, width=2)
+    d.text((60, 50), 'LINK KEY (root, octave, scale)', font=font(15), fill=acc)
+    for i, g in enumerate(GROUPS):
+        x, y = 60 + (i % 4) * 92, 82 + (i // 4) * 46
+        on = g in st.linked or (g == st.group and st.linked)
+        rounded(d, (x, y, x + 80, y + 36), fill=hue_rgb(st.group_hue[g]) if on else (30, 30, 38),
+                outline=hue_rgb(st.group_hue[g]))
+        d.text((x + 34, y + 9), g, font=font(16), fill='black' if on else 'white')
+    d.text((60, 178), 'Group buttons: link / unlink', font=font(12), fill=(170, 170, 170))
+    d.text((60, 196), 'Shift + 7: all / none     7: done', font=font(12), fill=(170, 170, 170))
     return img
 
 
@@ -1275,8 +1348,21 @@ def handle(st: State, ev: tuple) -> None:
                 st.muted ^= {g}
             elif 'solo' in st.held:                  # SOLO + groupe(s) : n'ecouter que ceux-la
                 st.solo ^= {g}
+            elif st.link_edit:                       # LINK : lier / delier ce groupe
+                st.link_toggle(g)
             else:
                 st.group = g
+        elif name == 'screen_7' and st.melodic() and not st.mixer and not st.nr_menu:
+            if 'shift' in st.held:                   # Shift + 7 : lier tous les groupes / aucun
+                if len(st.linked) == len(GROUPS):
+                    st.linked.clear()
+                else:
+                    for g in GROUPS:
+                        if g != st.group:
+                            st.keys[g] = dict(st.keys[st.group])
+                    st.linked = set(GROUPS)
+            else:
+                st.link_edit = not st.link_edit      # 7 : choisir les groupes lies
         elif name == 'midi_channel' and 'shift' in st.held:   # Shift + MIDI : SETTINGS
             if not st.settings:
                 st.settings, st.set_confirm = True, False
@@ -1334,6 +1420,9 @@ def handle(st: State, ev: tuple) -> None:
                 st.sound = 5
             st.right_view, st.step_mode = 'chords', False
             st.held_notes.clear()
+        elif name == 'pad_mode' and st.link_edit:
+            st.link_edit = False
+            st.right_view, st.tracker16, st.step_mode = 'tracker', False, False
         elif name == 'pad_mode' and st.mixer:
             st.mixer = False
             st.right_view, st.tracker16, st.step_mode = 'tracker', False, False
@@ -1642,6 +1731,8 @@ def available_buttons(st: State) -> set:
         on.add('screen_3')                             # TRACKER
         if st.right_view == 'chords' and st.chord_mode == 'USER':
             on.add('screen_8')                         # EDIT des accords User
+        if st.melodic():
+            on.add('screen_7')                         # LINK des tonalites
     return on
 
 
@@ -1656,9 +1747,10 @@ def button_frame(st: State) -> bytes:
               'step': st.step_mode, 'tempo': False, 'nav_prev': False, 'nav_next': False,
               'mute': bool(st.muted), 'solo': bool(st.solo),
               'mixer': st.mixer, 'volume': False, 'screen_3': st.tracker16,
-              'screen_8': st.user_edit, 'midi_channel': st.settings, 'follow': st.follow,
+              'screen_8': st.user_edit, 'screen_7': st.link_edit,
+              'midi_channel': st.settings, 'follow': st.follow,
               'note_repeat': st.nr_active, 'lock': st.nr_lock,
-              'screen_5': False, 'screen_6': False, 'screen_7': False}
+              'screen_5': False, 'screen_6': False}
     for name in available_buttons(st):
         slot = BUTTON_SLOTS[name]
         lit = active[name] or name in st.held
@@ -1668,6 +1760,9 @@ def button_frame(st: State) -> bytes:
             f[1 + slot] = BTN_BRIGHT if lit else BTN_DIM
     for i, g in enumerate(GROUPS):
         dim, bright = hue_pair(st.group_hue[g])
+        if st.link_edit:                               # LINK : groupes lies vifs, autres doux
+            f[1 + GROUP_SLOT + i] = bright if (g in st.linked or g == st.group) else dim
+            continue
         if not st.audible(g):
             f[1 + GROUP_SLOT + i] = 0                  # groupe coupe (Mute, ou hors Solo) : eteint
         else:
@@ -1757,6 +1852,50 @@ def led_scan(dev, screens, dec) -> int:
     return 0
 
 
+ENGINE = Path(__file__).resolve().parent.parent / 'pad-sound' / 'build' / \
+    'fuzzy_pad_sound_artefacts' / 'Release' / 'fuzzy_pad_sound'
+
+
+def start_engine(output: str | None):
+    """Demarre le moteur audio APRES avoir pris la Maschine : sa carte son a disparu, le
+    moteur choisit donc une autre sortie. Il tourne avec ton compte (pas en administrateur)."""
+    if not ENGINE.exists():
+        print(f'Moteur audio introuvable : {ENGINE}')
+        print('Compile-le : cd prototypes/pad-sound && cmake --build build   (interface sans son)')
+        return None
+    cmd = [str(ENGINE), '--osc', '--quiet'] + (['--output', output] if output else [])
+    uid, gid = os.environ.get('SUDO_UID'), os.environ.get('SUDO_GID')
+
+    def drop_root():                                   # lance sous sudo : revenir a ton compte
+        os.setsid()                                    # Ctrl+C est gere par l'interface
+        if gid and uid:
+            os.setgid(int(gid))
+            os.setuid(int(uid))
+    env = dict(os.environ)
+    if os.environ.get('SUDO_USER'):
+        env['HOME'] = os.path.expanduser('~' + os.environ['SUDO_USER'])
+        env['USER'] = env['LOGNAME'] = os.environ['SUDO_USER']
+    try:
+        proc = subprocess.Popen(cmd, preexec_fn=drop_root, env=env)
+    except OSError as e:
+        print('Impossible de demarrer le moteur audio :', e)
+        return None
+    time.sleep(0.8)                                    # le temps d'ouvrir la sortie audio
+    if proc.poll() is not None:
+        print('Le moteur audio s\'est arrete au demarrage (voir le message ci-dessus).')
+        return None
+    return proc
+
+
+def stop_engine(proc) -> None:
+    if proc and proc.poll() is None:
+        proc.send_signal(signal.SIGINT)                # arret propre (fondu, fermeture audio)
+        try:
+            proc.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+
+
 def palette_mode(dev, screens, dec) -> int:
     """Nuancier : pad n = teinte n-1 en vif. Frapper un pad l'affiche en doux / vif / pale."""
     shown = {p: 6 + 4 * (p - 1) for p in range(1, 17)}
@@ -1802,6 +1941,10 @@ def main() -> int:
     ap = argparse.ArgumentParser(description='Fuzzy Turtle - mini DAW Pulses sur Maschine MK3')
     ap.add_argument('--preview', action='store_true', help='sans Maschine : enregistrer des PNG')
     ap.add_argument('--curve', choices=CURVES, default='soft')
+    ap.add_argument('--no-sound', action='store_true',
+                    help='ne pas demarrer le moteur audio (fuzzy_pad_sound)')
+    ap.add_argument('--output', metavar='NOM',
+                    help='sortie audio du moteur (ex. "Haut-parleurs"), sinon automatique')
     ap.add_argument('--vert', type=int, choices=range(1, 9), metavar='1-8',
                     help="correction de couleur des ecrans (voir mk3_screens.py couleurs)")
     ap.add_argument('--led-scan', action='store_true',
@@ -1841,6 +1984,7 @@ def main() -> int:
         return palette_mode(dev, screens, dec)
     if a.led_scan:
         return led_scan(dev, screens, dec)
+    engine = None if a.no_sound else start_engine(a.output)
     print('Mini DAW Pulses lance. Ctrl+C pour quitter.')
 
     # Trois taches en parallele, pour que le dessin des ecrans ne retarde jamais le jeu :
@@ -1930,6 +2074,8 @@ def main() -> int:
         running.clear()
         for t in threads:
             t.join(timeout=0.5)
+        stop_engine(engine)
+        save_settings(st)                              # tonalites et liens des groupes
         try:
             dev.write(pad_led_frame({}))
             dev.write(bytes([0x80]) + bytes(62))       # eteindre les boutons

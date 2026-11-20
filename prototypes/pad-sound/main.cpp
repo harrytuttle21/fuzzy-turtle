@@ -8,7 +8,9 @@
 //          ./fuzzy_pad_sound --buffer 64   (plus reactif, plus exigeant pour l'ordinateur)
 //          (sans option : 96 echantillons)
 //          ./fuzzy_pad_sound --osc         (ne lit pas la Maschine : recoit les notes de
-//                                           mk3_live.py par OSC sur le port 57390)
+//                                           mk3_live.py par OSC sur le port 57390 ; evite
+//                                           la sortie "Maschine")
+//          --output "nom"  impose une sortie audio ; --quiet  pas de ligne par note
 // Licence : GPLv3 (JUCE utilise sous AGPLv3).
 
 #include <juce_audio_devices/juce_audio_devices.h>
@@ -305,13 +307,16 @@ private:
 int main (int argc, char* argv[])
 {
     int wantedBuffer = 96;   // compromis entre 128 (tres sur) et 64 (tres reactif)
-    bool oscMode = false;
+    bool oscMode = false, quiet = false;
+    juce::String wantedOutput;               // --output "nom" : sortie audio imposee
     constexpr int kOscPort = 57390;   // port de test des prototypes (hors plage 57300-57306 des apps)
     for (int i = 1; i < argc; ++i)
     {
         const juce::String arg (argv[i]);
         if (arg == "--buffer" && i + 1 < argc) wantedBuffer = juce::String (argv[++i]).getIntValue();
         else if (arg == "--osc") oscMode = true;
+        else if (arg == "--quiet") quiet = true;                 // pas de ligne par note
+        else if (arg == "--output" && i + 1 < argc) wantedOutput = argv[++i];
     }
 
     std::signal (SIGINT, [] (int) { gRunning.store (false); });
@@ -334,6 +339,30 @@ int main (int argc, char* argv[])
     if (err.isNotEmpty()) { std::printf ("Audio : %s\n", err.toRawUTF8()); return 1; }
     auto setup = audio.getAudioDeviceSetup();
     setup.bufferSize = wantedBuffer;
+    // Sortie audio : celle demandee (--output), sinon la sortie par defaut, sauf si c'est la
+    // Maschine en mode OSC (ses ecrans pris, sa carte son disparait) : on prend alors une autre.
+    {
+        juce::StringArray outputs;
+        if (auto* type = audio.getCurrentDeviceTypeObject())
+        {
+            type->scanForDevices();
+            outputs = type->getDeviceNames (false);
+        }
+        juce::String chosen = setup.outputDeviceName;
+        if (wantedOutput.isNotEmpty())
+        {
+            for (auto& name : outputs)
+                if (name.containsIgnoreCase (wantedOutput)) { chosen = name; break; }
+        }
+        else if (oscMode && (chosen.isEmpty() || chosen.containsIgnoreCase ("maschine")))
+        {
+            chosen = {};
+            for (auto& name : outputs)
+                if (! name.containsIgnoreCase ("maschine")) { chosen = name; break; }
+        }
+        if (chosen.isNotEmpty())
+            setup.outputDeviceName = chosen;
+    }
     audio.setAudioDeviceSetup (setup, true);
     audio.addAudioCallback (&engine);
 
@@ -369,7 +398,7 @@ int main (int argc, char* argv[])
     {
         std::this_thread::sleep_for (std::chrono::milliseconds (50));
         const int h = engine.hits.load();
-        if (h == seen) continue;
+        if (h == seen || quiet) continue;
         seen = h;
         const double wait = engine.lastWaitMs.load();
         // Estimation : attente dans le programme + un tampon + latence de sortie de la carte son
