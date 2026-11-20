@@ -86,13 +86,17 @@ void MaschineMk3::close()
     {
         if (claimed)
             libusb_release_interface (handle, kHidInterface);
+        if (displayClaimed)
+            libusb_release_interface (handle, kDisplayInterface);
+        if (displayDetached)
+            libusb_attach_kernel_driver (handle, kDisplayInterface);
         if (detached)
             libusb_attach_kernel_driver (handle, kHidInterface);
         libusb_close (handle);
         handle = nullptr;
     }
-    claimed = detached = false;
-    endpointIn = endpointOut = 0;
+    claimed = detached = displayClaimed = displayDetached = false;
+    endpointIn = endpointOut = endpointDisplay = 0;
     if (context != nullptr)
     {
         libusb_exit (context);
@@ -146,6 +150,60 @@ void MaschineMk3::readLoop()
                 onEvent (e);
     }
     running = false;
+}
+
+bool MaschineMk3::openDisplay (std::string& error)
+{
+    if (handle == nullptr)
+    {
+        error = "Maschine pas ouverte";
+        return false;
+    }
+    if (displayClaimed)
+        return true;
+    libusb_config_descriptor* cfg = nullptr;
+    if (libusb_get_active_config_descriptor (libusb_get_device (handle), &cfg) == 0)
+    {
+        for (int i = 0; i < cfg->bNumInterfaces; ++i)
+        {
+            const auto& alt = cfg->interface[i].altsetting[0];
+            if (alt.bInterfaceNumber != kDisplayInterface)
+                continue;
+            for (int e = 0; e < alt.bNumEndpoints; ++e)
+            {
+                const auto& ep = alt.endpoint[e];
+                if (! (ep.bEndpointAddress & LIBUSB_ENDPOINT_IN)
+                    && (ep.bmAttributes & 0x03) == LIBUSB_TRANSFER_TYPE_BULK)
+                    endpointDisplay = ep.bEndpointAddress;
+            }
+        }
+        libusb_free_config_descriptor (cfg);
+    }
+    if (! endpointDisplay)
+        endpointDisplay = 0x04;                       // valeur connue de la MK3
+    int rc = libusb_claim_interface (handle, kDisplayInterface);
+    if (rc != 0 && libusb_detach_kernel_driver (handle, kDisplayInterface) == 0)
+    {
+        displayDetached = true;
+        rc = libusb_claim_interface (handle, kDisplayInterface);
+    }
+    if (rc != 0)
+    {
+        error = std::string ("ecrans indisponibles (") + libusb_error_name (rc) + ")";
+        return false;
+    }
+    displayClaimed = true;
+    return true;
+}
+
+bool MaschineMk3::writeDisplay (const uint8_t* data, int length)
+{
+    if (! displayClaimed)
+        return false;
+    int done = 0;
+    const int rc = libusb_bulk_transfer (handle, endpointDisplay, const_cast<unsigned char*> (data),
+                                         length, &done, 2500);
+    return rc == 0 && done == length;
 }
 
 bool MaschineMk3::write (const uint8_t* data, int length)

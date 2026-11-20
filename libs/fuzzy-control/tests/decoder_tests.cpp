@@ -1,5 +1,6 @@
 // Tests du decodage MK3, sans materiel : on fabrique des rapports et on verifie les evenements.
 #include "fuzzy_control/decoder.h"
+#include "fuzzy_control/display.h"
 #include "fuzzy_control/lights.h"
 
 #include <cstdio>
@@ -120,6 +121,20 @@ int main()
            "rapport 0x80 : PLAY vif, bouton 6 doux, groupe A vif");
     leds.clear();
     check (leds.buttonFrame()[42] == 0 && leds.padFrame()[38] == 0, "tout eteindre");
+
+    // --- Ecrans ---
+    check (toRgb565 ({ 255, 255, 255 }) == 0xFFFF && toRgb565 ({ 0, 0, 0 }) == 0, "RGB565 : blanc et noir");
+    check (toRgb565 ({ 0, 128, 0 }, false) == (128 & 0xFC) << 3
+           && toRgb565 ({ 0, 128, 0 }, true) < toRgb565 ({ 0, 128, 0 }, false), "correction du vert");
+    Canvas a, b;
+    check (changedArea (a, b).empty(), "ecran identique : rien a envoyer");
+    a.fillRect (201, 50, 10, 3, kWhite);
+    const Rect zone = changedArea (a, b);
+    check (zone.x == 0 && zone.y == 50 && zone.w == 480 && zone.h == 3, "zone modifiee : lignes entieres");
+    const auto pkt = screenPacket (a, 1, zone);
+    check (pkt.size() == 16 + 4 + 4 + 480 * 3 * 2 + 12 && pkt[0] == 0x84 && pkt[2] == 1
+           && pkt[11] == 50 && pkt[12] == 1 && pkt[13] == 0xE0, "paquet d'image : en-tete et taille");
+    check (Canvas::textWidth ("ABC", 2) == 48 && a.text (0, 100, "A", kWhite) == 8, "texte 8 x 16");
 
     std::printf ("\n%s (%d echec%s)\n", failures ? "TESTS EN ECHEC" : "Tous les tests passent",
                  failures, failures > 1 ? "s" : "");

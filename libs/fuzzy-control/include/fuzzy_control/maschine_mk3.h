@@ -23,6 +23,7 @@ public:
     static constexpr uint16_t kProductMk3 = 0x1600;
     static constexpr uint16_t kProductPlus = 0x1820;
     static constexpr int kHidInterface = 4;
+    static constexpr int kDisplayInterface = 5;
 
     using Callback = std::function<void (const Event&)>;
 
@@ -45,8 +46,12 @@ public:
 
     Mk3Decoder& decoder() { return dec; }
 
-    // Envoie un rapport brut (LED : 0x80 boutons, 0x81 pads). Utilise a l'etape 2.
+    // Envoie un rapport brut (LED : 0x80 boutons, 0x81 pads).
     bool write (const uint8_t* data, int length);
+
+    // Ecrans : reserver l'interface 5 (apres open), puis envoyer des paquets d'image.
+    bool openDisplay (std::string& error);
+    bool writeDisplay (const uint8_t* data, int length);
 
 private:
     void readLoop();
@@ -54,7 +59,8 @@ private:
     libusb_context* context = nullptr;
     libusb_device_handle* handle = nullptr;
     unsigned char endpointIn = 0, endpointOut = 0;
-    bool claimed = false, detached = false;
+    unsigned char endpointDisplay = 0;
+    bool claimed = false, detached = false, displayClaimed = false, displayDetached = false;
     std::string product;
     Mk3Decoder dec;
     Callback onEvent;

@@ -11,8 +11,8 @@ Licence : GPLv3. Protocole MK3 repris du pilote Â« Maschine Zynthian Prototype Â
 | Etape | Contenu | Etat |
 | --- | --- | --- |
 | 1 | Connexion libusb, lecture des pads, boutons, encodeurs, molette 4D | valide le 20/11 |
-| 2 | Lumieres : pads, boutons, groupes (palette NI calibree) | en test |
-| 3 | Ecrans 480 x 272 : envoi d'images, zones modifiees, correction de couleur | a faire |
+| 2 | Lumieres : pads, boutons, groupes (palette NI calibree, LOCK = 24) | valide le 20/11 |
+| 3 | Ecrans 480 x 272 : envoi d'images, zones modifiees, correction de couleur | valide le 20/11 |
 | 4 | Calibration dans un fichier (boutons, lumieres) ; Maschine+ | a faire |
 
 ## Compiler et tester (Mac)
@@ -22,7 +22,8 @@ cd ~/Developer/fuzzy-turtle/libs/fuzzy-control
 cmake -S . -B build -G Ninja
 cmake --build build
 ./build/fuzzy-control-tests            # tests du decodage, sans Maschine
-sudo ./build/fuzzy-control-probe       # avec la Maschine : affiche tout ce que tu fais
+sudo ./build/fuzzy-control-probe       # avec la Maschine : evenements, lumieres, ecrans
+# options : --no-screens  --no-lights  --no-correction  --curve soft|softer|linear|hard
 ```
 
 `sudo` est necessaire sur macOS : prendre la Maschine retire le pilote Native Instruments
@@ -36,5 +37,8 @@ sudo ./build/fuzzy-control-probe       # avec la Maschine : affiche tout ce que 
   dans une tache a part (jamais retardee par l'interface).
 - `include/fuzzy_control/lights.h`, `src/lights.cpp` : lumieres (palette NI, emplacements
   calibres, envoi seulement de ce qui change).
-- `tools/probe.cpp` : outil de test sur le materiel (evenements + demo des lumieres).
+- `include/fuzzy_control/display.h`, `src/display.cpp` : ecrans (dessin en memoire, texte,
+  envoi des seules lignes modifiees, RGB565 avec correction du vert gamma 1,6).
+- `src/font8x16.h` : police 8 x 16 integree (glyphes DejaVu Sans Mono).
+- `tools/probe.cpp` : outil de test sur le materiel (evenements, lumieres, ecrans).
 - `tests/decoder_tests.cpp` : tests automatiques du decodage.
