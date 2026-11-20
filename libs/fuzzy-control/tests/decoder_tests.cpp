@@ -1,9 +1,11 @@
 // Tests du decodage MK3, sans materiel : on fabrique des rapports et on verifie les evenements.
 #include "fuzzy_control/decoder.h"
+#include "fuzzy_control/calibration.h"
 #include "fuzzy_control/display.h"
 #include "fuzzy_control/lights.h"
 
 #include <cstdio>
+#include <string>
 #include <cstdlib>
 #include <vector>
 
@@ -135,6 +137,47 @@ int main()
     check (pkt.size() == 16 + 4 + 4 + 480 * 3 * 2 + 12 && pkt[0] == 0x84 && pkt[2] == 1
            && pkt[11] == 50 && pkt[12] == 1 && pkt[13] == 0xE0, "paquet d'image : en-tete et taille");
     check (Canvas::textWidth ("ABC", 2) == 48 && a.text (0, 100, "A", kWhite) == 8, "texte 8 x 16");
+
+    // --- Calibration ---
+    {
+        const Calibration def = Calibration::mk3Defaults();
+        check (def.buttons.at ("play") == std::vector<int> { 45 } && def.buttons.at ("nav_next") == std::vector<int> { 50 } && def.lights.at ("lock").slot == 24
+               && def.lights.at ("screen_3").screenButton, "calibration MK3 par defaut");
+        std::string err;
+        const std::string path = "/tmp/fuzzy-control-test/sous-dossier/test.conf";
+        check (def.save (path, err), "calibration : enregistrement (dossiers crees)");
+        Calibration back;
+        back.buttons.clear();
+        back.lights.clear();
+        std::vector<std::string> warnings;
+        check (back.load (path, warnings) && warnings.empty() && back.buttons == def.buttons
+               && back.lights.size() == def.lights.size() && back.lights.at ("screen_3").screenButton
+               && back.groupHues == def.groupHues, "calibration : relecture identique");
+
+        std::FILE* f = std::fopen ("/tmp/fuzzy-control-test/edit.conf", "w");
+        std::fputs ("[controleur]\ncourbe_velocite = 1\n[boutons]\nplay = 60  # deplace\nstop = -\n"
+                    "rec = 99\n[lumieres]\nplay = 5\nbidule\n", f);
+        std::fclose (f);
+        Calibration edit = Calibration::mk3Defaults();
+        warnings.clear();
+        edit.load ("/tmp/fuzzy-control-test/edit.conf", warnings);
+        check (edit.buttons.at ("play") == std::vector<int> { 60 } && ! edit.buttons.count ("stop") && edit.buttons.at ("rec") == std::vector<int> { 46 }
+               && edit.lights.at ("play").slot == 5 && edit.velocityExponent == 1.0 && warnings.size() == 2,
+               "calibration : modifications, desactivation, lignes fausses signalees");
+
+        Mk3Decoder d2;
+        d2.applyCalibration (edit);
+        std::vector<Event> ev;
+        std::vector<uint8_t> rep (28, 0);
+        rep[0] = 0x01;
+        rep[1 + 60 / 8] = 1 << (60 % 8);
+        d2.parse (rep, ev);
+        check (ev.size() == 1 && ev[0].type == Event::Type::ButtonDown && std::string (ev[0].name) == "play",
+               "decodage avec calibration modifiee");
+        Mk3Lights l2 (edit);
+        l2.setButton ("play", Shade::Bright);
+        check (l2.buttonFrame()[1 + 5] == 7 && l2.buttonFrame()[1 + 41] == 0, "lumieres avec calibration modifiee");
+    }
 
     std::printf ("\n%s (%d echec%s)\n", failures ? "TESTS EN ECHEC" : "Tous les tests passent",
                  failures, failures > 1 ? "s" : "");

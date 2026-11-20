@@ -14,6 +14,7 @@ pkg_check_modules(LIBUSB REQUIRED IMPORTED_TARGET libusb-1.0)   # MacPorts : sud
 
 # Decodage des rapports (sans materiel : testable partout)
 add_library(fuzzy_control
+    src/calibration.cpp
     src/decoder.cpp
     src/display.cpp
     src/lights.cpp

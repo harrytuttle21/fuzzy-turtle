@@ -2,6 +2,7 @@
 // Protocole repris du pilote "Maschine Zynthian Prototype" r22yb3m (licence MIT) et
 // des calibrations faites sur une MK3 les 18-20/11/2026.
 #include "fuzzy_control/decoder.h"
+#include "fuzzy_control/calibration.h"
 
 #include <algorithm>
 #include <cmath>
@@ -22,6 +23,11 @@ constexpr ButtonDef kMk3Buttons[] = {
     { "restart", 41 }, { "tap", 43 }, { "follow", 44 }, { "play", 45 }, { "rec", 46 }, { "stop", 47 },
     { "nav_next", 50 }, { "mixer", 52 }, { "plug_in", 53 }, { "midi_channel", 56 },
     { "browser", 58 }, { "nav_prev", 59 },
+    // nommes le 20/11/2026
+    { "swing", 18 }, { "macro", 48 }, { "settings", 49 }, { "sampling", 51 }, { "arranger", 57 },
+    { "file", 60 }, { "auto", 61 }, { "pitch", 38 }, { "mod", 39 },
+    { "notes", 16 }, { "variation", 33 }, { "duplicate", 34 }, { "select", 35 }, { "perf_fx", 40 },
+    { "events", 31 }, { "erase", 42 }, { "fixed_vel", 28 },
     { "screen_3", 66 }, { "screen_5", 68 }, { "screen_6", 69 }, { "screen_7", 70 }, { "screen_8", 71 },
 };
 } // namespace
@@ -59,6 +65,17 @@ Mk3Decoder::Mk3Decoder (double velocityExponent) : exponent (velocityExponent)
         names[(size_t) b.bit] = b.name;
 }
 
+void Mk3Decoder::applyCalibration (const Calibration& c)
+{
+    for (auto& n : names)
+        n.clear();
+    for (const auto& [name, list] : c.buttons)
+        for (const int bit : list)
+            if (bit >= 0 && bit < kButtonBits)
+                names[(size_t) bit] = name;
+    exponent = c.velocityExponent;
+}
+
 void Mk3Decoder::parse (std::span<const uint8_t> r, std::vector<Event>& out)
 {
     if (r.empty())
@@ -84,9 +101,9 @@ void Mk3Decoder::buttons (std::span<const uint8_t> r, std::vector<Event>& out)
         if (pressed == bits[(size_t) bit])
             continue;
         bits[(size_t) bit] = pressed;
-        const char* name = names[(size_t) bit];
-        if (name != nullptr)
-            out.push_back ({ pressed ? Event::Type::ButtonDown : Event::Type::ButtonUp, bit, 0, name });
+        const std::string& name = names[(size_t) bit];
+        if (! name.empty())
+            out.push_back ({ pressed ? Event::Type::ButtonDown : Event::Type::ButtonUp, bit, 0, name.c_str() });
         else
             out.push_back ({ pressed ? Event::Type::UnknownDown : Event::Type::UnknownUp, bit, 0, "" });
     }

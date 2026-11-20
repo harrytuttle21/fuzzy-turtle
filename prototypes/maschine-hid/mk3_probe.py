@@ -34,7 +34,11 @@ CONTROL_BITS = {**{f'group_{chr(97+i)}': 8+i for i in range(8)},
                 'volume': 17, 'note_repeat': 20, 'lock': 21, 'follow': 44,     # VOLUME : bit suppose (avant TEMPO 19), a confirmer
                 # Molette 4D poussee dans une direction / cliquee (octet 1, pilote r22yb3m)
                 'nav_click': 0, 'nav_up': 2, 'nav_right': 3, 'nav_down': 4, 'nav_left': 5,
-                'step': 27}       # STEP : bit suppose (apres CHORDS 26), a confirmer   # bouton 5 au-dessus des ecrans (pilote r22yb3m)
+                'step': 27,
+                # nommes le 20/11/2026
+                'macro': 48, 'settings': 49, 'sampling': 51, 'arranger': 57, 'file': 60, 'auto': 61,
+                'swing': 18, 'pitch': 38, 'mod': 39,
+                'notes': 16, 'variation': 33, 'duplicate': 34, 'select': 35, 'perf_fx': 40, 'events': 31, 'erase': 42, 'fixed_vel': 28}       # STEP : bit suppose (apres CHORDS 26), a confirmer   # bouton 5 au-dessus des ecrans (pilote r22yb3m)
 
 def pad_number_for_id(pad_id: int) -> int:
     return (3 - pad_id // 4) * 4 + pad_id % 4 + 1

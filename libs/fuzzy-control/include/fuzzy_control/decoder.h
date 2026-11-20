@@ -11,6 +11,7 @@
 #include <cstdint>
 #include <optional>
 #include <span>
+#include <string>
 #include <vector>
 
 namespace fuzzy::control {
@@ -21,8 +22,10 @@ struct ButtonDef
     int bit;
 };
 
-// Boutons connus de la MK3 (valides sur le materiel les 18-20/11/2026).
-// L'etape 4 les mettra dans un fichier de calibration.
+struct Calibration;
+
+// Boutons connus de la MK3 (valides sur le materiel les 18-20/11/2026) : valeurs par
+// defaut ; un fichier de calibration peut les remplacer (calibration.h).
 std::span<const ButtonDef> mk3Buttons();
 
 int padNumberForId (int padId);                  // id du rapport -> pad 1-16 (1 = en bas a gauche)
@@ -38,6 +41,9 @@ public:
     // Decode un rapport et ajoute les evenements a la fin de `out`.
     void parse (std::span<const uint8_t> report, std::vector<Event>& out);
 
+    // Remplace les noms des boutons et la courbe. A appeler avant MaschineMk3::start().
+    void applyCalibration (const Calibration& calibration);
+
     void setVelocityExponent (double e) { exponent = e; }
     bool padDown (int pad) const { return pads[(size_t) pad]; }
 
@@ -49,7 +55,7 @@ private:
 
     double exponent;
     std::bitset<kButtonBits> bits;                 // etat des boutons
-    std::array<const char*, kButtonBits> names {}; // nom par bit (nullptr = inconnu)
+    std::array<std::string, kButtonBits> names {}; // nom par bit (vide = inconnu)
     std::array<std::optional<int>, 8> knobValue {};
     std::optional<int> jogValue;
     std::array<bool, 17> pads {};                  // pad tenu (index 1-16)

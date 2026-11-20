@@ -22,7 +22,6 @@ constexpr LightSlot kSlots[] = {
     { "step", 49, false }, { "scene", 50, false }, { "pattern", 51, false },
     { "solo", 56, false }, { "mute", 57, false },
 };
-constexpr int kGroupSlot = 29;   // groupes A-H : emplacements 29 a 36
 } // namespace
 
 uint8_t paletteColor (int hue, Shade shade)
@@ -44,7 +43,15 @@ std::optional<int> lightSlot (std::string_view button)
 
 int padLightSlot (int pad) { return 37 - 4 * ((pad - 1) / 4) + ((pad - 1) % 4); }
 
-Mk3Lights::Mk3Lights() { clear(); }
+Mk3Lights::Mk3Lights() : Mk3Lights (Calibration::mk3Defaults()) {}
+
+Mk3Lights::Mk3Lights (const Calibration& c) : cal (c) { clear(); }
+
+void Mk3Lights::applyCalibration (const Calibration& c)
+{
+    cal = c;
+    clear();
+}
 
 void Mk3Lights::clear()
 {
@@ -82,23 +89,22 @@ void Mk3Lights::setSlot (int slot, uint8_t value)
 void Mk3Lights::setGroup (int group, int hue, Shade shade)
 {
     if (group >= 0 && group < 8)
-        setSlot (kGroupSlot + group, paletteColor (hue, shade));
+        setSlot (cal.groupSlot + group, paletteColor (hue, shade));
 }
 
 bool Mk3Lights::setButton (std::string_view name, Shade level)
 {
-    for (const auto& s : kSlots)
-        if (s.name == name)
-        {
-            uint8_t v = 0;
-            if (level == Shade::Dim)
-                v = s.screenButton ? kScreenIdle : kButtonDim;
-            else if (level != Shade::Off)
-                v = s.screenButton ? kScreenActive : kButtonBright;
-            setSlot (s.slot, v);
-            return true;
-        }
-    return false;
+    const auto it = cal.lights.find (name);
+    if (it == cal.lights.end())
+        return false;
+    const bool screen = it->second.screenButton;
+    uint8_t v = 0;
+    if (level == Shade::Dim)
+        v = screen ? cal.screenIdle : cal.buttonDim;
+    else if (level != Shade::Off)
+        v = screen ? cal.screenActive : cal.buttonBright;
+    setSlot (it->second.slot, v);
+    return true;
 }
 
 int Mk3Lights::send (MaschineMk3& device)

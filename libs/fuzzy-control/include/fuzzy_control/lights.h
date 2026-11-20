@@ -4,6 +4,8 @@
 // Rapport 0x80 (63 octets) : boutons (niveaux) et boutons de groupe (indices de palette).
 // On ne renvoie un rapport a la Maschine que s'il a change.
 #pragma once
+#include "calibration.h"
+
 #include <array>
 #include <cstdint>
 #include <optional>
@@ -33,11 +35,15 @@ std::optional<int> lightSlot (std::string_view button);   // nom -> emplacement
 class Mk3Lights
 {
 public:
-    Mk3Lights();
+    Mk3Lights();                                          // calibration MK3 par defaut
+    explicit Mk3Lights (const Calibration& calibration);
+    void applyCalibration (const Calibration& calibration);
+    const Calibration& calibration() const { return cal; }
 
     void setPad (int pad, uint8_t paletteIndex);          // pad 1-16
     void setPad (int pad, int hue, Shade shade) { setPad (pad, paletteColor (hue, shade)); }
     void setGroup (int group, int hue, Shade shade);      // group 0-7 (A-H)
+    void setGroup (int group, Shade shade) { setGroup (group, cal.groupHues[(size_t) (group & 7)], shade); }
 
     // Bouton a une couleur : Off / Dim (disponible) / Bright (actif). Renvoie false si
     // le nom n'a pas d'emplacement de lumiere connu.
@@ -53,6 +59,7 @@ public:
     void forceResend() { padsDirty = buttonsDirty = true; }
 
 private:
+    Calibration cal;
     std::array<uint8_t, 42> pads {};
     std::array<uint8_t, 63> buttons {};
     bool padsDirty = true, buttonsDirty = true;

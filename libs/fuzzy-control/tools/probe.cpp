@@ -1,20 +1,30 @@
 // fuzzy-control-probe : outil de test de la bibliotheque sur la Maschine.
 //  - affiche tout ce que fait la Maschine (pads, boutons, encodeurs, molette 4D, inconnus) ;
 //  - lumieres : groupes dans leurs couleurs, pads vifs quand on les frappe, boutons connus ;
-//  - ecrans : gauche = groupe et pads ; droit = derniers evenements et vitesse d'affichage.
+//  - ecrans : gauche = groupe et pads ; droit = derniers evenements et vitesse d'affichage ;
+//  - calibration : lue dans ~/.config/fuzzy-turtle/maschine-mk3.conf (ou maschine-plus.conf).
 //
-// Usage : sudo ./build/fuzzy-control-probe [--curve soft|softer|linear|hard]
-//                                          [--no-lights] [--no-screens] [--no-correction]
+// Usage : sudo ./build/fuzzy-control-probe [options]
+//   --curve soft|softer|linear|hard   courbe de velocite (sinon celle du fichier)
+//   --no-lights --no-screens --no-correction
+//   --calibration FICHIER             autre fichier de calibration
+//   --save-calibration                ecrit le fichier (valeurs actuelles), pour l'editer
+//   --scan-lights                     cherche les lumieres : la molette 4D allume les
+//                                     emplacements un par un ; appuie sur le bouton qui
+//                                     s'allume pour l'enregistrer dans le fichier
+#include "fuzzy_control/calibration.h"
 #include "fuzzy_control/display.h"
 #include "fuzzy_control/lights.h"
 #include "fuzzy_control/maschine_mk3.h"
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <csignal>
 #include <cstdio>
 #include <cstring>
 #include <deque>
+#include <fstream>
 #include <mutex>
 #include <set>
 #include <string>
@@ -52,6 +62,21 @@ void drawLeft (Canvas& c, int group, const std::set<int>& down)
     }
 }
 
+void drawScan (Canvas& c, int slot, const std::string& owner, const std::string& last)
+{
+    c.fill ({ 10, 10, 14 });
+    c.fillRect (0, 0, Canvas::kWidth, 26, kFuzzyOrange);
+    c.text (8, 5, "RECHERCHE DES LUMIERES", kBlack);
+    const std::string big = "Emplacement " + std::to_string (slot);
+    c.text (240 - Canvas::textWidth (big, 3) / 2, 50, big, kWhite, 3);
+    c.text (8, 120, owner.empty() ? "(aucun bouton connu ici)" : "connu : " + owner, { 180, 180, 180 });
+    c.text (8, 160, "Molette 4D : emplacement suivant / precedent", kWhite);
+    c.text (8, 180, "Appuie sur le bouton qui s'allume pour", kWhite);
+    c.text (8, 196, "l'enregistrer (Ctrl+C : quitter et sauver)", kWhite);
+    if (! last.empty())
+        c.text (8, 236, last, kFuzzyOrange);
+}
+
 void drawRight (Canvas& c, int group, const std::deque<std::string>& log, const std::string& stats)
 {
     const Rgb acc = kGroupScreenColors[(size_t) group];
@@ -71,13 +96,17 @@ void drawRight (Canvas& c, int group, const std::deque<std::string>& log, const 
 
 int main (int argc, char* argv[])
 {
-    double exponent = 0.5;
-    bool lights = true, screens = true, correction = true;
+    double exponent = -1;                     // -1 : celle du fichier de calibration
+    bool lights = true, screens = true, correction = true, saveCal = false, scan = false;
+    std::string calPath;
     for (int i = 1; i < argc; ++i)
     {
         if (! std::strcmp (argv[i], "--no-lights")) lights = false;
         else if (! std::strcmp (argv[i], "--no-screens")) screens = false;
         else if (! std::strcmp (argv[i], "--no-correction")) correction = false;
+        else if (! std::strcmp (argv[i], "--save-calibration")) saveCal = true;
+        else if (! std::strcmp (argv[i], "--scan-lights")) scan = true;
+        else if (! std::strcmp (argv[i], "--calibration") && i + 1 < argc) calPath = argv[++i];
         else if (! std::strcmp (argv[i], "--curve") && i + 1 < argc)
         {
             const char* c = argv[++i];
@@ -99,9 +128,30 @@ int main (int argc, char* argv[])
         std::printf ("Ecrans : %s (on continue sans)\n", error.c_str());
         screens = false;
     }
-    maschine.decoder().setVelocityExponent (exponent);
-    std::printf ("%s ouverte. Joue avec les pads, boutons, encodeurs. Ctrl+C pour quitter.\n",
-                 maschine.productName().c_str());
+    // Calibration : valeurs par defaut du modele, puis le fichier s'il existe
+    Calibration cal = Calibration::defaultsFor (maschine.productName());
+    if (calPath.empty())
+        calPath = defaultCalibrationPath (maschine.productName());
+    std::vector<std::string> warnings;
+    if (cal.load (calPath, warnings))
+        std::printf ("Calibration : %s\n", calPath.c_str());
+    else
+        std::printf ("Calibration par defaut (%s n'existe pas encore ; --save-calibration le cree)\n",
+                     calPath.c_str());
+    for (const auto& w : warnings)
+        std::printf ("  ATTENTION %s\n", w.c_str());
+    if (exponent > 0)
+        cal.velocityExponent = exponent;
+    if (saveCal)
+    {
+        if (cal.save (calPath, error))
+            std::printf ("Calibration enregistree dans %s (modifiable avec un editeur de texte)\n", calPath.c_str());
+        else
+            std::printf ("Erreur : %s\n", error.c_str());
+    }
+    maschine.decoder().applyCalibration (cal);
+    std::printf ("%s ouverte. %s Ctrl+C pour quitter.\n", maschine.productName().c_str(),
+                 scan ? "Recherche des lumieres : tourne la molette 4D." : "Joue avec les pads, boutons, encodeurs.");
 
     std::mutex lock;
     std::vector<Event> pending;
@@ -111,7 +161,10 @@ int main (int argc, char* argv[])
         pending.push_back (e);
     }, error);
 
-    Mk3Lights leds;
+    Mk3Lights leds (cal);
+    int scanSlot = 0;
+    std::string scanLast;
+    bool scanChanged = false;
     Mk3Display display;
     display.setColorCorrection (correction);
     int group = 0;
@@ -146,7 +199,31 @@ int main (int argc, char* argv[])
             {
                 case Event::Type::PadOn:  padsDown.insert (e.id); break;
                 case Event::Type::PadOff: padsDown.erase (e.id); break;
+                case Event::Type::Jog:
+                    if (scan)
+                        scanSlot = (scanSlot + e.value + 62) % 62;
+                    break;
                 case Event::Type::ButtonDown:
+                    if (scan && std::strncmp (e.name, "group_", 6) == 0)
+                    {
+                        // groupe X allume : les 8 groupes commencent X emplacements plus tot
+                        cal.groupSlot = std::max (0, scanSlot - (e.name[6] - 'a'));
+                        leds.applyCalibration (cal);
+                        scanChanged = true;
+                        scanLast = "groupes a partir de " + std::to_string (cal.groupSlot) + " enregistre";
+                        std::printf ("  -> %s\n", scanLast.c_str());
+                    }
+                    else if (scan)
+                    {
+                        const auto old = cal.lights.find (e.name);
+                        const bool screenButton = old != cal.lights.end() ? old->second.screenButton
+                                                                          : std::strncmp (e.name, "screen_", 7) == 0;
+                        cal.lights[e.name] = { scanSlot, screenButton };
+                        leds.applyCalibration (cal);
+                        scanChanged = true;
+                        scanLast = std::string (e.name) + " = " + std::to_string (scanSlot) + " enregistre";
+                        std::printf ("  -> lumiere %s\n", scanLast.c_str());
+                    }
                     held.insert (e.name);
                     if (std::strncmp (e.name, "group_", 6) == 0)
                         group = e.name[6] - 'a';
@@ -160,11 +237,25 @@ int main (int argc, char* argv[])
             std::fflush (stdout);
         batch.clear();
 
-        if (lights)
+        if (lights && scan)
         {
-            const int hue = kDefaultGroupHues[(size_t) group];
+            bool screenSlot = false;
+            for (const auto& [name, l] : cal.lights)
+                screenSlot = screenSlot || (l.slot == scanSlot && l.screenButton);
+            const bool groupSlot = scanSlot >= cal.groupSlot && scanSlot < cal.groupSlot + 8;
+            for (int sl = 0; sl < 62; ++sl)       // seulement l'emplacement cherche
+                leds.setSlot (sl, sl != scanSlot ? 0
+                                  : groupSlot ? paletteColor (kWhiteHue, Shade::Bright)
+                                  : screenSlot ? cal.screenActive : cal.buttonBright);
+            for (int p = 1; p <= 16; ++p)
+                leds.setPad (p, (uint8_t) 0);
+            leds.send (maschine);
+        }
+        else if (lights)
+        {
+            const int hue = cal.groupHues[(size_t) group];
             for (int g = 0; g < 8; ++g)
-                leds.setGroup (g, kDefaultGroupHues[(size_t) g], g == group ? Shade::Bright : Shade::Dim);
+                leds.setGroup (g, g == group ? Shade::Bright : Shade::Dim);
             for (int p = 1; p <= 16; ++p)
                 leds.setPad (p, hue, padsDown.count (p) ? Shade::Bright : Shade::Dim);
             for (const char* b : kDemoButtons)
@@ -175,7 +266,18 @@ int main (int argc, char* argv[])
         // Ecrans : au plus 30 images/s, et seulement si quelque chose a change
         if (screens && dirty && Clock::now() - lastFrame >= std::chrono::milliseconds (33))
         {
-            drawLeft (display.screen (0), group, padsDown);
+            if (scan)
+            {
+                std::string owner;
+                for (const auto& [name, l] : cal.lights)
+                    if (l.slot == scanSlot)
+                        owner += (owner.empty() ? "" : ", ") + name;
+                if (scanSlot >= cal.groupSlot && scanSlot < cal.groupSlot + 8)
+                    owner = std::string ("groupe ") + (char) ('A' + scanSlot - cal.groupSlot);
+                drawScan (display.screen (0), scanSlot, owner, scanLast);
+            }
+            else
+                drawLeft (display.screen (0), group, padsDown);
             drawRight (display.screen (1), group, log, stats);
             const auto s0 = Clock::now();
             const long bytes = display.send (maschine);
@@ -213,6 +315,13 @@ int main (int argc, char* argv[])
         display.send (maschine);
     }
     maschine.close();
+    if (scanChanged)
+    {
+        if (cal.save (calPath, error))
+            std::printf ("\nLumieres trouvees enregistrees dans %s\n", calPath.c_str());
+        else
+            std::printf ("\nErreur : %s\n", error.c_str());
+    }
     std::printf ("\nMaschine liberee. Ecrans : %d images, %.1f ms en moyenne, %ld Ko envoyes.\n",
                  frames, frames ? sendMsTotal / frames : 0.0, bytesTotal / 1024);
     return 0;

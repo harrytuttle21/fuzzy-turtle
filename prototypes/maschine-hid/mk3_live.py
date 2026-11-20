@@ -21,9 +21,9 @@ Modes, comme sur Maschine :
   Bouton 7      (Keyboard / Chords) LINK : chaque groupe a sa tonalite (root, octave, gamme) ;
                 bouton 7 puis boutons de groupe = lier des groupes (ils partagent la tonalite) ;
                 Shift + 7 = tous les groupes / aucun ; bouton 7 = termine
-  Shift + MIDI  SETTINGS > COLORS : encodeur 1 cible GROUP / PADS ; GROUP : pad n = couleur n ;
+  SETTINGS      SETTINGS > COLORS : encodeur 1 cible GROUP / PADS ; GROUP : pad n = couleur n ;
                 PADS : choisir des pads puis encodeur 2 = leur couleur, Shift + pad = couleur du
-                groupe ; Shift + MIDI a nouveau = fermer : bouton 5 YES (sauvegarde dans
+                groupe ; SETTINGS a nouveau = fermer : bouton 5 YES (sauvegarde dans
                 fuzzy_settings.json) / bouton 6 NO (retour aux couleurs d'avant)
   FOLLOW        l'affichage suit (ou non) la lecture
   NOTE REPEAT   un appui : marche (menu sur l'ecran gauche), un 2e appui : arret ;
@@ -1363,7 +1363,7 @@ def handle(st: State, ev: tuple) -> None:
                     st.linked = set(GROUPS)
             else:
                 st.link_edit = not st.link_edit      # 7 : choisir les groupes lies
-        elif name == 'midi_channel' and 'shift' in st.held:   # Shift + MIDI : SETTINGS
+        elif name == 'settings':                     # SETTINGS : menus de configuration
             if not st.settings:
                 st.settings, st.set_confirm = True, False
                 st.set_backup = (dict(st.group_hue), dict(st.pad_hue))
@@ -1685,7 +1685,7 @@ BUTTON_SLOTS = {'tempo': 23, 'play': 41, 'rec': 42, 'stop': 43, 'shift': 44, 'pa
                 'mute': 57, 'solo': 56,
                 'mixer': 3, 'volume': 20,  # MIXER / VOLUME : emplacements supposes (21 = SWING)
                 'screen_3': 14, 'screen_5': 16, 'screen_6': 17, 'screen_7': 18, 'screen_8': 19,
-                'midi_channel': 0, 'follow': 40, 'note_repeat': 22, 'lock': 24}
+                'midi_channel': 0, 'settings': 9, 'follow': 40, 'note_repeat': 22, 'lock': 24}
                 # LOCK : emplacement suppose (apres TEMPO 23) ; verifier avec --led-scan
                 # FOLLOW et NOTE REPEAT : emplacements de lumiere supposes, a confirmer   # SOLO : emplacement suppose (a cote de MUTE), a confirmer   # STEP : emplacement suppose (apres CHORDS 48), a confirmer
 SCREEN_IDLE, SCREEN_ACTIVE = 12, 50     # niveaux des boutons d'ecran (pilote r22yb3m)
@@ -1718,7 +1718,7 @@ def available_buttons(st: State) -> set:
     """Boutons qui ont une fonction dans le mode en cours (les autres restent eteints)."""
     on = {'play', 'rec', 'stop', 'shift', 'pad_mode', 'keyboard', 'chords', 'step', 'mixer',
           'volume', 'tempo', 'mute', 'solo', 'follow', 'note_repeat'}
-    on.add('midi_channel')                             # Shift + MIDI : SETTINGS
+    on.add('settings')                                 # SETTINGS : couleurs (et futurs reglages)
     if st.nr_on:
         on.add('lock')                                 # LOCK : utile quand Note Repeat tourne
     if st.set_confirm:
@@ -1748,7 +1748,7 @@ def button_frame(st: State) -> bytes:
               'mute': bool(st.muted), 'solo': bool(st.solo),
               'mixer': st.mixer, 'volume': False, 'screen_3': st.tracker16,
               'screen_8': st.user_edit, 'screen_7': st.link_edit,
-              'midi_channel': st.settings, 'follow': st.follow,
+              'settings': st.settings, 'follow': st.follow,
               'note_repeat': st.nr_active, 'lock': st.nr_lock,
               'screen_5': False, 'screen_6': False}
     for name in available_buttons(st):
