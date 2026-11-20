@@ -28,7 +28,8 @@ constexpr ButtonDef kMk3Buttons[] = {
     { "file", 60 }, { "auto", 61 }, { "pitch", 38 }, { "mod", 39 },
     { "notes", 16 }, { "variation", 33 }, { "duplicate", 34 }, { "select", 35 }, { "perf_fx", 40 },
     { "events", 31 }, { "erase", 42 }, { "fixed_vel", 28 },
-    { "screen_3", 66 }, { "screen_5", 68 }, { "screen_6", 69 }, { "screen_7", 70 }, { "screen_8", 71 },
+    { "screen_1", 64 }, { "screen_2", 65 }, { "screen_3", 66 }, { "screen_4", 67 },
+    { "screen_5", 68 }, { "screen_6", 69 }, { "screen_7", 70 }, { "screen_8", 7 }, { "screen_8", 71 },   // bouton 8 : bit 7 (20/11) ; 71 garde au cas ou
 };
 } // namespace
 

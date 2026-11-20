@@ -1,5 +1,6 @@
 // fuzzy-control : lumieres de la Maschine MK3.
-// Emplacements repris du pilote r22yb3m (MIT) et calibres sur une MK3 les 18-20/11/2026.
+// Emplacements repris du pilote r22yb3m (MIT) et calibres sur une MK3 les 18-20/11/2026
+// (recherche --scan-lights du 20/11 pour les boutons du haut, PITCH a NOTES, ERASE, etc.).
 #include "fuzzy_control/lights.h"
 #include "fuzzy_control/maschine_mk3.h"
 
@@ -8,19 +9,23 @@ namespace fuzzy::control {
 namespace {
 // screenButton = true : niveaux kScreenIdle / kScreenActive ; sinon kButtonDim / kButtonBright
 constexpr LightSlot kSlots[] = {
-    { "midi_channel", 0, false }, { "plug_in", 1, false }, { "mixer", 3, false },
-    { "browser", 4, false }, { "nav_prev", 6, false }, { "nav_next", 7, false },
-    { "settings", 9, false },
+    { "midi_channel", 0, false }, { "plug_in", 1, false }, { "arranger", 2, false },
+    { "mixer", 3, false }, { "browser", 4, false }, { "sampling", 5, false },
+    { "nav_prev", 6, false }, { "nav_next", 7, false }, { "file", 8, false },
+    { "settings", 9, false }, { "auto", 10, false }, { "macro", 11, false },
     { "screen_1", 12, true }, { "screen_2", 13, true }, { "screen_3", 14, true },
     { "screen_4", 15, true }, { "screen_5", 16, true }, { "screen_6", 17, true },
     { "screen_7", 18, true }, { "screen_8", 19, true },
     { "volume", 20, false }, { "swing", 21, false }, { "note_repeat", 22, false },
     { "tempo", 23, false }, { "lock", 24, false },
-    { "restart", 37, false }, { "tap", 39, false }, { "follow", 40, false },
+    { "pitch", 25, false }, { "mod", 26, false }, { "perf_fx", 27, false }, { "notes", 28, false },
+    { "restart", 37, false }, { "erase", 38, false }, { "tap", 39, false }, { "follow", 40, false },
     { "play", 41, false }, { "rec", 42, false }, { "stop", 43, false }, { "shift", 44, false },
+    { "fixed_vel", 45, false },
     { "pad_mode", 46, false }, { "keyboard", 47, false }, { "chords", 48, false },
     { "step", 49, false }, { "scene", 50, false }, { "pattern", 51, false },
-    { "solo", 56, false }, { "mute", 57, false },
+    { "events", 52, false }, { "variation", 53, false }, { "duplicate", 54, false },
+    { "select", 55, false }, { "solo", 56, false }, { "mute", 57, false },
 };
 } // namespace
 

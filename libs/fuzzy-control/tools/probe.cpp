@@ -40,7 +40,8 @@ std::atomic<bool> gRunning { true };
 const char* kDemoButtons[] = { "play", "rec", "stop", "shift", "pad_mode", "keyboard", "chords",
                                "step", "mute", "solo", "tempo", "volume", "note_repeat", "lock",
                                "follow", "mixer", "midi_channel", "nav_prev", "nav_next",
-                               "screen_3", "screen_5", "screen_6", "screen_7", "screen_8" };
+                               "screen_1", "screen_2", "screen_3", "screen_4",
+                               "screen_5", "screen_6", "screen_7", "screen_8" };
 
 Rgb shade (Rgb c, double k) { return { (uint8_t) (c.r * k), (uint8_t) (c.g * k), (uint8_t) (c.b * k) }; }
 
