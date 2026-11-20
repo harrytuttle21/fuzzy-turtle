@@ -1,5 +1,6 @@
 // Tests du decodage MK3, sans materiel : on fabrique des rapports et on verifie les evenements.
 #include "fuzzy_control/decoder.h"
+#include "fuzzy_control/lights.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -101,6 +102,24 @@ int main()
     dec.parse (r, ev);
     check (ev.size() == 1 && ev[0].value == 2, "molette : 15 -> 1 = +2");
     ev.clear();
+
+    // --- Lumieres ---
+    check (paletteColor (1, Shade::Dim) == 9 && paletteColor (1, Shade::Bright) == 10
+           && paletteColor (1, Shade::Off) == 0, "palette : groupe A rouge = 9 / 10");
+    check (paletteColor (kWhiteHue, Shade::Dim) == 69, "palette : blanc doux = 69");
+    check (padLightSlot (1) == 37 && padLightSlot (16) == 28, "emplacements des pads");
+    Mk3Lights leds;
+    leds.setPad (1, 30);
+    leds.setGroup (0, 1, Shade::Bright);
+    check (leds.setButton ("play", Shade::Bright) && leds.setButton ("screen_6", Shade::Dim)
+           && ! leds.setButton ("inconnu", Shade::Dim), "boutons connus / inconnu");
+    const auto pf = leds.padFrame();
+    const auto bf = leds.buttonFrame();
+    check (pf[0] == 0x81 && pf[38] == 30, "rapport 0x81 : pad 1");
+    check (bf[0] == 0x80 && bf[42] == kButtonBright && bf[18] == kScreenIdle && bf[30] == 10,
+           "rapport 0x80 : PLAY vif, bouton 6 doux, groupe A vif");
+    leds.clear();
+    check (leds.buttonFrame()[42] == 0 && leds.padFrame()[38] == 0, "tout eteindre");
 
     std::printf ("\n%s (%d echec%s)\n", failures ? "TESTS EN ECHEC" : "Tous les tests passent",
                  failures, failures > 1 ? "s" : "");
