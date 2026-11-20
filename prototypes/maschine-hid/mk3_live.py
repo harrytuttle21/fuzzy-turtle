@@ -21,9 +21,22 @@ Modes, comme sur Maschine :
   Bouton 7      (Keyboard / Chords) LINK : chaque groupe a sa tonalite (root, octave, gamme) ;
                 bouton 7 puis boutons de groupe = lier des groupes (ils partagent la tonalite) ;
                 Shift + 7 = tous les groupes / aucun ; bouton 7 = termine
-  SETTINGS      SETTINGS > COLORS : encodeur 1 cible GROUP / PADS ; GROUP : pad n = couleur n ;
+  PATTERN       pads = 16 patterns du groupe (64 : 4 banques, < > ou encodeur 2) ; vide eteint,
+                plein doux, choisi vif, suivant clignote ; en lecture, le changement se fait a la
+                fin du pattern ; DUPLICATE + pad = copier le pattern choisi ici ; ERASE + pad =
+                effacer ; encodeur 1 = banque, encodeur 8 = longueur (comme en vue TRACKER ;
+                affichee en bas a droite de l'ecran droit).
+  SETTINGS      4 onglets, boutons 1-4 : AUDIO / MIDI / COLOR / STATUS (MIDI ouvre directement
+                l'onglet MIDI). SETTINGS a nouveau = fermer : bouton 5 YES / bouton 6 NO.
+                COLOR : encodeur 1 cible GROUP / PADS ; GROUP : pad n = couleur n ;
                 PADS : choisir des pads puis encodeur 2 = leur couleur, Shift + pad = couleur du
-                groupe ; SETTINGS a nouveau = fermer : bouton 5 YES (sauvegarde dans
+                groupe.
+                STATUS : etat (controleur, ecrans, agent NI, carte son, moteur, calibration,
+                autres logiciels) ; bouton 5 = verifier ; Shift + 8 = quitter et rendre a NI.
+                AUDIO : 1 sortie, 2 carte son Maschine ON/OFF, 3 frequence, 4 tampon, 5 entree
+                (pour le sampling, plus tard) ; applique apres 1 s ; les pads jouent pour tester.
+                MIDI : 1 port IN, 2 mode IN (OMNI / CH>GROUP), 3 port OUT, 4 canal OUT du groupe
+                (Internal = moteur interne), 5 horloge OFF/SEND/RECEIVE, 6 Start/Stop, 7 Thru : bouton 5 YES (sauvegarde dans
                 fuzzy_settings.json) / bouton 6 NO (retour aux couleurs d'avant)
   FOLLOW        l'affichage suit (ou non) la lecture
   NOTE REPEAT   un appui : marche (menu sur l'ecran gauche), un 2e appui : arret ;
@@ -59,29 +72,34 @@ Commandes :
                            6 root, 8 octave ;
                            Shift + pad 13 / 14 : root -/+ ; Shift + pad 15 / 16 : octave -/+
 
-Son : le moteur C++ (prototypes/pad-sound) est demarre automatiquement apres la prise de la
-      Maschine, sur une sortie autre que la Maschine (--output "nom" pour l'imposer,
-      --no-sound pour s'en passer). Lancement en une commande : prototypes/start.sh
+Son : le moteur C++ (prototypes/pad-sound) est demarre automatiquement, sur la sortie choisie
+      dans SETTINGS > AUDIO (la Maschine elle-meme est possible : sa carte son reste
+      disponible ; --output "nom" pour l'imposer, --no-sound pour s'en passer).
+      Lancement en une commande : prototypes/start.sh
       Ancienne methode, moteur a la main dans un autre terminal :
          prototypes/pad-sound/build/fuzzy_pad_sound_artefacts/Release/fuzzy_pad_sound --osc
       mk3_live.py lui envoie chaque note par OSC (port 57390). Sans moteur : interface muette.
 
-Usage :  sudo "$(which python3)" mk3_live.py
+Usage :  python3 mk3_live.py              (sans sudo depuis le 20/11/2026)
          python3 mk3_live.py --preview     (sans Maschine : enregistre des PNG)
-A la fin : debrancher / rebrancher la Maschine pour rendre les ecrans au pilote NI.
-Necessite mk3_probe.py et mk3_screens.py dans le meme dossier (hidapi n'est pas utilise ici).
+Acces a la Maschine (mode partage) : pads / boutons / lumieres a travers le pilote HID du
+systeme (hidapi), ecrans seuls par libusb (interface 5). Rien n'est detache. Sur macOS, l'agent
+NI (NIHostIntegrationAgent) tient les ecrans : il est mis en pause au demarrage et relance en
+quittant (la Maschine revient au logiciel NI sans debrancher).
+Necessite mk3_probe.py et mk3_screens.py dans le meme dossier ; pip install hidapi pillow.
 """
 from __future__ import annotations
-import argparse, json, os, queue, random, signal, socket, struct, subprocess, sys, threading, time
+import argparse, atexit, json, os, queue, random, signal, socket, struct, subprocess, sys, threading, time
 from pathlib import Path
 
 from PIL import Image, ImageDraw
 
-from mk3_probe import Decoder, CURVES, pad_led_frame
+from mk3_probe import Decoder, CURVES, pad_led_frame, VID, PID_MK3, PID_PLUS
 from maschine_chord_sets import MACHINE_CHORD_SET_SOURCES   # 16 Chord Sets (pilote r22yb3m, MIT)
 from mk3_screens import Screens, Preview, MK3Error, W, H, font, header
 
 ROWS, VISIBLE = 64, 11          # ROWS = longueur maximale d'un pattern
+PAT_SLOTS, PAT_BANKS = 64, 4    # 64 patterns par groupe : 4 banques de 16 (mode PATTERN)
 NOTES = ['C-', 'C#', 'D-', 'D#', 'E-', 'F-', 'F#', 'G-', 'G#', 'A-', 'A#', 'B-']
 DRUMS = ['Kick', 'Snare', 'Closed HH', 'Open HH']        # sons 1-4 du moteur JUCE ; 5-16 = notes
 OSC_PORT = 57390                                      # fuzzy_pad_sound --osc
@@ -117,6 +135,21 @@ class Sound:
             pass
 
 
+    def send(self, address: str, *args) -> None:
+        """Message OSC quelconque vers le moteur (entiers, decimaux, textes)."""
+        tags, body = ',', b''
+        for a in args:
+            if isinstance(a, (bool, int)):
+                tags, body = tags + 'i', body + struct.pack('>i', int(a))
+            elif isinstance(a, float):
+                tags, body = tags + 'f', body + struct.pack('>f', a)
+            else:
+                tags, body = tags + 's', body + self._pad4(str(a).encode())
+        try:
+            self.sock.sendto(self._pad4(address.encode()) + self._pad4(tags.encode()) + body, self.addr)
+        except OSError:
+            pass
+
     def panic(self) -> None:
         """Coupe tous les sons du moteur (Shift + MUTE)."""
         try:
@@ -128,6 +161,12 @@ class Sound:
 SOUND = Sound()
 PARAMS = ['Volume', 'Pan', 'Pitch', 'Cutoff']
 GROUPS = 'ABCDEFGH'
+SET_TABS = ('AUDIO', 'MIDI', 'COLOR', 'STATUS')      # boutons 1-4 dans SETTINGS (20/11)
+DEFAULT_AUDIO = {'output': '', 'maschine_audio': True, 'rate': 0, 'buffer': 96, 'input': ''}
+DEFAULT_MIDI = {'in': '', 'in_mode': 'OMNI', 'out': '', 'clock': 0, 'transport': True, 'thru': False}
+CLOCK_MODES = ('OFF', 'SEND', 'RECEIVE')
+BUFFERS = (32, 64, 96, 128, 192, 256, 512)
+ENGINE_REPLY_PORT = 57391                             # le moteur renvoie son etat ici
 # Gammes rangees en banques, comme sur Maschine (formules de degres du manuel MK3).
 _BANKS = {
     'Main': [('Chromatic', '1 b2 2 b3 3 4 b5 5 b6 6 b7 7'), ('Major', '1 2 3 4 5 6 7'),
@@ -252,6 +291,10 @@ def load_settings(st) -> None:
         for key, h in data.get('pad_hue', {}).items():
             g, p = key.split(':')
             st.pad_hue[(g, int(p))] = int(h)
+        st.audio.update({k: v for k, v in data.get('audio', {}).items() if k in DEFAULT_AUDIO})
+        midi = data.get('midi', {})
+        st.midi.update({k: v for k, v in midi.items() if k in DEFAULT_MIDI})
+        st.midi['out_ch'].update({g: int(c) for g, c in midi.get('out_ch', {}).items() if g in GROUPS})
     except (OSError, ValueError, KeyError, TypeError, AttributeError):
         pass
 
@@ -261,7 +304,8 @@ def save_settings(st) -> None:
         SETTINGS_FILE.write_text(json.dumps({
             'group_hue': st.group_hue,
             'pad_hue': {f'{g}:{p}': h for (g, p), h in st.pad_hue.items() if h is not None},
-            'keys': st.keys, 'linked': sorted(st.linked)},
+            'keys': st.keys, 'linked': sorted(st.linked),
+            'audio': st.audio, 'midi': st.midi},
             indent=1))
     except OSError as e:
         print('Sauvegarde des reglages impossible :', e)
@@ -318,6 +362,17 @@ class State:
             demo[r][1] = (60, 0x70)                            # Snare
         for r in (2, 6, 14):
             demo[r][2] = (60, 0x50)                            # Closed HH
+        # Patterns (bouton PATTERN) : 64 par groupe ; st.grids[g] = le pattern choisi du groupe
+        self.patterns = {g: [None] * PAT_SLOTS for g in GROUPS}
+        for g in GROUPS:
+            self.patterns[g][0] = {'grid': self.grids[g], 'length': 32}
+        self.pat_index = {g: 0 for g in GROUPS}                # pattern choisi par groupe
+        self.pat_queue: dict[str, int] = {}                    # changement a la fin du pattern
+        self.pat_start = {g: 0 for g in GROUPS}                # debut du pattern (compteur)
+        self.pattern_mode = False
+        self.pat_bank = 0
+        self.pat_knobs = {0: Knob(40), 7: Knob(12)}           # 1 banque, 8 longueur
+        self.len_flash = 0.0                                   # affichage LENGTH (encodeur 8)
         self.muted: set[str] = set()                           # MUTE + groupe
         self.solo: set[str] = set()                            # SOLO + groupe(s)
         self.undo_stack: list = []                             # Shift + pad 3 / 4
@@ -361,6 +416,29 @@ class State:
         self.nr_knobs = {0: Knob(30), 1: Knob(40), 2: Knob(35), 3: Knob(40)}
         self.set_confirm = False                     # Settings : sauvegarder ? oui / non
         self.set_backup = None
+        # SETTINGS : onglets COLOR / MASCHINE / AUDIO / MIDI (boutons 1-4 au-dessus des ecrans)
+        self.set_tab = 'AUDIO'
+        self.device_info = ('Maschine MK3', '?')     # modele, firmware
+        self.ni_paused = False
+        self.exclusive = False
+        self.status: list = []                       # onglet MASCHINE : (libelle, valeur, ok)
+        self.status_time = 0.0
+        self.quit_request = False                    # Shift + bouton 8 (MASCHINE) : rendre a NI
+        self.audio = dict(DEFAULT_AUDIO)             # reglages AUDIO (enregistres)
+        self.midi = {**DEFAULT_MIDI, 'out_ch': {g: 0 for g in GROUPS}}
+        self.audio_state: dict = {}                  # etat renvoye par le moteur
+        self.midi_state: dict = {}
+        self.audio_pending = self.midi_pending = 0.0 # reglage a envoyer au moteur (heure du changement)
+        self.engine_synced = False                   # reglages enregistres envoyes au demarrage
+        self.audio_knobs = {i: Knob(40) for i in range(5)}
+        self.midi_knobs = {i: Knob(40) for i in range(7)}
+        self.midi_in_flash = self.midi_out_flash = 0.0
+        self.card_types: dict[str, str] = {}         # carte son -> USB / Built-in / ... (macOS)
+        self.audio_fallback = ''                     # sortie de secours si la carte choisie manque
+        self.audio_notice = ''                       # message sur l'ecran AUDIO
+        self.audio_action = 0.0                      # dernier changement automatique de sortie
+        self.keep_output = False                     # --output impose
+        self.known_cards: tuple = ()
         self.held_play: dict[int, tuple[float, int, list]] = {}   # pad -> (frappe, velo, notes)
         self.nr_next = 0.0
         self.arp_index = 0
@@ -427,6 +505,15 @@ class State:
     def grid(self):
         """Le pattern du groupe choisi."""
         return self.grids[self.group]
+
+    @property
+    def length(self) -> int:
+        """Longueur (lignes) du pattern choisi du groupe choisi."""
+        return self.patterns[self.group][self.pat_index[self.group]]['length']
+
+    @length.setter
+    def length(self, value: int) -> None:
+        self.patterns[self.group][self.pat_index[self.group]]['length'] = value
 
     def audible(self, g: str) -> bool:
         """Un groupe joue s'il n'est pas coupe et, si un Solo existe, s'il en fait partie."""
@@ -505,7 +592,71 @@ class State:
         return DRUMS[s - 1] if s <= 4 else f'Note {note_name(default_note(s))}'
 
 
-# --- Pads / boutons / LED par libusb ---------------------------------------------
+# --- Pads / boutons / LED par hidapi (mode partage, sans sudo) ----------------------
+class HidDev:
+    """Pads / boutons / LED a travers le pilote HID du systeme : rien n'est detache,
+    la carte son de la Maschine reste disponible, pas besoin de sudo."""
+
+    def __init__(self):
+        try:
+            import hid
+        except ImportError:
+            raise MK3Error('Module hidapi absent : python3 -m pip install hidapi')
+        found = [d for d in hid.enumerate(VID, 0) if d['product_id'] in (PID_MK3, PID_PLUS)]
+        cands = [d for d in found if d.get('interface_number') == HID_INTERFACE] or found
+        if not cands:
+            raise MK3Error('Maschine introuvable (branchee et allumee ?)')
+        info = cands[0]
+        self.product = 'Maschine+' if info['product_id'] == PID_PLUS else 'Maschine MK3'
+        rel = info.get('release_number', 0) or 0
+        self.firmware = f'{rel >> 8:x}.{rel & 0xFF:02x}' if rel else '?'
+        self.dev = hid.device()
+        try:
+            self.dev.open_path(info['path'])
+        except OSError as e:
+            raise MK3Error(f'Pads indisponibles ({e}) : un autre programme a-t-il pris la Maschine ?')
+
+    def read(self, timeout_ms: int = 50) -> bytes:
+        data = self.dev.read(64, timeout_ms)
+        return bytes(data) if data else b''
+
+    def write(self, report: bytes) -> None:
+        self.dev.write(report)
+
+    def close(self) -> None:
+        self.dev.close()
+
+
+# --- Agent Native Instruments (macOS) : il tient les ecrans ---------------------------
+NI_AGENT_APP = '/Library/Application Support/Native Instruments/Hardware/NIHostIntegrationAgent.app'
+
+
+def ni_agent_running() -> bool:
+    if sys.platform != 'darwin':
+        return False
+    return subprocess.run(['pgrep', '-x', 'NIHostIntegrationAgent'],
+                          capture_output=True).returncode == 0
+
+
+def ni_agent_pause() -> bool:
+    """Arrete l'agent NI (il repart avec ni_agent_resume, ou au prochain demarrage du Mac)."""
+    if not ni_agent_running():
+        return False
+    subprocess.run(['killall', 'NIHostIntegrationAgent'], capture_output=True)
+    for _ in range(20):
+        if not ni_agent_running():
+            break
+        time.sleep(0.1)
+    time.sleep(0.3)                                    # le temps que l'interface se libere
+    return True
+
+
+def ni_agent_resume() -> None:
+    subprocess.run(['open', '-g', NI_AGENT_APP], capture_output=True)
+    print('Agent Native Instruments relance : la Maschine revient au logiciel NI.')
+
+
+# --- Ancien acces exclusif par libusb (--exclusive, sudo) ---------------------------------
 # Sur macOS, liberer l'ecran (--detach) prend toute la Maschine au pilote NI :
 # hidapi ne peut plus l'ouvrir. On lit donc aussi les pads par libusb, sur la
 # meme connexion que les ecrans (interface 4).
@@ -683,14 +834,71 @@ def draw_mixer(st: State, half: int) -> Image.Image:
     return img
 
 
+# --- SETTINGS : 4 onglets (boutons 1-4) ---------------------------------------------
+def tab_bar(d: ImageDraw.ImageDraw, st: State) -> None:
+    """Onglets COLOR / MASCHINE / AUDIO / MIDI sous les boutons 1-4."""
+    for k, tab in enumerate(SET_TABS):
+        softkey(d, st, k, tab, st.set_tab == tab)
+
+
+def param_box(d: ImageDraw.ImageDraw, slot: int, name: str, value: str, acc, y: int = 150,
+              dim: bool = False) -> None:
+    """Case d'un reglage, sous l'encodeur `slot` (0-3) de cet ecran."""
+    x = slot * 120
+    rounded(d, (x + 6, y, x + 114, y + 86), fill=(24, 24, 32), outline=shade(acc, 0.6))
+    d.text((x + 14, y + 8), name, font=font(13), fill=(160, 160, 160))
+    f = font(16)
+    while value and d.textlength(value, font=f) > 96:   # couper pour rester dans la case
+        value = value[:-2] + '.'
+    d.text((x + 14, y + 40), value, font=f, fill=(90, 90, 90) if dim else 'white')
+
+
+def dot(d: ImageDraw.ImageDraw, x: int, y: int, state) -> None:
+    """Temoin : vert = OK, rouge = probleme, orange = a surveiller / information."""
+    color = {True: (40, 200, 90), False: (220, 50, 50)}.get(state, (240, 160, 30))
+    d.ellipse((x, y, x + 12, y + 12), fill=color)
+
+
+def short(name: str, n: int = 34) -> str:
+    return name if len(name) <= n else name[:n - 1] + '.'
+
+
+def audio_outputs(st: State) -> list:
+    outs = st.audio_state.get('outputs', [])
+    if not st.audio['maschine_audio']:
+        outs = [o for o in outs if 'maschine' not in o.lower()]
+    return outs
+
+
 def draw_settings(st: State, half: int) -> Image.Image:
-    """SETTINGS > COLORS : gauche = reglages, droite = les 16 pads en couleur."""
     acc = group_rgb(st)
     img = Image.new('RGB', (W, H), (10, 10, 14))
     d = ImageDraw.Draw(img)
+    tab = st.set_tab
     if half == 0:
-        header(d, 'SETTINGS  COLORS', f'Group {st.group}', acc)
-        d.text((10, 40), f'Target : {st.set_target}', font=font(20), fill='white')
+        tab_bar(d, st)
+    if tab == 'COLOR':
+        draw_set_color(st, d, half, acc)
+    elif tab == 'STATUS':
+        draw_set_maschine(st, d, half, acc)
+    elif tab == 'AUDIO':
+        draw_set_audio(st, d, half, acc)
+    else:
+        draw_set_midi(st, d, half, acc)
+    if half == 1 and st.set_confirm:                   # fermer : sauvegarder ?
+        d.rectangle((0, 0, W, 26), fill=(10, 10, 14))
+        softkey(d, st, 0, 'YES', False)
+        softkey(d, st, 1, 'NO', False)
+        rounded(d, (70, 90, 410, 180), fill=(14, 14, 20), outline=acc, width=2)
+        d.text((100, 105), 'Save the settings?', font=font(20), fill='white')
+        d.text((100, 140), 'Button 5 = YES    Button 6 = NO', font=font(13), fill=(180, 180, 180))
+    return img
+
+
+def draw_set_color(st: State, d, half: int, acc) -> None:
+    if half == 0:
+        d.text((10, 36), f'COLORS  Group {st.group}', font=font(14), fill=acc)
+        d.text((10, 58), f'Target : {st.set_target}', font=font(20), fill='white')
         if st.set_target == 'GROUP':
             lines = ['Pads = the 16 colors.', 'Tap a pad: color of group ' + st.group + '.',
                      'Group buttons: choose the group.']
@@ -698,13 +906,12 @@ def draw_settings(st: State, half: int) -> Image.Image:
             lines = ['Tap pads to select them (several OK).', 'Encoder 2: color of the selection.',
                      'Shift + pad: back to the group color.']
             sel = ', '.join(str(p) for p in sorted(st.set_selected)) or '-'
-            d.text((10, 160), f'Selected : {sel}', font=font(14), fill=acc)
+            d.text((10, 170), f'Selected : {sel}', font=font(14), fill=acc)
         for k, line in enumerate(lines):
-            d.text((10, 80 + k * 22), line, font=font(14), fill=(190, 190, 190))
-        labels = ['Target', 'Color', 'Shift+MIDI = close', '']
-        for k, t in enumerate(labels):
+            d.text((10, 94 + k * 22), line, font=font(14), fill=(190, 190, 190))
+        for k, t in enumerate(['Target', 'Color', 'SETTINGS = close', '']):
             d.text((k * 120 + 10, 254), t, font=font(12), fill=(160, 160, 160))
-        return img
+        return
     header(d, 'PADS', 'saved on close', acc)
     for pad in range(1, 17):
         col, row = (pad - 1) % 4, 3 - (pad - 1) // 4
@@ -720,14 +927,466 @@ def draw_settings(st: State, half: int) -> Image.Image:
                 width=3 if chosen else 1)
         tw = d.textlength(label, font=font(14))
         d.text((x + 54 - tw / 2, y + 16), label, font=font(14), fill='black')
-    if st.set_confirm:                                 # fermer : sauvegarder ?
-        d.rectangle((0, 0, W, 26), fill=(10, 10, 14))
-        softkey(d, st, 0, 'YES', False)
-        softkey(d, st, 1, 'NO', False)
-        rounded(d, (70, 90, 410, 180), fill=(14, 14, 20), outline=acc, width=2)
-        d.text((100, 105), 'Save the colors?', font=font(20), fill='white')
-        d.text((100, 140), 'Button 5 = YES    Button 6 = NO', font=font(13), fill=(180, 180, 180))
-    return img
+
+
+def draw_set_maschine(st: State, d, half: int, acc) -> None:
+    if half == 0:
+        d.text((10, 32), 'MASCHINE STATUS', font=font(14), fill=acc)
+        if not st.status:
+            d.text((10, 70), 'Checking...', font=font(16), fill=(180, 180, 180))
+        for k, (label, value, ok) in enumerate(st.status[:9]):
+            y = 54 + k * 22
+            dot(d, 10, y + 3, ok)
+            d.text((30, y), label, font=font(13), fill=(170, 170, 170))
+            d.text((200, y), short(value, 34), font=font(13), fill='white')
+        return
+    header(d, 'STATUS', time.strftime('%H:%M:%S', time.localtime(st.status_time))
+           if st.status_time else '', acc)
+    softkey(d, st, 0, 'REFRESH', False)
+    softkey(d, st, 3, 'TO NI', 'shift' in st.held)
+    lines = ['Button 5 : check again.',
+             'Shift + button 8 : quit and give the',
+             'Maschine back to the NI software',
+             '(no unplugging needed).',
+             '',
+             'Sound, pads and screens are shared:',
+             'nothing is detached, no sudo.']
+    for k, line in enumerate(lines):
+        d.text((12, 40 + k * 22), line, font=font(14), fill=(190, 190, 190))
+    d.text((12, 250), 'Green = OK   Orange = info   Red = problem', font=font(11), fill=(140, 140, 140))
+
+
+def draw_set_audio(st: State, d, half: int, acc) -> None:
+    a, s = st.audio, st.audio_state
+    if half == 0:
+        d.text((10, 32), 'AUDIO', font=font(14), fill=acc)
+        if not s:
+            d.text((10, 60), 'Audio engine not running', font=font(16), fill=(220, 80, 80))
+            d.text((10, 86), '(started without sound, or not compiled)', font=font(13), fill=(160, 160, 160))
+        else:
+            d.text((10, 58), short('Output : ' + (s.get('device') or '-'), 44), font=font(15), fill='white')
+            xr = s.get('xruns', -1)
+            d.text((10, 82), f"{s.get('rate', 0):.0f} Hz   buffer {s.get('buffer', 0)}   "
+                             f"latency {s.get('latency', 0):.1f} ms" + (f'   drops {xr}' if xr >= 0 else ''),
+                   font=font(13), fill=(190, 190, 190))
+            pending = st.audio_pending and time.monotonic() - st.audio_pending < 2
+            if pending:
+                d.text((10, 106), 'Applying...', font=font(12), fill=acc)
+            elif st.audio_notice:
+                d.text((10, 106), short(st.audio_notice, 52), font=font(12), fill=(240, 160, 30))
+            else:
+                d.text((10, 106), 'Turn an encoder: applied after 1 s', font=font(12), fill=(140, 140, 140))
+        out = (st.audio_fallback or a['output'] or s.get('device', '')) if s else (a['output'] or 'default')
+        param_box(d, 0, 'Output', out or 'default', acc)
+        param_box(d, 1, 'Maschine', 'ON' if a['maschine_audio'] else 'OFF', acc)
+        param_box(d, 2, 'Rate', f"{a['rate'] / 1000:g} kHz" if a['rate'] else 'auto', acc)
+        param_box(d, 3, 'Buffer', f"{a['buffer']}", acc)
+        return
+    header(d, 'SOUND CARDS', 'internal Maschine: ' + ('ON' if a['maschine_audio'] else 'OFF'), acc)
+    cards = sound_cards(st)
+    if not cards:
+        d.text((12, 40), 'No list yet (audio engine not running?)', font=font(13), fill=(160, 160, 160))
+    current = s.get('device', '')
+    missing = a['output'] if a['output'] and cards and a['output'] not in cards else ''
+    if missing:
+        cards = cards + [missing]                      # carte choisie mais debranchee
+    for k, name in enumerate(cards[:5] if not missing else cards[:4] + [missing]):
+        y = 34 + k * 22
+        used = name == current
+        kind = 'absent' if name == missing else st.card_types.get(name, '')
+        if used:
+            d.rectangle((6, y - 1, W - 6, y + 19), fill=shade(acc, 0.45))
+        d.text((12, y), ('> ' if used else '  ') + short(name, 30), font=font(14),
+               fill='white' if used else (200, 200, 200))
+        if kind:
+            d.text((372, y), kind, font=font(13), fill='white' if used else (150, 150, 150))
+        if name == missing:
+            d.text((372, y), 'absent', font=font(13), fill=(240, 160, 30))
+    if len(cards) > 5:
+        d.text((12, 34 + 5 * 22), f'+ {len(cards) - 5} more', font=font(12), fill=(140, 140, 140))
+    param_box(d, 0, 'Input', a['input'] or 'None', acc, y=160)
+    d.text((132, 172), 'Input: saved now, used later', font=font(12), fill=(150, 150, 150))
+    d.text((132, 190), 'for sampling.', font=font(12), fill=(150, 150, 150))
+    d.text((132, 214), 'Plug a card: listed in 2 s.', font=font(12), fill=(150, 150, 150))
+    d.text((132, 232), 'Tap pads to test the sound.', font=font(12), fill=(150, 150, 150))
+
+
+def draw_set_midi(st: State, d, half: int, acc) -> None:
+    m, s = st.midi, st.midi_state
+    now = time.monotonic()
+    if half == 0:
+        d.text((10, 32), 'MIDI', font=font(14), fill=acc)
+        if not s:
+            d.text((10, 60), 'Audio engine not running (it handles MIDI)', font=font(14), fill=(220, 80, 80))
+        rows = [('IN', s.get('cur_in') or 'none', now - st.midi_in_flash < 0.6),
+                ('OUT', s.get('cur_out') or 'none', now - st.midi_out_flash < 0.6)]
+        for k, (name, port, active) in enumerate(rows if s else []):
+            y = 58 + k * 26
+            d.ellipse((10, y + 3, 22, y + 15), fill=(40, 220, 90) if active else (50, 50, 60))
+            d.text((30, y), f'{name:4s}{short(port, 40)}', font=font(15), fill='white')
+        d.text((10, 116), 'IN mode OMNI: notes play the selected group.' if m['in_mode'] == 'OMNI'
+               else 'IN mode CH>GROUP: channel 1-8 = group A-H.', font=font(12), fill=(160, 160, 160))
+        ch = m['out_ch'][st.group]
+        param_box(d, 0, 'IN port', m['in'] or 'None', acc)
+        param_box(d, 1, 'IN mode', m['in_mode'], acc)
+        param_box(d, 2, 'OUT port', m['out'] or 'None', acc)
+        param_box(d, 3, f'OUT grp {st.group}', 'Internal' if not ch else f'Ch {ch}', acc)
+        return
+    clock = CLOCK_MODES[m['clock']]
+    info = (f"receiving {s.get('bpm', 0):.1f} BPM" if clock == 'RECEIVE' and s.get('bpm')
+            else f'sending {st.bpm} BPM' if clock == 'SEND' else 'clock off')
+    header(d, 'MIDI SYNC', info, acc)
+    d.text((12, 34), 'Groups sent to MIDI OUT (encoder 4, group buttons):', font=font(12), fill=(160, 160, 160))
+    for k, g in enumerate(GROUPS):
+        x, y = 12 + (k % 4) * 116, 54 + (k // 4) * 40
+        ch = m['out_ch'][g]
+        rounded(d, (x, y, x + 108, y + 32), fill=acc if g == st.group else (24, 24, 32),
+                outline=shade(acc, 0.6))
+        d.text((x + 8, y + 7), f"{g}  {'int' if not ch else 'ch ' + str(ch)}", font=font(14),
+               fill='black' if g == st.group else 'white')
+    param_box(d, 0, 'Clock', clock, acc)
+    param_box(d, 1, 'Start/Stop', 'ON' if m['transport'] else 'OFF', acc)
+    param_box(d, 2, 'Thru', 'ON' if m['thru'] else 'OFF', acc)
+
+
+CARD_TYPES = {'usb': 'USB', 'builtin': 'Built-in', 'bluetooth': 'Bluetooth', 'virtual': 'Virtual',
+              'hdmi': 'HDMI', 'displayport': 'DisplayPort', 'thunderbolt': 'Thunderbolt',
+              'aggregate': 'Aggregate', 'airplay': 'AirPlay', 'pci': 'PCI'}
+
+
+def scan_card_types(st: State) -> None:
+    """Type de chaque carte son (USB, integree...) : macOS seulement (system_profiler)."""
+    if sys.platform != 'darwin':
+        return
+    try:
+        out = subprocess.run(['system_profiler', 'SPAudioDataType', '-json'], capture_output=True,
+                             text=True, timeout=10).stdout
+        types = {}
+        for group in json.loads(out).get('SPAudioDataType', []):
+            for dev in group.get('_items', []):
+                t = str(dev.get('coreaudio_device_transport', ''))
+                key = t.replace('coreaudio_device_type_', '')
+                types[dev.get('_name', '')] = CARD_TYPES.get(key, key.capitalize() or '?')
+        st.card_types = types
+    except (OSError, subprocess.SubprocessError, ValueError):
+        pass
+
+
+def sound_cards(st: State) -> list:
+    """Toutes les cartes son vues par le moteur (sorties et entrees), sans doublon."""
+    s = st.audio_state
+    return list(dict.fromkeys(s.get('outputs', []) + s.get('inputs', [])))
+
+
+def fallback_output(st: State, outs: list) -> str:
+    """Carte choisie absente : la Maschine (si ON), sinon le Mac, sinon la premiere."""
+    if st.audio['maschine_audio']:
+        for o in outs:
+            if 'maschine' in o.lower():
+                return o
+    for o in outs:
+        if st.card_types.get(o) == 'Built-in':
+            return o
+    for o in outs:
+        if 'maschine' not in o.lower():
+            return o
+    return outs[0] if outs else ''
+
+
+def ensure_output(st: State) -> None:
+    """A chaque etat du moteur : carte choisie absente -> secours ; revenue -> on la reprend."""
+    s, a = st.audio_state, st.audio
+    outs, current = s.get('outputs', []), s.get('device', '')
+    now = time.monotonic()
+    if not outs or st.audio_pending or now - st.audio_action < 3:
+        return
+    wanted = a['output']
+    blocked = not a['maschine_audio'] and 'maschine' in current.lower()
+    if wanted and wanted in outs:
+        if current != wanted:                          # la carte est (re)venue
+            if st.audio_fallback:
+                st.audio_notice = f'{wanted} back'
+                print(f'Carte son : {wanted} de retour.')
+            st.audio_fallback = ''
+            st.audio_action = now
+            send_audio(st)
+        return
+    if (wanted and wanted not in outs) or blocked or not current:
+        fb = fallback_output(st, outs)
+        if not fb:
+            return
+        notice = f'{wanted} absent -> {fb}' if wanted and wanted not in outs else f'Output -> {fb}'
+        if (st.audio_fallback, st.audio_notice) != (fb, notice):
+            st.audio_fallback, st.audio_notice = fb, notice
+            print(f'Carte son : {notice}')
+        if fb != current:
+            st.audio_action = now
+            send_audio(st, override=fb)
+
+
+def maschine_status(st: State) -> None:
+    """Onglet MASCHINE : etat de la Maschine et de son environnement (dans une tache a part :
+    ioreg prend un instant)."""
+    product, firmware = st.device_info
+    outs = st.audio_state.get('outputs', [])
+    items = [('Controller', f'{product}  firmware {firmware}', True),
+             ('Pads, buttons, lights', 'OK (exclusive, sudo)' if st.exclusive else 'OK (shared)', True),
+             ('Screens', 'OK', True)]
+    if sys.platform == 'darwin':
+        running = ni_agent_running()
+        items.append(('NI agent', 'paused by Fuzzy' if st.ni_paused and not running
+                      else 'running' if running else 'not running', True if not running else None))
+    cards = sound_cards(st)
+    if st.card_types:
+        usb = [c for c in cards if st.card_types.get(c) == 'USB']
+        items.append(('USB sound cards', ', '.join(usb) or 'none', True if usb else None))
+    elif cards:
+        items.append(('Sound cards', ', '.join(cards), True))
+    card = any('maschine' in o.lower() for o in outs)
+    items.append(('Maschine sound card', 'present' if card else ('absent' if outs else 'unknown'),
+                  True if card else (False if outs else None)))
+    s = st.audio_state
+    items.append(('Audio engine', short(f"{s.get('device', '')}  {s.get('rate', 0):.0f} Hz", 30)
+                  if s else 'not running', bool(s)))
+    cal = Path.home() / '.config' / 'fuzzy-turtle' / ('maschine-plus.conf' if 'Maschine+' in product
+                                                       else 'maschine-mk3.conf')
+    items.append(('Calibration file', 'found' if cal.exists() else 'default values',
+                  True if cal.exists() else None))
+    if sys.platform == 'darwin':
+        others = set()
+        try:
+            out = subprocess.run(['ioreg', '-w0', '-r', '-n', product], capture_output=True,
+                                 text=True, timeout=3).stdout
+            for line in out.splitlines():
+                if 'UserClient' in line and '+-o ' in line:
+                    name = line.split('+-o ', 1)[1].split('  <class', 1)[0].strip()
+                    if name not in ('MIDIServer', 'NIHostIntegratio', 'Python', 'python3',
+                                    'Python3', 'fuzzy_pad_sound', 'Fuzzy Pad Sound',
+                                    'IOHIDLibUserClient', 'IOAudioEngineUserClient'):
+                        others.add(name)
+        except (OSError, subprocess.SubprocessError):
+            pass
+        items.append(('Other apps on it', ', '.join(sorted(others)) or 'none', None if others else True))
+    st.status, st.status_time = items, time.time()
+
+
+def refresh_status(st: State) -> None:
+    threading.Thread(target=maschine_status, args=(st,), daemon=True).start()
+
+
+def open_settings(st: State) -> None:
+    import copy
+    st.settings, st.set_confirm = True, False
+    st.set_backup = (dict(st.group_hue), dict(st.pad_hue), copy.deepcopy(st.audio), copy.deepcopy(st.midi))
+    st.set_selected.clear()
+    if st.set_tab == 'STATUS':
+        refresh_status(st)
+
+
+def settings_button(st: State, name: str) -> bool:
+    """Boutons dans SETTINGS (hors YES / NO). Renvoie True si le bouton est utilise ici."""
+    if name in ('screen_1', 'screen_2', 'screen_3', 'screen_4'):
+        st.set_tab = SET_TABS[int(name[-1]) - 1]
+        if st.set_tab == 'STATUS':
+            refresh_status(st)
+        return True
+    if st.set_tab == 'STATUS' and name == 'screen_5':
+        refresh_status(st)
+        return True
+    if st.set_tab == 'STATUS' and name == 'screen_8':
+        if 'shift' in st.held:
+            st.quit_request = True                 # quitter et rendre la Maschine a NI
+        return True
+    return name.startswith('screen_')              # les autres boutons d'ecran : rien ici
+
+
+def cycle(options: list, current, n: int):
+    if not options:
+        return current
+    i = options.index(current) if current in options else -1
+    return options[(i + n) % len(options)] if i >= 0 or n else options[0]
+
+
+def settings_knob(st: State, i: int, delta: int) -> None:
+    """Encodeurs des onglets AUDIO (1-5) et MIDI (1-7)."""
+    if st.set_tab == 'AUDIO' and i in st.audio_knobs:
+        n = st.audio_knobs[i].steps(delta)
+        if not n:
+            return
+        a, s = st.audio, st.audio_state
+        if i == 0:
+            outs = audio_outputs(st)
+            a['output'] = cycle(outs, s.get('device', '') if st.audio_fallback else
+                                (a['output'] or s.get('device', '')), n)
+            st.audio_fallback, st.audio_notice = '', ''
+        elif i == 1:
+            a['maschine_audio'] = not a['maschine_audio']
+            if not a['maschine_audio'] and 'maschine' in (a['output'] or s.get('device', '')).lower():
+                a['output'] = next(iter(audio_outputs(st)), '')
+        elif i == 2:
+            rates = [r for r in s.get('rates', []) if r in (44100, 48000, 88200, 96000)] or [44100, 48000]
+            a['rate'] = cycle(rates, a['rate'] or int(s.get('rate', 0)), n)
+        elif i == 3:
+            avail = s.get('buffers', [])
+            sizes = [b for b in BUFFERS if not avail or b in avail] or list(BUFFERS)
+            a['buffer'] = cycle(sizes, a['buffer'], n)
+        elif i == 4:
+            a['input'] = cycle([''] + s.get('inputs', []), a['input'], n)
+            return                                     # entree : enregistree, pas encore utilisee
+        st.audio_pending = time.monotonic()
+    elif st.set_tab == 'MIDI' and i in st.midi_knobs:
+        n = st.midi_knobs[i].steps(delta)
+        if not n:
+            return
+        m, s = st.midi, st.midi_state
+        if i == 0:
+            m['in'] = cycle([''] + s.get('ins', []), m['in'], n)
+        elif i == 1:
+            m['in_mode'] = 'CH>GROUP' if m['in_mode'] == 'OMNI' else 'OMNI'
+        elif i == 2:
+            m['out'] = cycle([''] + s.get('outs', []), m['out'], n)
+        elif i == 3:
+            m['out_ch'][st.group] = (m['out_ch'][st.group] + n) % 17      # 0 = interne, 1-16
+        elif i == 4:
+            m['clock'] = (m['clock'] + n) % len(CLOCK_MODES)
+        elif i == 5:
+            m['transport'] = not m['transport']
+        elif i == 6:
+            m['thru'] = not m['thru']
+        st.midi_pending = time.monotonic()
+
+
+def send_audio(st: State, override: str = '') -> None:
+    """Envoie les reglages audio (seulement les valeurs que la carte connait)."""
+    a, s = st.audio, st.audio_state
+    output = override or (a['output'] if a['output'] in s.get('outputs', []) else '')
+    rate = a['rate'] if a['rate'] in s.get('rates', []) else 0
+    SOUND.send('/fuzzy/proto/audio/set', output, a['input'], int(rate), int(a['buffer']))
+
+
+def send_midi(st: State) -> None:
+    m = st.midi
+    SOUND.send('/fuzzy/proto/midi/set', m['in'], m['out'], int(m['clock']), int(m['transport']),
+               int(m['thru']))
+
+
+def engine_sync(st: State, keep_output: bool) -> None:
+    """Premier etat du moteur recu : lui envoyer les reglages enregistres."""
+    a = st.audio
+    st.keep_output = keep_output
+    if keep_output:                                    # --output impose : on garde sa sortie
+        a['output'] = st.audio_state.get('device', '')
+    if a['output'] in st.audio_state.get('outputs', []) or a['rate'] or a['buffer'] != 96:
+        send_audio(st)
+        st.audio_action = time.monotonic()
+    send_midi(st)
+    st.engine_synced = True
+    threading.Thread(target=scan_card_types, args=(st,), daemon=True).start()
+
+
+def play_note(st: State, group: str, snd: int, vel: int, note: int, gate: float = 0.0) -> None:
+    """Joue une note : moteur interne, ou MIDI OUT si le groupe est envoye dehors (gate en s ;
+    0 = note-off envoye au relachement)."""
+    ch = st.midi['out_ch'].get(group, 0) if st.midi['out'] else 0
+    if ch:
+        SOUND.send('/fuzzy/proto/midi/note', ch, note, vel, int(gate * 1000))
+        st.midi_out_flash = time.monotonic()
+    else:
+        SOUND.hit(snd, vel, note)
+
+
+def release_notes(st: State, group: str, notes: list) -> None:
+    ch = st.midi['out_ch'].get(group, 0) if st.midi['out'] else 0
+    if ch:
+        for _, n in notes:
+            SOUND.send('/fuzzy/proto/midi/off', ch, n)
+
+
+def osc_parse(data: bytes):
+    """Message OSC minimal : adresse + arguments i / f / s."""
+    def string(i):
+        j = data.index(b'\0', i)
+        return data[i:j].decode('utf-8', 'replace'), (j + 4) & ~3
+    addr, i = string(0)
+    tags, i = string(i)
+    args = []
+    for t in tags[1:]:
+        if t == 'i':
+            args.append(struct.unpack('>i', data[i:i + 4])[0]); i += 4
+        elif t == 'f':
+            args.append(struct.unpack('>f', data[i:i + 4])[0]); i += 4
+        elif t == 's':
+            v, i = string(i); args.append(v)
+        else:
+            break
+    return addr, args
+
+
+def engine_listener(st: State, events: queue.Queue, running: threading.Event) -> None:
+    """Ecoute le moteur (port 57391) : etat audio / MIDI, notes MIDI IN, horloge recue."""
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        sock.bind(('127.0.0.1', ENGINE_REPLY_PORT))
+    except OSError:
+        print(f'Port {ENGINE_REPLY_PORT} occupe : pas de retour du moteur (AUDIO / MIDI).')
+        return
+    sock.settimeout(0.2)
+    while running.is_set():
+        try:
+            data = sock.recv(65536)
+            addr, args = osc_parse(data)
+        except (socket.timeout, ValueError, struct.error):
+            continue
+        except OSError:
+            break
+        if addr == '/fuzzy/proto/audio/state' and len(args) >= 9:
+            first = not st.audio_state
+            st.audio_state = {
+                'device': args[0], 'rate': args[1], 'buffer': args[2], 'latency': args[3],
+                'xruns': args[4], 'outputs': [o for o in args[5].split('\n') if o],
+                'rates': [int(r) for r in args[6].split(',') if r],
+                'buffers': [int(b) for b in args[7].split(',') if b],
+                'inputs': [x for x in args[8].split('\n') if x]}
+            events.put(('engine', 'first' if first else 'state'))
+        elif addr == '/fuzzy/proto/midi/state' and len(args) >= 7:
+            old = st.midi_state
+            now = time.monotonic()
+            if old and args[4] != old.get('in_count'):
+                st.midi_in_flash = now
+            if old and args[5] != old.get('out_count'):
+                st.midi_out_flash = now
+            st.midi_state = {'ins': [x for x in args[0].split('\n') if x],
+                             'outs': [x for x in args[1].split('\n') if x],
+                             'cur_in': args[2], 'cur_out': args[3], 'in_count': args[4],
+                             'out_count': args[5], 'bpm': args[6]}
+            if st.settings and st.set_tab == 'MIDI':
+                events.put(('redraw',))
+        elif addr == '/fuzzy/proto/midi/in' and len(args) >= 3:
+            st.midi_in_flash = time.monotonic()
+            ch, note, vel = args
+            m = st.midi
+            if m['in_mode'] == 'OMNI':
+                group = st.group
+            elif 1 <= ch <= 8:
+                group = GROUPS[ch - 1]
+            else:
+                continue
+            if vel > 0:                                # jouer tout de suite (comme un pad)
+                snd = st.sound if st.sound > 4 else 5
+                v = out_vel(st, group, snd, vel)
+                if v and st.audible(group):
+                    play_note(st, group, snd, v, note)
+            else:
+                release_notes(st, group, [(0, note)])
+            events.put(('midi_note', group, note, vel))
+        elif addr == '/fuzzy/proto/clock/in' and args:
+            if st.midi['clock'] == 2:
+                events.put(('clock_bpm', args[0]))
+        elif addr == '/fuzzy/proto/transport/in' and args:
+            if st.midi['clock'] == 2 and st.midi['transport']:
+                events.put(('transport', bool(args[0])))
+    sock.close()
+
 
 
 def draw_nr_panel(st: State) -> Image.Image:
@@ -767,6 +1426,8 @@ def draw_left(st: State) -> Image.Image:
         return draw_settings(st, 0)
     if st.mixer:
         return draw_mixer(st, 0)
+    if st.pattern_mode:
+        return draw_patterns(st, 0)
     if st.tracker16:
         return draw_tracks(st, 0)
     acc = group_rgb(st)
@@ -797,6 +1458,88 @@ def draw_left(st: State) -> Image.Image:
     return img
 
 
+def length_overlay(st: State, d: ImageDraw.ImageDraw) -> None:
+    """Encodeur 8 tourne : grand affichage de la longueur du pattern."""
+    if time.monotonic() > st.len_flash:
+        return
+    acc = group_rgb(st)
+    d.rectangle((90, 70, 390, 200), fill=(15, 15, 20), outline=acc, width=3)
+    d.text((110, 80), f'LENGTH  Pattern {st.pat_index[st.group] + 1:02d}', font=font(16), fill=acc)
+    txt = f'{st.length} lines'
+    d.text((240 - d.textlength(txt, font=font(36)) / 2, 112), txt, font=font(36), fill='white')
+    d.text((110, 172), f'= {st.length / 16:g} bar' + ('s' if st.length > 16 else '') + '  (encoder 8)',
+           font=font(13), fill=(170, 170, 170))
+
+
+def length_label(st: State, d: ImageDraw.ImageDraw) -> None:
+    """En bas a droite de l'ecran droit, sous l'encodeur 8 : longueur du pattern."""
+    txt = f'Length {st.length}'
+    d.rectangle((362, 254, W, H), fill=(12, 12, 16))
+    d.text((W - 10 - d.textlength(txt, font=font(13)), 255), txt, font=font(13), fill=group_rgb(st))
+
+
+def draw_patterns(st: State, half: int) -> Image.Image:
+    """Mode PATTERN : a gauche les 16 patterns de la banque, a droite l'apercu du pattern."""
+    acc = group_rgb(st)
+    img = Image.new('RGB', (W, H), (10, 10, 14))
+    d = ImageDraw.Draw(img)
+    g = st.group
+    cur, queued = st.pat_index[g], st.pat_queue.get(g)
+    if half == 0:
+        header(d, f'PATTERNS  Group {g}', f'Bank {st.pat_bank + 1}/{PAT_BANKS}', acc)
+        for i in range(16):
+            pad = 13 + i % 4 - 4 * (i // 4)            # pad 13 en haut a gauche
+            idx = st.pat_bank * 16 + pad - 1
+            pat = st.patterns[g][idx]
+            x, y = 8 + (i % 4) * 117, 32 + (i // 4) * 52
+            if idx == cur:
+                rounded(d, (x, y, x + 110, y + 46), fill=acc)
+            elif pat:
+                rounded(d, (x, y, x + 110, y + 46), fill=shade(acc, 0.3))
+            else:
+                rounded(d, (x, y, x + 110, y + 46), outline=(50, 50, 60))
+            if idx == queued:
+                rounded(d, (x - 2, y - 2, x + 112, y + 48), outline='white', width=2)
+            ink = 'black' if idx == cur else ('white' if pat else (90, 90, 90))
+
+            def centered(txt, ty, f):                  # texte centre dans la case
+                d.text((x + 55 - d.textlength(txt, font=f) / 2, ty), txt, font=f, fill=ink)
+            centered(f'P{idx + 1:02d}', y + 5, font(15))
+            if pat:
+                notes = sum(1 for r in range(pat['length']) for c in pat['grid'][r] if c)
+                centered(f"{pat['length']} lin  {notes} n", y + 26, font(11))
+            else:
+                centered('empty', y + 26, font(11))
+        labels = [f'Bank {st.pat_bank + 1}', '', '', '']
+        for k, t in enumerate(labels):
+            d.text((k * 120 + 10, 252), t, font=font(12), fill=(170, 170, 170))
+        return img
+    pat = st.patterns[g][cur]
+    state = f'next: P{queued + 1:02d}' if queued is not None else ('playing' if st.playing else 'stopped')
+    header(d, f'Pattern {cur + 1:02d}  {g}', state, acc)
+    length = pat['length']
+    cw = max(3, min(28, 456 // max(1, length)))      # largeur d'une ligne dans l'apercu
+    playing = play_row(st)
+    for t in range(16):
+        y = 34 + t * 8
+        for r in range(length):
+            x = 14 + r * cw
+            cell = pat['grid'][r][t]
+            if r == playing:
+                d.rectangle((x, y, x + cw - 2, y + 6), fill=(0, 90, 60) if not cell else 'white')
+            elif cell:
+                d.rectangle((x, y, x + cw - 2, y + 6), fill=acc if t == st.sound - 1 else shade(acc, 0.7))
+            elif r % 4 == 0:
+                d.rectangle((x, y + 2, x + 1, y + 4), fill=(60, 60, 70))
+    lines = ['Pad: choose (while playing: at the end of', 'the pattern).  DUPLICATE + pad: copy here.',
+             'ERASE + pad: erase.  < > : bank.']
+    for k, line in enumerate(lines):
+        d.text((12, 172 + k * 20), line, font=font(13), fill=(180, 180, 180))
+    d.text((12, 240), 'PATTERN again: back.', font=font(13), fill=acc)
+    length_label(st, d)
+    return img
+
+
 def tempo_overlay(st: State, d: ImageDraw.ImageDraw) -> None:
     """TEMPO (ou VOLUME) tenu : grand affichage du tempo (ou du volume master)."""
     if 'volume' in st.held:
@@ -823,7 +1566,7 @@ def step_label(st: State) -> str:
 
 def play_row(st: State) -> int:
     """Ligne en train de jouer (-1 a l'arret)."""
-    return (st.playhead - 1) % st.length if st.playing else -1
+    return (st.playhead - 1 - st.pat_start[st.group]) % st.length if st.playing else -1
 
 
 def step_page(st: State) -> int:
@@ -896,6 +1639,7 @@ def draw_tracker(st: State) -> Image.Image:
               f'{cell[1]:02X}' if cell else '--', f'{st.length}']
     for i in range(4):
         d.text((i * 120 + 10, 250), f'{labels[i]} {values[i]}', font=font(12), fill=(180, 180, 180))
+    length_overlay(st, d)
     return img
 
 
@@ -910,7 +1654,7 @@ def draw_tracks(st: State, first: int) -> Image.Image:
     d = ImageDraw.Draw(img)
     rec = step_label(st) + ('REC  ' if st.recording else '')
     if first == 0:
-        left_header(d, st, f'Pattern 01  {st.group}', f'{rec}1-8')
+        left_header(d, st, f'Pattern {st.pat_index[st.group] + 1:02d}  {st.group}', f'{rec}L{st.length}  1-8')
     else:
         softkey_header(d, st, f'{rec}9-16')
     f = font(11)
@@ -921,9 +1665,11 @@ def draw_tracks(st: State, first: int) -> Image.Image:
         sel = tr == st.sound - 1
         d.rectangle((x, 29, x + TRK_W - 3, 41), fill=acc if sel else shade(acc, 0.35))
         d.text((x + 3, 29), f'{tr + 1:02d} {name}', font=f, fill='black' if sel else 'white')
-    top = view_top(st, TRK_ROWS)
+    # En lecture : la ligne d'infos du bas laisse la place a une 16e ligne du pattern
+    rows = TRK_ROWS + 1 if st.playing else TRK_ROWS
+    top = view_top(st, rows)
     playing_row = play_row(st)
-    for k in range(min(TRK_ROWS, st.length)):
+    for k in range(min(rows, st.length)):
         r = top + k
         y = 45 + k * 14
         if r == st.cursor:
@@ -942,13 +1688,17 @@ def draw_tracks(st: State, first: int) -> Image.Image:
             cell = st.grid[r][tr]
             d.text((x + 3, y), f'{cell_label(cell[0])} {cell[1]:02X}' if cell else '--- --',
                    font=f, fill='white' if cell else (80, 80, 80))
-    if first == 0:
+    if first == 8 and not st.playing:
+        length_label(st, d)
+    if first == 0 and not st.playing:
         cell = st.grid[st.cursor][st.sound - 1]
         info = (f'Line {st.cursor:02X}   Track {st.sound:02d}   '
                 f'Note {cell_label(cell[0]) if cell else "---"}   Vol {cell[1]:02X}' if cell else
                 f'Line {st.cursor:02X}   Track {st.sound:02d}   Note ---   Vol --')
-        d.text((6, 256), info + f'   Len {st.length}', font=font(11), fill=(170, 170, 170))
+        d.text((6, 256), info, font=font(11), fill=(170, 170, 170))
+    if first == 0:
         tempo_overlay(st, d)
+        length_overlay(st, d)
     return img
 
 
@@ -1053,6 +1803,8 @@ def _draw_right(st: State) -> Image.Image:
         return draw_settings(st, 1)
     if st.mixer:
         return draw_mixer(st, 1)
+    if st.pattern_mode:
+        return draw_patterns(st, 1)
     if st.tracker16:
         return draw_tracks(st, 8)
     if st.right_view == 'chords':
@@ -1207,8 +1959,8 @@ def step_row(st: State, pad: int) -> int:
 
 def sound_for(st: State, pad: int) -> list:
     """Les notes a jouer tout de suite pour un pad frappe : [(son, note), ...]."""
-    if 'shift' in st.held or st.settings:
-        return []
+    if 'shift' in st.held or st.pattern_mode or (st.settings and st.set_tab in ('COLOR', 'STATUS')):
+        return []                          # AUDIO / MIDI : les pads jouent (tester la sortie)
     if st.step_mode:                       # sans REC : on ecoute le son ; avec REC : seulement
         if not st.recording or st.grid[step_row(st, pad)][st.sound - 1] is None:   # en ajoutant
             return [(st.sound, n) for n in cell_notes(step_note(st))]
@@ -1230,7 +1982,7 @@ def snapshot(st: State, coalesce: bool = False) -> None:
         st.last_undo_push = now
         return
     st.last_undo_push = now
-    st.undo_stack.append((st.group, [row[:] for row in st.grid]))
+    st.undo_stack.append((st.group, st.pat_index[st.group], [row[:] for row in st.grid]))
     del st.undo_stack[:-100]                     # 100 etapes maximum
     st.redo_stack.clear()
 
@@ -1239,9 +1991,14 @@ def undo(st: State, redo: bool = False) -> None:
     src, dst = (st.redo_stack, st.undo_stack) if redo else (st.undo_stack, st.redo_stack)
     if not src:
         return
-    group, grid = src.pop()
-    dst.append((group, [row[:] for row in st.grids[group]]))
-    st.grids[group] = grid
+    group, idx, grid = src.pop()
+    pattern = st.patterns[group][idx]
+    if pattern is None:                              # pattern efface depuis : on le recree
+        pattern = st.patterns[group][idx] = {'grid': grid, 'length': 16}
+    dst.append((group, idx, [row[:] for row in pattern['grid']]))
+    pattern['grid'] = grid
+    if st.pat_index[group] == idx:
+        st.grids[group] = grid
 
 
 def record(st: State, track: int, note, vel: int) -> None:
@@ -1261,7 +2018,7 @@ def handle(st: State, ev: tuple) -> None:
         st.down.add(pad)
         keyboard = st.melodic()                      # Keyboard ou Chords
         if st.settings:                              # SETTINGS > COLORS
-            if st.set_confirm:
+            if st.set_confirm or st.set_tab != 'COLOR':
                 return
             if st.set_target == 'GROUP':
                 st.group_hue[st.group] = pad - 1     # pad n = teinte n
@@ -1269,6 +2026,9 @@ def handle(st: State, ev: tuple) -> None:
                 st.pad_hue.pop((st.group, pad), None)   # retour a la couleur du groupe
             else:
                 st.set_selected ^= {pad}
+            return
+        if st.pattern_mode:                          # PATTERN : pads = patterns
+            pattern_pad(st, pad, vel)
             return
         if st.right_view == 'chords' and st.user_edit:   # EDIT USER : pads = 16 demi-tons
             chord = set(st.user_chords[st.user_bank][st.user_slot - 1])
@@ -1335,12 +2095,44 @@ def handle(st: State, ev: tuple) -> None:
             st.taps.clear()
         elif not st.melodic() or st.tracker16:
             st.cursor = max(0, min(st.length - 1, st.cursor + ev[1]))
+    elif kind == 'midi_note':                        # note recue en MIDI IN
+        group, note, vel = ev[1], ev[2], ev[3]
+        if vel and group == st.group:
+            st.note_flash[note] = (time.monotonic() + 0.15, vel)
+            if st.recording:
+                record(st, st.sound if st.sound > 4 else 5, note, vel)
+    elif kind == 'clock_bpm':                        # horloge MIDI recue : tempo
+        st.bpm = max(40, min(240, round(ev[1])))
+    elif kind == 'transport':                        # Start / Stop recus en MIDI
+        if ev[1] and not st.playing:
+            reset_playback(st)
+            st.playing = True
+            st.next_row_time = time.monotonic()
+        elif not ev[1]:
+            st.playing = False
+    elif kind == 'engine':                           # etat du moteur recu
+        if st.settings and st.set_tab == 'STATUS' and ev[1] == 'first':
+            refresh_status(st)
+        cards = tuple(sound_cards(st))
+        if cards != st.known_cards:                  # carte branchee / debranchee
+            if st.known_cards:
+                threading.Thread(target=scan_card_types, args=(st,), daemon=True).start()
+            st.known_cards = cards
+        if st.engine_synced and not st.keep_output:
+            ensure_output(st)
     elif kind == 'unknown_button':
         print(f'[diag] bouton inconnu : bit {ev[1]} ({"appuye" if ev[2] else "relache"})')
     elif kind == 'button':
         name, pressed = ev[1], ev[2]
         (st.held.add if pressed else st.held.discard)(name)
         if not pressed:
+            return
+        if st.settings and not st.set_confirm and settings_button(st, name):
+            return
+        if name == 'midi_channel':                   # MIDI : ouvre SETTINGS > MIDI
+            if not st.settings:
+                open_settings(st)
+            st.set_tab = 'MIDI'
             return
         if name.startswith('group_'):
             g = name[-1].upper()
@@ -1365,16 +2157,21 @@ def handle(st: State, ev: tuple) -> None:
                 st.link_edit = not st.link_edit      # 7 : choisir les groupes lies
         elif name == 'settings':                     # SETTINGS : menus de configuration
             if not st.settings:
-                st.settings, st.set_confirm = True, False
-                st.set_backup = (dict(st.group_hue), dict(st.pad_hue))
-                st.set_selected.clear()
+                open_settings(st)
             else:
                 st.set_confirm = True                # fermer : sauvegarder ? YES / NO
         elif name in ('screen_5', 'screen_6') and st.set_confirm:
             if name == 'screen_5':                   # YES : sauvegarder
                 save_settings(st)
-            else:                                    # NO : revenir aux couleurs d'avant
-                st.group_hue, st.pad_hue = st.set_backup
+            else:                                    # NO : revenir aux reglages d'avant
+                hues, pads, audio, midi = st.set_backup
+                st.group_hue, st.pad_hue = hues, pads
+                if audio != st.audio:
+                    st.audio = audio
+                    send_audio(st)
+                if midi != st.midi:
+                    st.midi = midi
+                    send_midi(st)
             st.settings = st.set_confirm = False
             st.set_selected.clear()
         elif name == 'follow':                       # FOLLOW : l'affichage suit la lecture
@@ -1403,7 +2200,8 @@ def handle(st: State, ev: tuple) -> None:
             st.step_manual = None                    # en lecture, les pages suivent a nouveau
             st.next_row_time = time.monotonic()
         elif name == 'stop':
-            st.playing, st.playhead = False, 0
+            st.playing = False
+            reset_playback(st)
         elif name == 'rec':
             st.recording = not st.recording
         elif name == 'keyboard':
@@ -1440,6 +2238,11 @@ def handle(st: State, ev: tuple) -> None:
             st.user_edit = not st.user_edit          # bouton 8 : EDIT ; 2e appui = sauvegarde
             if not st.user_edit:
                 save_user_chords(st)
+        elif name == 'pattern':                      # PATTERN : pads = patterns du groupe
+            st.pattern_mode = not st.pattern_mode
+            st.pat_bank = st.pat_index[st.group] // 16
+        elif name in ('nav_prev', 'nav_next') and st.pattern_mode:   # < > : banque de patterns
+            st.pat_bank = max(0, min(PAT_BANKS - 1, st.pat_bank + (1 if name == 'nav_next' else -1)))
         elif name in ('nav_prev', 'nav_next') and st.step_mode:   # < > : page STEP
             pages = (st.length + 15) // 16
             page = max(0, min(pages - 1, step_page(st) + (1 if name == 'nav_next' else -1)))
@@ -1462,6 +2265,18 @@ def handle(st: State, ev: tuple) -> None:
             tap_tempo(st)
     elif kind == 'knob':
         i = ev[1] - 1
+        if st.settings and st.set_tab in ('AUDIO', 'MIDI'):
+            settings_knob(st, i, ev[2])
+            return
+        if st.pattern_mode and not st.settings and not st.mixer:   # 1 banque, 8 longueur
+            if i in st.pat_knobs:
+                n = st.pat_knobs[i].steps(ev[2])
+                if n and i == 7:
+                    st.length = max(1, min(ROWS, st.length + n))
+                    st.cursor = min(st.cursor, st.length - 1)
+                elif n:
+                    st.pat_bank = (st.pat_bank + n) % PAT_BANKS
+            return
         if st.settings:
             if i in st.set_knobs:
                 n = st.set_knobs[i].steps(ev[2])
@@ -1525,6 +2340,7 @@ def handle(st: State, ev: tuple) -> None:
         elif i == 7:                                 # encodeur 8 : longueur du pattern
             st.length = max(1, min(ROWS, st.length + n))
             st.cursor = min(st.cursor, st.length - 1)
+            st.len_flash = time.monotonic() + 1.2    # grand affichage LENGTH
         elif st.tracker16:
             if i == 0:
                 st.cursor = max(0, min(st.length - 1, st.cursor + n))
@@ -1611,13 +2427,13 @@ def repeat_tick(st: State) -> None:
         st.arp_index += 1
         v = out_vel(st, st.group, snd, vel)
         if v:
-            SOUND.hit(snd, v, n)
+            play_note(st, st.group, snd, v, n, nr_interval(st) * 0.8)
         return
     for _, vel, lst in held:
         for snd, n in lst:
             v = out_vel(st, st.group, snd, vel)
             if v:
-                SOUND.hit(snd, v, n)
+                play_note(st, st.group, snd, v, n, nr_interval(st) * 0.8)
 
 
 def tap_tempo(st: State) -> None:
@@ -1647,6 +2463,67 @@ def edit_cell(st: State, is_note: bool, n: int) -> None:
     st.grid[st.cursor][st.sound - 1] = (note, vol)
 
 
+def pattern_length(st: State, g: str) -> int:
+    return st.patterns[g][st.pat_index[g]]['length']
+
+
+def new_pattern(length: int = 16) -> dict:
+    return {'grid': [[None] * 16 for _ in range(ROWS)], 'length': length}
+
+
+def apply_pattern(st: State, g: str, idx: int) -> None:
+    """Le groupe g passe au pattern idx (il repart de sa premiere ligne)."""
+    if st.patterns[g][idx] is None:
+        st.patterns[g][idx] = new_pattern()
+    st.pat_index[g] = idx
+    st.grids[g] = st.patterns[g][idx]['grid']
+    st.pat_start[g] = st.playhead
+    if g == st.group:
+        st.cursor = min(st.cursor, st.length - 1)
+        st.step_manual = None
+
+
+def select_pattern(st: State, g: str, idx: int) -> None:
+    """Choisir un pattern : tout de suite a l'arret, a la fin du pattern en cours en lecture."""
+    if st.patterns[g][idx] is None:
+        st.patterns[g][idx] = new_pattern(pattern_length(st, g))
+    if st.playing and idx != st.pat_index[g]:
+        st.pat_queue[g] = idx
+    else:
+        st.pat_queue.pop(g, None)
+        apply_pattern(st, g, idx)
+
+
+def reset_playback(st: State) -> None:
+    """Retour au debut : tous les patterns repartent de leur premiere ligne."""
+    st.playhead = 0
+    for g, idx in list(st.pat_queue.items()):
+        apply_pattern(st, g, idx)
+    st.pat_queue.clear()
+    for g in GROUPS:
+        st.pat_start[g] = 0
+
+
+def pattern_pad(st: State, pad: int, vel: int) -> None:
+    """Mode PATTERN : pad = pattern de la banque ; DUPLICATE + pad = copier le pattern choisi
+    ici ; ERASE + pad = effacer."""
+    g, idx = st.group, st.pat_bank * 16 + pad - 1
+    if 'erase' in st.held:
+        if idx == st.pat_index[g]:                   # pattern en cours : il devient vide
+            st.patterns[g][idx] = new_pattern(st.length)
+            apply_pattern(st, g, idx)
+        else:
+            st.patterns[g][idx] = None
+            if st.pat_queue.get(g) == idx:
+                st.pat_queue.pop(g)
+    elif 'duplicate' in st.held:
+        src = st.patterns[g][st.pat_index[g]]
+        st.patterns[g][idx] = {'grid': [row[:] for row in src['grid']], 'length': src['length']}
+        select_pattern(st, g, idx)
+    else:
+        select_pattern(st, g, idx)
+
+
 def tick(st: State) -> bool:
     """Fait avancer la lecture : 4 lignes par temps. Renvoie True si une ligne a joue."""
     if not st.playing:
@@ -1654,12 +2531,15 @@ def tick(st: State) -> bool:
     now = time.monotonic()
     moved = False
     while now >= st.next_row_time:
-        st.playhead %= st.length                            # si la longueur a ete reduite
         for g in GROUPS:                                    # tous les groupes qui sonnent
+            row = (st.playhead - st.pat_start[g]) % pattern_length(st, g)
+            if row == 0 and g in st.pat_queue:              # pattern suivant : a la fin du pattern
+                apply_pattern(st, g, st.pat_queue.pop(g))
+                row = 0
             if not st.audible(g):
                 continue
             current = g == st.group
-            for t, cell in enumerate(st.grids[g][st.playhead]):   # toutes les pistes
+            for t, cell in enumerate(st.grids[g][row]):     # toutes les pistes
                 if not cell:
                     continue
                 note, vol = cell
@@ -1668,10 +2548,10 @@ def tick(st: State) -> bool:
                 v = out_vel(st, g, t + 1, vol)
                 for n in cell_notes(note):               # une note ou un accord
                     if v:
-                        SOUND.hit(t + 1, v, n)
+                        play_note(st, g, t + 1, v, n, 60 / st.bpm / 4 * 0.9)
                     if current and t + 1 == st.sound:   # le clavier montre le son choisi
                         st.note_flash[n] = (now + 0.15, vol)
-        st.playhead = (st.playhead + 1) % st.length
+        st.playhead += 1
         st.next_row_time += 60 / st.bpm / 4
         moved = True
     return moved
@@ -1680,12 +2560,12 @@ def tick(st: State) -> bool:
 # Retro-eclairage des boutons (rapport 0x80, 63 octets) - emplacements et
 # niveaux repris du pilote r22yb3m (MIT). Boutons mono : 4 = doux, 7 = vif.
 # Groupes A-H : couleurs de la palette NI, (douce, vive) pour chaque groupe.
-BUTTON_SLOTS = {'tempo': 23, 'play': 41, 'rec': 42, 'stop': 43, 'shift': 44, 'pad_mode': 46, 'keyboard': 47,
+BUTTON_SLOTS = {'pattern': 51, 'scene': 50, 'duplicate': 54, 'erase': 38, 'tempo': 23, 'play': 41, 'rec': 42, 'stop': 43, 'shift': 44, 'pad_mode': 46, 'keyboard': 47,
                 'chords': 48, 'step': 49, 'nav_prev': 6, 'nav_next': 7,
                 'mute': 57, 'solo': 56,
                 'mixer': 3, 'volume': 20,  # MIXER / VOLUME : emplacements supposes (21 = SWING)
                 'screen_3': 14, 'screen_5': 16, 'screen_6': 17, 'screen_7': 18, 'screen_8': 19,
-                'midi_channel': 0, 'settings': 9, 'follow': 40, 'note_repeat': 22, 'lock': 24}
+                'midi_channel': 0, 'settings': 9, 'screen_1': 12, 'screen_2': 13, 'screen_4': 15, 'follow': 40, 'note_repeat': 22, 'lock': 24}
                 # LOCK : emplacement suppose (apres TEMPO 23) ; verifier avec --led-scan
                 # FOLLOW et NOTE REPEAT : emplacements de lumiere supposes, a confirmer   # SOLO : emplacement suppose (a cote de MUTE), a confirmer   # STEP : emplacement suppose (apres CHORDS 48), a confirmer
 SCREEN_IDLE, SCREEN_ACTIVE = 12, 50     # niveaux des boutons d'ecran (pilote r22yb3m)
@@ -1718,13 +2598,22 @@ def available_buttons(st: State) -> set:
     """Boutons qui ont une fonction dans le mode en cours (les autres restent eteints)."""
     on = {'play', 'rec', 'stop', 'shift', 'pad_mode', 'keyboard', 'chords', 'step', 'mixer',
           'volume', 'tempo', 'mute', 'solo', 'follow', 'note_repeat'}
-    on.add('settings')                                 # SETTINGS : couleurs (et futurs reglages)
+    on.add('settings')                                 # SETTINGS : couleurs, Maschine, audio, MIDI
+    on.add('midi_channel')                             # MIDI : SETTINGS > MIDI
+    if st.settings and not st.set_confirm:
+        on |= {'screen_1', 'screen_2', 'screen_3', 'screen_4'}     # onglets
+        if st.set_tab == 'STATUS':
+            on |= {'screen_5', 'screen_8'}             # REFRESH, Shift + 8 : rendre a NI
+        return on
     if st.nr_on:
         on.add('lock')                                 # LOCK : utile quand Note Repeat tourne
     if st.set_confirm:
         return on | {'screen_5', 'screen_6'}           # YES / NO
     if st.nr_menu:
         return on                                      # menu Note Repeat : tout aux encodeurs
+    on.add('pattern')                                  # PATTERN : choisir / copier / effacer
+    if st.pattern_mode:
+        return on | {'nav_prev', 'nav_next', 'duplicate', 'erase'}
     if st.step_mode or st.mixer:
         on |= {'nav_prev', 'nav_next'}                 # < > : pages STEP ou pages du mixeur
     if not st.mixer:
@@ -1745,10 +2634,16 @@ def button_frame(st: State) -> bytes:
               'shift': 'shift' in st.held, 'keyboard': st.right_view == 'keyboard',
               'pad_mode': not st.melodic(), 'chords': st.right_view == 'chords',
               'step': st.step_mode, 'tempo': False, 'nav_prev': False, 'nav_next': False,
+              'pattern': st.pattern_mode, 'duplicate': False, 'erase': False,
               'mute': bool(st.muted), 'solo': bool(st.solo),
-              'mixer': st.mixer, 'volume': False, 'screen_3': st.tracker16,
-              'screen_8': st.user_edit, 'screen_7': st.link_edit,
+              'mixer': st.mixer, 'volume': False,
+              'screen_3': (st.set_tab == SET_TABS[2]) if st.settings else st.tracker16,
+              'screen_8': st.user_edit and not st.settings, 'screen_7': st.link_edit,
               'settings': st.settings, 'follow': st.follow,
+              'midi_channel': st.settings and st.set_tab == 'MIDI',
+              'screen_1': st.settings and st.set_tab == SET_TABS[0],
+              'screen_2': st.settings and st.set_tab == SET_TABS[1],
+              'screen_4': st.settings and st.set_tab == SET_TABS[3],
               'note_repeat': st.nr_active, 'lock': st.nr_lock,
               'screen_5': False, 'screen_6': False}
     for name in available_buttons(st):
@@ -1778,11 +2673,25 @@ def led_frame(st: State) -> bytes:
     Mode STEP : pas avec note = vif, pas vide = eteint, pas en lecture = blanc."""
     now = time.monotonic()
     dim, bright = hue_pair(st.group_hue[st.group])
+    if st.settings and st.set_tab != 'COLOR':          # AUDIO / MIDI : pads pour tester le son
+        return pad_led_frame({p: bright if p in st.down else dim for p in range(1, 17)})
     if st.settings:
         if st.set_target == 'GROUP':                   # pad n = teinte n (vive)
             return pad_led_frame({p: hue_pair(p - 1)[1] for p in range(1, 17)})
         return pad_led_frame({p: pad_pair(st, p)[1 if p in st.set_selected else 0]
                               for p in range(1, 17)})
+    if st.pattern_mode:                                # PATTERN : vide eteint, plein doux,
+        colors = {}                                    # choisi vif, en attente clignote
+        blink = int(now * 4) % 2 == 0
+        for p in range(1, 17):
+            idx = st.pat_bank * 16 + p - 1
+            if st.pat_queue.get(st.group) == idx:
+                colors[p] = bright if blink else dim
+            elif idx == st.pat_index[st.group]:
+                colors[p] = bright
+            else:
+                colors[p] = dim if st.patterns[st.group][idx] else 0
+        return pad_led_frame(colors)
     if st.melodic() and not st.step_mode:
         shift = 'shift' in st.held
         colors = {}
@@ -1857,8 +2766,7 @@ ENGINE = Path(__file__).resolve().parent.parent / 'pad-sound' / 'build' / \
 
 
 def start_engine(output: str | None):
-    """Demarre le moteur audio APRES avoir pris la Maschine : sa carte son a disparu, le
-    moteur choisit donc une autre sortie. Il tourne avec ton compte (pas en administrateur)."""
+    """Demarre le moteur audio (avec ton compte, meme si l'interface a ete lancee sous sudo)."""
     if not ENGINE.exists():
         print(f'Moteur audio introuvable : {ENGINE}')
         print('Compile-le : cd prototypes/pad-sound && cmake --build build   (interface sans son)')
@@ -1949,6 +2857,8 @@ def main() -> int:
                     help="correction de couleur des ecrans (voir mk3_screens.py couleurs)")
     ap.add_argument('--led-scan', action='store_true',
                     help="allumer les lumieres des boutons une par une (calibration)")
+    ap.add_argument('--exclusive', action='store_true',
+                    help='ancien acces exclusif (sudo ; la carte son de la Maschine disparait)')
     ap.add_argument('--palette', action='store_true',
                     help='nuancier : les 16 pads montrent les 16 teintes de la Maschine')
     a = ap.parse_args()
@@ -1970,14 +2880,29 @@ def main() -> int:
         print('Apercus enregistres : mk3_tracker_gauche.png, mk3_tracker_droit.png')
         return 0
 
+    st.ni_paused, st.exclusive = False, a.exclusive
     try:
-        screens = Screens(detach=True)
-        dev = UsbHid(screens)
+        if a.exclusive:                                # ancien mode : sudo, detache tout
+            screens = Screens(detach=True)
+            dev = UsbHid(screens)
+        else:
+            dev = HidDev()
+            st.device_info = (dev.product, dev.firmware)
+            try:
+                screens = Screens()
+            except MK3Error:
+                if not ni_agent_running():
+                    raise
+                print("Ecrans tenus par l'agent Native Instruments : mise en pause (relance en quittant).")
+                st.ni_paused = ni_agent_pause()
+                if st.ni_paused:
+                    atexit.register(ni_agent_resume)   # meme en cas d'erreur
+                screens = Screens()
     except MK3Error as e:
         print('Erreur :', e)
-        print('As-tu lance avec sudo ? Sinon, debranche / rebranche la Maschine.')
-        if 'screens' in locals():
-            screens.close()
+        print('Quitte les logiciels qui utilisent la Maschine (Maschine, Mixxx...) et reessaie.')
+        if 'dev' in locals():
+            dev.close()
         return 1
     dec = Decoder(CURVES[a.curve])
     if a.palette:
@@ -2016,9 +2941,11 @@ def main() -> int:
                     for snd, note in notes:
                         v = out_vel(st, st.group, snd, ev[2])
                         if v:
-                            SOUND.hit(snd, v, note)
+                            play_note(st, st.group, snd, v, note)   # moteur, ou MIDI OUT
                 elif ev[0] == 'pad_off':
-                    st.held_play.pop(ev[1], None)
+                    held = st.held_play.pop(ev[1], None)
+                    if held and not st.arp:
+                        release_notes(st, st.group, held[2])
                 events.put(ev)
 
     def player():
@@ -2029,17 +2956,21 @@ def main() -> int:
                 repeat_tick(st)
             time.sleep(0.001)
 
-    threads = [threading.Thread(target=reader, daemon=True), threading.Thread(target=player, daemon=True)]
+    threads = [threading.Thread(target=reader, daemon=True), threading.Thread(target=player, daemon=True),
+               threading.Thread(target=engine_listener, args=(st, events, running), daemon=True)]
     for t in threads:
         t.start()
 
     dirty, last_draw, last_leds, last_buttons = True, 0.0, b'', b''
+    last_transport = None
     try:
-        while True:
+        while not st.quit_request:
             try:
                 ev = events.get(timeout=0.01)
                 while True:                               # vider tout ce qui attend
                     with lock:
+                        if ev[0] == 'engine' and ev[1] == 'first' and not st.engine_synced:
+                            engine_sync(st, keep_output=bool(a.output))
                         if ev[0] != 'redraw':
                             handle(st, ev)
                     dirty = True
@@ -2047,6 +2978,20 @@ def main() -> int:
             except queue.Empty:
                 pass
             now = time.monotonic()
+            # SETTINGS > AUDIO / MIDI : reglages envoyes au moteur apres un court repos
+            if st.audio_pending and now - st.audio_pending > 1.0:
+                st.audio_pending = 0.0
+                send_audio(st)
+                dirty = True
+            if st.midi_pending and now - st.midi_pending > 0.3:
+                st.midi_pending = 0.0
+                send_midi(st)
+            transport = (st.playing, st.bpm)               # horloge MIDI / Start-Stop envoyes
+            if transport != last_transport:
+                SOUND.send('/fuzzy/proto/transport', int(st.playing), float(st.bpm))
+                last_transport = transport
+            if st.settings and st.set_tab in ('STATUS', 'AUDIO', 'MIDI') and now - last_draw > 0.5:
+                dirty = True                               # etat qui change tout seul
             with lock:
                 if (any(t > now - 0.1 for t in st.flash.values())
                         or any(e > now - 0.1 for e, _ in st.note_flash.values())
@@ -2088,7 +3033,10 @@ def main() -> int:
             pass
         dev.close()
         screens.close()
-        print('\nArrete. Debranche / rebranche la Maschine pour rendre les ecrans au pilote NI.')
+        if st.quit_request and not st.ni_paused and sys.platform == 'darwin' and not ni_agent_running():
+            ni_agent_resume()                          # Shift + 8 : rendre la Maschine a NI
+        print('\nArrete.' + ('' if st.ni_paused or not a.exclusive else
+                               ' Debranche / rebranche la Maschine pour la rendre au pilote NI.'))
     return 0
 
 

@@ -1,7 +1,10 @@
-// fuzzy-control : connexion a la Maschine MK3 / Maschine+ par libusb.
+// fuzzy-control : connexion a la Maschine MK3 / Maschine+.
 //
-// Sur macOS, prendre la Maschine retire le pilote Native Instruments de TOUT l'appareil
-// (il faut les droits administrateur : sudo) ; la carte son de la Maschine disparait alors.
+// Mode partage (par defaut, sans sudo) : pads / boutons / lumieres a travers le pilote HID du
+// systeme (hidapi), ecrans par libusb sur la seule interface 5. Rien n'est detache : la carte
+// son de la Maschine reste disponible. Sur macOS, l'agent NI (NIHostIntegrationAgent) tient
+// les ecrans : il faut le mettre en pause (voir ni_agent.h).
+// Mode exclusif (ancien, sudo) : libusb detache les pilotes ; la carte son disparait.
 #pragma once
 #include "decoder.h"
 
@@ -13,6 +16,7 @@
 
 struct libusb_context;
 struct libusb_device_handle;
+struct hid_device_;
 
 namespace fuzzy::control {
 
@@ -25,6 +29,7 @@ public:
     static constexpr int kHidInterface = 4;
     static constexpr int kDisplayInterface = 5;
 
+    enum class Access { Shared, Exclusive };
     using Callback = std::function<void (const Event&)>;
 
     MaschineMk3();
@@ -34,9 +39,10 @@ public:
 
     // Ouvre la Maschine et reserve l'interface des pads / boutons.
     // En cas d'echec, renvoie false et explique pourquoi dans `error`.
-    bool open (std::string& error);
+    bool open (std::string& error, Access access = Access::Shared);
     void close();
-    bool isOpen() const { return handle != nullptr; }
+    bool isOpen() const { return hid != nullptr || claimed; }
+    Access access() const { return mode; }
     std::string productName() const { return product; }
 
     // Lit la Maschine dans une tache a part et appelle `callback` pour chaque evenement.
@@ -55,7 +61,11 @@ public:
 
 private:
     void readLoop();
+    bool openUsb (std::string& error);
+    bool openExclusive (std::string& error);
 
+    Access mode = Access::Shared;
+    hid_device_* hid = nullptr;
     libusb_context* context = nullptr;
     libusb_device_handle* handle = nullptr;
     unsigned char endpointIn = 0, endpointOut = 0;

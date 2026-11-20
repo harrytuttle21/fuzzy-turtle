@@ -4,9 +4,11 @@
 //  - ecrans : gauche = groupe et pads ; droit = derniers evenements et vitesse d'affichage ;
 //  - calibration : lue dans ~/.config/fuzzy-turtle/maschine-mk3.conf (ou maschine-plus.conf).
 //
-// Usage : sudo ./build/fuzzy-control-probe [options]
+// Usage : ./build/fuzzy-control-probe [options]       (plus besoin de sudo)
 //   --curve soft|softer|linear|hard   courbe de velocite (sinon celle du fichier)
 //   --no-lights --no-screens --no-correction
+//   --keep-ni                         ne pas mettre en pause l'agent NI (macOS) : pas d'ecrans
+//   --exclusive                       ancien mode (sudo, la carte son de la Maschine disparait)
 //   --calibration FICHIER             autre fichier de calibration
 //   --save-calibration                ecrit le fichier (valeurs actuelles), pour l'editer
 //   --scan-lights                     cherche les lumieres : la molette 4D allume les
@@ -16,6 +18,7 @@
 #include "fuzzy_control/display.h"
 #include "fuzzy_control/lights.h"
 #include "fuzzy_control/maschine_mk3.h"
+#include "fuzzy_control/ni_agent.h"
 
 #include <algorithm>
 #include <atomic>
@@ -99,6 +102,7 @@ int main (int argc, char* argv[])
 {
     double exponent = -1;                     // -1 : celle du fichier de calibration
     bool lights = true, screens = true, correction = true, saveCal = false, scan = false;
+    bool keepNi = false, exclusive = false, niPaused = false;
     std::string calPath;
     for (int i = 1; i < argc; ++i)
     {
@@ -107,6 +111,8 @@ int main (int argc, char* argv[])
         else if (! std::strcmp (argv[i], "--no-correction")) correction = false;
         else if (! std::strcmp (argv[i], "--save-calibration")) saveCal = true;
         else if (! std::strcmp (argv[i], "--scan-lights")) scan = true;
+        else if (! std::strcmp (argv[i], "--keep-ni")) keepNi = true;
+        else if (! std::strcmp (argv[i], "--exclusive")) exclusive = true;
         else if (! std::strcmp (argv[i], "--calibration") && i + 1 < argc) calPath = argv[++i];
         else if (! std::strcmp (argv[i], "--curve") && i + 1 < argc)
         {
@@ -119,15 +125,25 @@ int main (int argc, char* argv[])
 
     MaschineMk3 maschine;
     std::string error;
-    if (! maschine.open (error))
+    if (! maschine.open (error, exclusive ? MaschineMk3::Access::Exclusive : MaschineMk3::Access::Shared))
     {
         std::printf ("Erreur : %s\n", error.c_str());
         return 1;
     }
     if (screens && ! maschine.openDisplay (error))
     {
-        std::printf ("Ecrans : %s (on continue sans)\n", error.c_str());
-        screens = false;
+        // macOS : l'agent NI tient les ecrans -> pause, puis relance en quittant
+        if (! keepNi && ni::agentRunning())
+        {
+            std::puts ("Ecrans tenus par l'agent Native Instruments : mise en pause (relance en quittant).");
+            niPaused = ni::pauseAgent();
+            error.clear();
+        }
+        if (! error.empty() || ! maschine.openDisplay (error))
+        {
+            std::printf ("Ecrans : %s (on continue sans)\n", error.c_str());
+            screens = false;
+        }
     }
     // Calibration : valeurs par defaut du modele, puis le fichier s'il existe
     Calibration cal = Calibration::defaultsFor (maschine.productName());
@@ -316,6 +332,11 @@ int main (int argc, char* argv[])
         display.send (maschine);
     }
     maschine.close();
+    if (niPaused)
+    {
+        ni::resumeAgent();
+        std::puts ("Agent Native Instruments relance : la Maschine revient au logiciel NI.");
+    }
     if (scanChanged)
     {
         if (cal.save (calPath, error))

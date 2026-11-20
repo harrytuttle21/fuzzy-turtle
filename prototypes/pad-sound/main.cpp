@@ -8,20 +8,31 @@
 //          ./fuzzy_pad_sound --buffer 64   (plus reactif, plus exigeant pour l'ordinateur)
 //          (sans option : 96 echantillons)
 //          ./fuzzy_pad_sound --osc         (ne lit pas la Maschine : recoit les notes de
-//                                           mk3_live.py par OSC sur le port 57390 ; evite
-//                                           la sortie "Maschine")
+//                                           mk3_live.py par OSC sur le port 57390)
 //          --output "nom"  impose une sortie audio ; --quiet  pas de ligne par note
+// En mode --osc, le moteur obeit aussi a SETTINGS > AUDIO / MIDI de mk3_live.py :
+//   /fuzzy/proto/audio/set   s sortie, s entree, i frequence, i tampon
+//   /fuzzy/proto/midi/set    s entree, s sortie, i horloge (0 off, 1 envoyer, 2 recevoir),
+//                            i start/stop, i thru
+//   /fuzzy/proto/midi/note   i canal, i note, i velocite, i duree ms ; /fuzzy/proto/midi/off
+//   /fuzzy/proto/transport   i lecture, f tempo
+// et renvoie son etat a l'interface (port 57391) : /fuzzy/proto/audio/state, /midi/state,
+// /midi/in, /clock/in, /transport/in.
 // Licence : GPLv3 (JUCE utilise sous AGPLv3).
 
 #include <juce_audio_devices/juce_audio_devices.h>
 #include <juce_osc/juce_osc.h>
 #include <hidapi.h>
 
+#include "midi_bridge.h"
+
 #include <array>
 #include <atomic>
 #include <cmath>
 #include <csignal>
 #include <cstdio>
+#include <mutex>
+#include <optional>
 #include <thread>
 
 namespace
@@ -270,12 +281,24 @@ void readPads (hid_device* dev, EventQueue& queue)
     }
 }
 // ----------------------------------------------------------------------------
+// Reglages demandes par l'interface : appliques par le fil principal (ouverture de peripheriques)
+struct AudioRequest { juce::String output, input; int sampleRate = 0, buffer = 0; };
+struct MidiRequest { juce::String input, output; int clock = 0; bool transport = false, thru = false; };
+
+struct Requests
+{
+    std::mutex lock;
+    std::optional<AudioRequest> audio;
+    std::optional<MidiRequest> midi;
+};
+
+// ----------------------------------------------------------------------------
 // Mode --osc : les notes arrivent de mk3_live.py (message /fuzzy/proto/hit son velocite note).
 // Le rappel "temps reel" les transmet tout de suite au moteur, sans attendre l'interface.
 class OscInput : private juce::OSCReceiver::Listener<juce::OSCReceiver::RealtimeCallback>
 {
 public:
-    explicit OscInput (EventQueue& q) : queue (q) {}
+    OscInput (EventQueue& q, Requests& r, MidiBridge& m) : queue (q), requests (r), midi (m) {}
     bool start (int port)
     {
         if (! receiver.connect (port)) return false;
@@ -291,6 +314,35 @@ private:
             queue.push ({ kPanic, 0, -1, juce::Time::getHighResolutionTicks() });
             return;
         }
+        const auto str = [&m] (int i) { return i < m.size() && m[i].isString() ? m[i].getString() : juce::String(); };
+        const auto num = [&m] (int i) { return i < m.size() && m[i].isInt32() ? m[i].getInt32() : 0; };
+        if (address == "/fuzzy/proto/audio/set")
+        {
+            std::lock_guard<std::mutex> g (requests.lock);
+            requests.audio = AudioRequest { str (0), str (1), num (2), num (3) };
+            return;
+        }
+        if (address == "/fuzzy/proto/midi/set")
+        {
+            std::lock_guard<std::mutex> g (requests.lock);
+            requests.midi = MidiRequest { str (0), str (1), num (2), num (3) != 0, num (4) != 0 };
+            return;
+        }
+        if (address == "/fuzzy/proto/midi/note")
+        {
+            midi.noteOut (num (0), num (1), num (2), num (3));
+            return;
+        }
+        if (address == "/fuzzy/proto/midi/off")
+        {
+            midi.noteOff (num (0), num (1));
+            return;
+        }
+        if (address == "/fuzzy/proto/transport")
+        {
+            midi.setTransport (num (0) != 0, m.size() > 1 && m[1].isFloat32() ? m[1].getFloat32() : 120.0);
+            return;
+        }
         if (address != "/fuzzy/proto/hit") return;
         if (m.size() < 3 || ! m[0].isInt32() || ! m[1].isInt32() || ! m[2].isInt32()) return;
         const int pad = m[0].getInt32();
@@ -299,8 +351,32 @@ private:
                       juce::Time::getHighResolutionTicks() });
     }
     EventQueue& queue;
+    Requests& requests;
+    MidiBridge& midi;
     juce::OSCReceiver receiver;
 };
+
+// Applique une demande de reglage audio (fil principal)
+void applyAudio (juce::AudioDeviceManager& audio, const AudioRequest& r)
+{
+    auto setup = audio.getAudioDeviceSetup();
+    if (r.output.isNotEmpty())
+        setup.outputDeviceName = r.output;
+    if (r.sampleRate > 0)
+        setup.sampleRate = r.sampleRate;
+    if (r.buffer > 0)
+        setup.bufferSize = r.buffer;
+    const auto err = audio.setAudioDeviceSetup (setup, true);
+    if (err.isNotEmpty())
+        std::printf ("Audio : %s\n", err.toRawUTF8());
+}
+
+juce::String joinInts (const juce::Array<int>& values)
+{
+    juce::StringArray parts;
+    for (int v : values) parts.add (juce::String (v));
+    return parts.joinIntoString (",");
+}
 } // namespace
 
 // ----------------------------------------------------------------------------
@@ -354,12 +430,7 @@ int main (int argc, char* argv[])
             for (auto& name : outputs)
                 if (name.containsIgnoreCase (wantedOutput)) { chosen = name; break; }
         }
-        else if (oscMode && (chosen.isEmpty() || chosen.containsIgnoreCase ("maschine")))
-        {
-            chosen = {};
-            for (auto& name : outputs)
-                if (! name.containsIgnoreCase ("maschine")) { chosen = name; break; }
-        }
+        // (plus d'evitement de la sortie "Maschine" : en mode partage, sa carte son reste la)
         if (chosen.isNotEmpty())
             setup.outputDeviceName = chosen;
     }
@@ -372,15 +443,28 @@ int main (int argc, char* argv[])
         std::puts ("Aucune sortie audio disponible : choisis une sortie dans Reglages Systeme > Son.");
         return 1;
     }
-    const double sr = device->getCurrentSampleRate();
-    const int buffer = device->getCurrentBufferSizeSamples();
-    const int outLat = device->getOutputLatencyInSamples();
     std::printf ("Sortie audio : %s, %.0f Hz, tampon %d echantillons (%.1f ms), "
                  "latence de sortie %.1f ms\n",
-                 device->getName().toRawUTF8(), sr, buffer, buffer / sr * 1000.0, outLat / sr * 1000.0);
+                 device->getName().toRawUTF8(), device->getCurrentSampleRate(),
+                 device->getCurrentBufferSizeSamples(),
+                 device->getCurrentBufferSizeSamples() / device->getCurrentSampleRate() * 1000.0,
+                 device->getOutputLatencyInSamples() / device->getCurrentSampleRate() * 1000.0);
     std::puts ("Pads 1-4 : batterie ; pads 5-16 : notes. Ctrl+C pour quitter.");
 
-    OscInput osc (queue);
+    // Retour vers l'interface (mk3_live.py ecoute sur le port 57391)
+    juce::OSCSender toUi;
+    std::mutex toUiLock;
+    const bool uiConnected = oscMode && toUi.connect ("127.0.0.1", kOscPort + 1);
+    auto sendUi = [&] (const juce::OSCMessage& m)
+    {
+        if (! uiConnected) return;
+        std::lock_guard<std::mutex> g (toUiLock);
+        toUi.send (m);
+    };
+    MidiBridge midi (sendUi);
+    Requests requests;
+
+    OscInput osc (queue, requests, midi);
     std::thread reader;
     if (oscMode)
     {
@@ -393,22 +477,88 @@ int main (int argc, char* argv[])
     }
     else
         reader = std::thread (readPads, dev, std::ref (queue));
-    int seen = 0;
+    int seen = 0, loops = 0, rescans = 0;
     while (gRunning.load())
     {
         std::this_thread::sleep_for (std::chrono::milliseconds (50));
+
+        // Reglages demandes par SETTINGS > AUDIO / MIDI
+        std::optional<AudioRequest> audioReq;
+        std::optional<MidiRequest> midiReq;
+        {
+            std::lock_guard<std::mutex> g (requests.lock);
+            audioReq.swap (requests.audio);
+            midiReq.swap (requests.midi);
+        }
+        if (audioReq)
+        {
+            applyAudio (audio, *audioReq);
+            if (auto* d = audio.getCurrentAudioDevice())
+                std::printf ("Sortie audio : %s, %.0f Hz, tampon %d\n", d->getName().toRawUTF8(),
+                             d->getCurrentSampleRate(), d->getCurrentBufferSizeSamples());
+            loops = 9;                                    // etat renvoye tout de suite
+        }
+        if (midiReq)
+        {
+            midi.configure (midiReq->input, midiReq->output, midiReq->clock, midiReq->transport, midiReq->thru);
+            loops = 9;
+        }
+
+        // Etat pour l'interface, deux fois par seconde
+        if (++loops >= 10 && uiConnected)
+        {
+            loops = 0;
+            juce::StringArray outputs, inputs;
+            if (auto* type = audio.getCurrentDeviceTypeObject())
+            {
+                if (++rescans % 4 == 0)
+                    type->scanForDevices();               // carte branchee / debranchee (toutes les 2 s)
+                outputs = type->getDeviceNames (false);
+                inputs = type->getDeviceNames (true);
+            }
+            auto* d = audio.getCurrentAudioDevice();
+            juce::OSCMessage a ("/fuzzy/proto/audio/state");
+            a.addString (d ? d->getName() : juce::String());
+            a.addFloat32 (d ? (float) d->getCurrentSampleRate() : 0.0f);
+            a.addInt32 (d ? d->getCurrentBufferSizeSamples() : 0);
+            a.addFloat32 (d && d->getCurrentSampleRate() > 0
+                          ? (float) ((d->getCurrentBufferSizeSamples() + d->getOutputLatencyInSamples())
+                                     / d->getCurrentSampleRate() * 1000.0) : 0.0f);
+            a.addInt32 (d ? d->getXRunCount() : -1);
+            a.addString (outputs.joinIntoString ("\n"));
+            juce::Array<int> rates;
+            if (d) for (double r : d->getAvailableSampleRates()) rates.add ((int) r);
+            a.addString (joinInts (rates));
+            a.addString (d ? joinInts (d->getAvailableBufferSizes()) : juce::String());
+            a.addString (inputs.joinIntoString ("\n"));
+            sendUi (a);
+
+            juce::OSCMessage m ("/fuzzy/proto/midi/state");
+            m.addString (MidiBridge::inputNames().joinIntoString ("\n"));
+            m.addString (MidiBridge::outputNames().joinIntoString ("\n"));
+            m.addString (midi.inputName());
+            m.addString (midi.outputName());
+            m.addInt32 (midi.inCount.load());
+            m.addInt32 (midi.outCount.load());
+            m.addFloat32 ((float) midi.receivedBpm());
+            sendUi (m);
+        }
+
         const int h = engine.hits.load();
         if (h == seen || quiet) continue;
         seen = h;
+        auto* d = audio.getCurrentAudioDevice();
+        if (d == nullptr) continue;
+        const double sr = d->getCurrentSampleRate();
         const double wait = engine.lastWaitMs.load();
         // Estimation : attente dans le programme + un tampon + latence de sortie de la carte son
-        const double total = wait + (buffer + outLat) / sr * 1000.0;
+        const double total = wait + (d->getCurrentBufferSizeSamples() + d->getOutputLatencyInSamples()) / sr * 1000.0;
         // "decrochages" : nombre de fois ou l'ordinateur n'a pas fourni le son a temps
         // (-1 = information non disponible sur cette carte son)
         std::printf ("PAD %2d  velocite %3d  | dans le programme %4.1f ms | total estime %4.1f ms"
                      " | decrochages %d\n",
                      engine.lastPad.load(), engine.lastVelocity.load(), wait, total,
-                     device->getXRunCount());
+                     d->getXRunCount());
         std::fflush (stdout);
     }
 

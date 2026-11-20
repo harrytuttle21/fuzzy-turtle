@@ -30,7 +30,8 @@ CONTROL_BITS = {**{f'group_{chr(97+i)}': 8+i for i in range(8)},
                 'tempo': 19, 'pad_mode': 24, 'keyboard': 25, 'chords': 26,
                 'scene': 29, 'pattern': 30, 'mixer': 52, 'plug_in': 53,
                 'nav_prev': 59, 'nav_next': 50,
-                'screen_3': 66, 'screen_5': 68, 'screen_6': 69, 'screen_7': 70, 'screen_8': 71,
+                'screen_1': 64, 'screen_2': 65, 'screen_3': 66, 'screen_4': 67,
+                'screen_5': 68, 'screen_6': 69, 'screen_7': 70, 'screen_8': 7,   # bouton 8 : bit 7 (20/11)
                 'volume': 17, 'note_repeat': 20, 'lock': 21, 'follow': 44,     # VOLUME : bit suppose (avant TEMPO 19), a confirmer
                 # Molette 4D poussee dans une direction / cliquee (octet 1, pilote r22yb3m)
                 'nav_click': 0, 'nav_up': 2, 'nav_right': 3, 'nav_down': 4, 'nav_left': 5,
