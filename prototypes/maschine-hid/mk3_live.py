@@ -26,6 +26,10 @@ Modes, comme sur Maschine :
                 fin du pattern ; DUPLICATE + pad = copier le pattern choisi ici ; ERASE + pad =
                 effacer ; encodeur 1 = banque, encodeur 8 = longueur (comme en vue TRACKER ;
                 affichee en bas a droite de l'ecran droit).
+  SCENE         pads = 16 scenes (64 : 4 banques, < > ou encodeur 1) ; une scene = un pattern par
+                groupe. Pad vide = y ranger les patterns en cours ; pad = lancer (en lecture :
+                chaque groupe change a la fin de son pattern) ; Shift + pad = remplacer ;
+                DUPLICATE + pad = copier la scene en cours ; ERASE + pad = effacer.
   SETTINGS      4 onglets, boutons 1-4 : AUDIO / MIDI / COLOR / STATUS (MIDI ouvre directement
                 l'onglet MIDI). SETTINGS a nouveau = fermer : bouton 5 YES / bouton 6 NO.
                 COLOR : encodeur 1 cible GROUP / PADS ; GROUP : pad n = couleur n ;
@@ -373,6 +377,12 @@ class State:
         self.pat_bank = 0
         self.pat_knobs = {0: Knob(40), 7: Knob(12)}           # 1 banque, 8 longueur
         self.len_flash = 0.0                                   # affichage LENGTH (encodeur 8)
+        # Scenes (bouton SCENE) : un pattern par groupe ; 64 scenes (4 banques de 16)
+        self.scenes: list = [None] * PAT_SLOTS
+        self.scene_current: int | None = None
+        self.scene_mode = False
+        self.scene_bank = 0
+        self.scene_knobs = {0: Knob(40)}
         self.muted: set[str] = set()                           # MUTE + groupe
         self.solo: set[str] = set()                            # SOLO + groupe(s)
         self.undo_stack: list = []                             # Shift + pad 3 / 4
@@ -1428,6 +1438,8 @@ def draw_left(st: State) -> Image.Image:
         return draw_mixer(st, 0)
     if st.pattern_mode:
         return draw_patterns(st, 0)
+    if st.scene_mode:
+        return draw_scenes(st, 0)
     if st.tracker16:
         return draw_tracks(st, 0)
     acc = group_rgb(st)
@@ -1537,6 +1549,63 @@ def draw_patterns(st: State, half: int) -> Image.Image:
         d.text((12, 172 + k * 20), line, font=font(13), fill=(180, 180, 180))
     d.text((12, 240), 'PATTERN again: back.', font=font(13), fill=acc)
     length_label(st, d)
+    return img
+
+
+def draw_scenes(st: State, half: int) -> Image.Image:
+    """Mode SCENE : a gauche les 16 scenes de la banque, a droite le detail de la scene."""
+    acc = group_rgb(st)
+    img = Image.new('RGB', (W, H), (10, 10, 14))
+    d = ImageDraw.Draw(img)
+    cur, waiting = st.scene_current, bool(st.pat_queue)
+    if half == 0:
+        header(d, 'SCENES', f'Bank {st.scene_bank + 1}/{PAT_BANKS}', acc)
+        for i in range(16):
+            pad = 13 + i % 4 - 4 * (i // 4)            # pad 13 en haut a gauche
+            idx = st.scene_bank * 16 + pad - 1
+            sc = st.scenes[idx]
+            x, y = 8 + (i % 4) * 117, 32 + (i // 4) * 52
+            if idx == cur:
+                rounded(d, (x, y, x + 110, y + 46), fill=acc)
+                if waiting:
+                    rounded(d, (x - 2, y - 2, x + 112, y + 48), outline='white', width=2)
+            elif sc:
+                rounded(d, (x, y, x + 110, y + 46), fill=shade(acc, 0.3))
+            else:
+                rounded(d, (x, y, x + 110, y + 46), outline=(50, 50, 60))
+            ink = 'black' if idx == cur else ('white' if sc else (90, 90, 90))
+
+            def centered(txt, ty, f):
+                d.text((x + 55 - d.textlength(txt, font=f) / 2, ty), txt, font=f, fill=ink)
+            centered(f'S{idx + 1:02d}', y + 5, font(15))
+            if sc:                                     # groupes dont le pattern n'est pas le 1er
+                used = [f'{g}{p + 1}' for g, p in sc.items() if p or (st.patterns[g][p] and any(
+                    c for r in st.patterns[g][p]['grid'][:st.patterns[g][p]['length']] for c in r))]
+                centered(' '.join(used[:4]) + (' ..' if len(used) > 4 else '') or '-', y + 26, font(11))
+            else:
+                centered('empty', y + 26, font(11))
+        d.text((10, 252), f'Bank {st.scene_bank + 1}', font=font(12), fill=(170, 170, 170))
+        return img
+    state = 'switching...' if waiting else ('playing' if st.playing else 'stopped')
+    header(d, f'Scene {cur + 1:02d}' if cur is not None else 'No scene', state, acc)
+    combo = st.scenes[cur] if cur is not None and st.scenes[cur] else current_combo(st)
+    for k, g in enumerate(GROUPS):
+        x, y = 12 + (k % 4) * 116, 36 + (k // 4) * 54
+        p = combo.get(g, 0)
+        pat = st.patterns[g][p]
+        live = st.pat_index[g] == p and g not in st.pat_queue
+        rounded(d, (x, y, x + 108, y + 46), fill=hue_rgb(st.group_hue[g]) if live else (24, 24, 32),
+                outline=hue_rgb(st.group_hue[g]), width=2)
+        ink = 'black' if live else 'white'
+        txt = f'{g}  P{p + 1:02d}'
+        d.text((x + 54 - d.textlength(txt, font=font(15)) / 2, y + 5), txt, font=font(15), fill=ink)
+        info = f"{pat['length']} lines" if pat else 'empty'
+        d.text((x + 54 - d.textlength(info, font=font(11)) / 2, y + 27), info, font=font(11), fill=ink)
+    lines = ['Empty pad: save the playing patterns.  Pad: launch.',
+             'Shift + pad: replace.  DUPLICATE + pad: copy.',
+             'ERASE + pad: erase.  < > : bank.  SCENE again: back.']
+    for k, line in enumerate(lines):
+        d.text((12, 196 + k * 20), line, font=font(12), fill=(180, 180, 180))
     return img
 
 
@@ -1805,6 +1874,8 @@ def _draw_right(st: State) -> Image.Image:
         return draw_mixer(st, 1)
     if st.pattern_mode:
         return draw_patterns(st, 1)
+    if st.scene_mode:
+        return draw_scenes(st, 1)
     if st.tracker16:
         return draw_tracks(st, 8)
     if st.right_view == 'chords':
@@ -1959,7 +2030,7 @@ def step_row(st: State, pad: int) -> int:
 
 def sound_for(st: State, pad: int) -> list:
     """Les notes a jouer tout de suite pour un pad frappe : [(son, note), ...]."""
-    if 'shift' in st.held or st.pattern_mode or (st.settings and st.set_tab in ('COLOR', 'STATUS')):
+    if 'shift' in st.held or st.pattern_mode or st.scene_mode or (st.settings and st.set_tab in ('COLOR', 'STATUS')):
         return []                          # AUDIO / MIDI : les pads jouent (tester la sortie)
     if st.step_mode:                       # sans REC : on ecoute le son ; avec REC : seulement
         if not st.recording or st.grid[step_row(st, pad)][st.sound - 1] is None:   # en ajoutant
@@ -2029,6 +2100,9 @@ def handle(st: State, ev: tuple) -> None:
             return
         if st.pattern_mode:                          # PATTERN : pads = patterns
             pattern_pad(st, pad, vel)
+            return
+        if st.scene_mode:                            # SCENE : pads = scenes
+            scene_pad(st, pad)
             return
         if st.right_view == 'chords' and st.user_edit:   # EDIT USER : pads = 16 demi-tons
             chord = set(st.user_chords[st.user_bank][st.user_slot - 1])
@@ -2239,8 +2313,14 @@ def handle(st: State, ev: tuple) -> None:
             if not st.user_edit:
                 save_user_chords(st)
         elif name == 'pattern':                      # PATTERN : pads = patterns du groupe
-            st.pattern_mode = not st.pattern_mode
+            st.pattern_mode, st.scene_mode = not st.pattern_mode, False
             st.pat_bank = st.pat_index[st.group] // 16
+        elif name == 'scene':                        # SCENE : pads = scenes
+            st.scene_mode, st.pattern_mode = not st.scene_mode, False
+            if st.scene_current is not None:
+                st.scene_bank = st.scene_current // 16
+        elif name in ('nav_prev', 'nav_next') and st.scene_mode:     # < > : banque de scenes
+            st.scene_bank = max(0, min(PAT_BANKS - 1, st.scene_bank + (1 if name == 'nav_next' else -1)))
         elif name in ('nav_prev', 'nav_next') and st.pattern_mode:   # < > : banque de patterns
             st.pat_bank = max(0, min(PAT_BANKS - 1, st.pat_bank + (1 if name == 'nav_next' else -1)))
         elif name in ('nav_prev', 'nav_next') and st.step_mode:   # < > : page STEP
@@ -2267,6 +2347,12 @@ def handle(st: State, ev: tuple) -> None:
         i = ev[1] - 1
         if st.settings and st.set_tab in ('AUDIO', 'MIDI'):
             settings_knob(st, i, ev[2])
+            return
+        if st.scene_mode and not st.settings and not st.mixer:     # 1 banque
+            if i in st.scene_knobs:
+                n = st.scene_knobs[i].steps(ev[2])
+                if n:
+                    st.scene_bank = (st.scene_bank + n) % PAT_BANKS
             return
         if st.pattern_mode and not st.settings and not st.mixer:   # 1 banque, 8 longueur
             if i in st.pat_knobs:
@@ -2524,6 +2610,38 @@ def pattern_pad(st: State, pad: int, vel: int) -> None:
         select_pattern(st, g, idx)
 
 
+def current_combo(st: State) -> dict:
+    """Les patterns qui jouent (ou joueront) maintenant, groupe par groupe."""
+    return {g: st.pat_queue.get(g, st.pat_index[g]) for g in GROUPS}
+
+
+def launch_scene(st: State, idx: int) -> None:
+    """Chaque groupe passe au pattern de la scene (en lecture : a la fin de son pattern)."""
+    for g, p in st.scenes[idx].items():
+        select_pattern(st, g, p)
+    st.scene_current = idx
+
+
+def scene_pad(st: State, pad: int) -> None:
+    """Mode SCENE : pad vide = y ranger les patterns en cours ; pad plein = lancer la scene ;
+    Shift + pad = remplacer par les patterns en cours ; DUPLICATE + pad = copier la scene
+    choisie ici ; ERASE + pad = effacer."""
+    idx = st.scene_bank * 16 + pad - 1
+    if 'erase' in st.held:
+        st.scenes[idx] = None
+        if st.scene_current == idx:
+            st.scene_current = None
+    elif 'duplicate' in st.held:
+        if st.scene_current is not None and st.scenes[st.scene_current]:
+            st.scenes[idx] = dict(st.scenes[st.scene_current])
+            st.scene_current = idx
+    elif st.scenes[idx] is None or 'shift' in st.held:
+        st.scenes[idx] = current_combo(st)
+        st.scene_current = idx
+    else:
+        launch_scene(st, idx)
+
+
 def tick(st: State) -> bool:
     """Fait avancer la lecture : 4 lignes par temps. Renvoie True si une ligne a joue."""
     if not st.playing:
@@ -2611,8 +2729,8 @@ def available_buttons(st: State) -> set:
         return on | {'screen_5', 'screen_6'}           # YES / NO
     if st.nr_menu:
         return on                                      # menu Note Repeat : tout aux encodeurs
-    on.add('pattern')                                  # PATTERN : choisir / copier / effacer
-    if st.pattern_mode:
+    on |= {'pattern', 'scene'}                         # PATTERN / SCENE : choisir, copier, effacer
+    if st.pattern_mode or st.scene_mode:
         return on | {'nav_prev', 'nav_next', 'duplicate', 'erase'}
     if st.step_mode or st.mixer:
         on |= {'nav_prev', 'nav_next'}                 # < > : pages STEP ou pages du mixeur
@@ -2634,7 +2752,7 @@ def button_frame(st: State) -> bytes:
               'shift': 'shift' in st.held, 'keyboard': st.right_view == 'keyboard',
               'pad_mode': not st.melodic(), 'chords': st.right_view == 'chords',
               'step': st.step_mode, 'tempo': False, 'nav_prev': False, 'nav_next': False,
-              'pattern': st.pattern_mode, 'duplicate': False, 'erase': False,
+              'pattern': st.pattern_mode, 'scene': st.scene_mode, 'duplicate': False, 'erase': False,
               'mute': bool(st.muted), 'solo': bool(st.solo),
               'mixer': st.mixer, 'volume': False,
               'screen_3': (st.set_tab == SET_TABS[2]) if st.settings else st.tracker16,
@@ -2680,6 +2798,17 @@ def led_frame(st: State) -> bytes:
             return pad_led_frame({p: hue_pair(p - 1)[1] for p in range(1, 17)})
         return pad_led_frame({p: pad_pair(st, p)[1 if p in st.set_selected else 0]
                               for p in range(1, 17)})
+    if st.scene_mode:                                  # SCENE : vide eteint, pleine douce,
+        colors = {}                                    # en cours vive (clignote en attente)
+        blink = int(now * 4) % 2 == 0
+        waiting = bool(st.pat_queue)
+        for p in range(1, 17):
+            idx = st.scene_bank * 16 + p - 1
+            if idx == st.scene_current:
+                colors[p] = (bright if blink else dim) if waiting else bright
+            else:
+                colors[p] = dim if st.scenes[idx] else 0
+        return pad_led_frame(colors)
     if st.pattern_mode:                                # PATTERN : vide eteint, plein doux,
         colors = {}                                    # choisi vif, en attente clignote
         blink = int(now * 4) % 2 == 0
