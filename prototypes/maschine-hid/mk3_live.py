@@ -96,7 +96,7 @@ from __future__ import annotations
 import argparse, atexit, json, os, queue, random, signal, socket, struct, subprocess, sys, threading, time
 from pathlib import Path
 
-from PIL import Image, ImageDraw
+from PIL import Image, ImageChops, ImageDraw
 
 from mk3_probe import Decoder, CURVES, pad_led_frame, VID, PID_MK3, PID_PLUS
 from maschine_chord_sets import MACHINE_CHORD_SET_SOURCES   # 16 Chord Sets (pilote r22yb3m, MIT)
@@ -2273,6 +2273,11 @@ def handle(st: State, ev: tuple) -> None:
             st.playing = not st.playing
             st.step_manual = None                    # en lecture, les pages suivent a nouveau
             st.next_row_time = time.monotonic()
+        elif name == 'restart':                      # RESTART : retour au debut, et lecture
+            reset_playback(st)
+            st.playing = True
+            st.step_manual = None
+            st.next_row_time = time.monotonic()
         elif name == 'stop':
             st.playing = False
             reset_playback(st)
@@ -2678,7 +2683,7 @@ def tick(st: State) -> bool:
 # Retro-eclairage des boutons (rapport 0x80, 63 octets) - emplacements et
 # niveaux repris du pilote r22yb3m (MIT). Boutons mono : 4 = doux, 7 = vif.
 # Groupes A-H : couleurs de la palette NI, (douce, vive) pour chaque groupe.
-BUTTON_SLOTS = {'pattern': 51, 'scene': 50, 'duplicate': 54, 'erase': 38, 'tempo': 23, 'play': 41, 'rec': 42, 'stop': 43, 'shift': 44, 'pad_mode': 46, 'keyboard': 47,
+BUTTON_SLOTS = {'restart': 37, 'pattern': 51, 'scene': 50, 'duplicate': 54, 'erase': 38, 'tempo': 23, 'play': 41, 'rec': 42, 'stop': 43, 'shift': 44, 'pad_mode': 46, 'keyboard': 47,
                 'chords': 48, 'step': 49, 'nav_prev': 6, 'nav_next': 7,
                 'mute': 57, 'solo': 56,
                 'mixer': 3, 'volume': 20,  # MIXER / VOLUME : emplacements supposes (21 = SWING)
@@ -2729,7 +2734,7 @@ def available_buttons(st: State) -> set:
         return on | {'screen_5', 'screen_6'}           # YES / NO
     if st.nr_menu:
         return on                                      # menu Note Repeat : tout aux encodeurs
-    on |= {'pattern', 'scene'}                         # PATTERN / SCENE : choisir, copier, effacer
+    on |= {'pattern', 'scene', 'restart'}              # PATTERN / SCENE ; RESTART : depuis le debut
     if st.pattern_mode or st.scene_mode:
         return on | {'nav_prev', 'nav_next', 'duplicate', 'erase'}
     if st.step_mode or st.mixer:
@@ -2752,7 +2757,7 @@ def button_frame(st: State) -> bytes:
               'shift': 'shift' in st.held, 'keyboard': st.right_view == 'keyboard',
               'pad_mode': not st.melodic(), 'chords': st.right_view == 'chords',
               'step': st.step_mode, 'tempo': False, 'nav_prev': False, 'nav_next': False,
-              'pattern': st.pattern_mode, 'scene': st.scene_mode, 'duplicate': False, 'erase': False,
+              'pattern': st.pattern_mode, 'scene': st.scene_mode, 'restart': False, 'duplicate': False, 'erase': False,
               'mute': bool(st.muted), 'solo': bool(st.solo),
               'mixer': st.mixer, 'volume': False,
               'screen_3': (st.set_tab == SET_TABS[2]) if st.settings else st.tracker16,
@@ -3091,6 +3096,7 @@ def main() -> int:
         t.start()
 
     dirty, last_draw, last_leds, last_buttons = True, 0.0, b'', b''
+    last_imgs: list = [None, None]                    # dernieres images envoyees aux ecrans
     last_transport = None
     try:
         while not st.quit_request:
@@ -3102,7 +3108,10 @@ def main() -> int:
                             engine_sync(st, keep_output=bool(a.output))
                         if ev[0] != 'redraw':
                             handle(st, ev)
-                    dirty = True
+                    # l'etat du moteur (2 fois par seconde) ne redessine que s'il est affiche :
+                    # chaque envoi aux ecrans fait passer beaucoup de donnees sur l'USB
+                    if ev[0] != 'engine' or (st.settings and st.set_tab in ('STATUS', 'AUDIO', 'MIDI')):
+                        dirty = True
                     ev = events.get_nowait()
             except queue.Empty:
                 pass
@@ -3137,8 +3146,13 @@ def main() -> int:
             if buttons != last_buttons:
                 dev.write(buttons); last_buttons = buttons
             if images:                                    # envoi USB hors du verrou
-                screens.send(0, images[0])
-                screens.send(1, images[1])
+                for k in (0, 1):                          # seulement les lignes qui ont change
+                    box = (ImageChops.difference(images[k], last_imgs[k]).getbbox()
+                           if last_imgs[k] is not None else (0, 0, W, H))
+                    if box:
+                        top, bottom = box[1], box[3]
+                        screens.send(k, images[k].crop((0, top, W, bottom)), 0, top)
+                last_imgs = list(images)
                 dirty, last_draw = False, now
     except KeyboardInterrupt:
         pass
