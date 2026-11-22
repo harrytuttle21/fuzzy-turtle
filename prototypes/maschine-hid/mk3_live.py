@@ -57,6 +57,18 @@ Modes, comme sur Maschine :
                 lecture suit le morceau), 6 GO (jouer depuis l'entree choisie), 7 LOOP. Chaque
                 entree dure son plus long pattern x repetitions ; tous les groupes changent
                 ensemble. Enregistre dans le projet.
+  SELECT        SELECT + pad = choisir le son sans le jouer (Pad mode, Keyboard, Chords, STEP) ;
+                les pads montrent les 16 sons, le choisi en blanc (et sa case a l'ecran).
+  NOMS          bouton NAME (pattern, scene, projet) ou GROUP (mode PATTERN, bouton 7) ;
+                encodeurs 5 position, 6 lettre, 7 noms tout prets (INTRO... DRUMS, BASS, VOX...).
+  EVENTS        piano roll de la piste choisie : notes en barres (duree), velocite = luminosite.
+                Encodeurs 1 ligne, 2 zoom (16 / 32 / 64), 3 hauteur de la vue, 4 piste ;
+                5 deplacer la note, 6 hauteur, 7 velocite, 8 duree ; FIXED VEL + molette =
+                velocite ; ERASE = effacer la note. Zoom 16 / 32 / 48 / 64 lignes.
+                En REC pendant la lecture, la duree d'une note = le temps d'appui sur le pad.
+  PLUG-IN       enveloppe des sons du groupe : ONE-SHOT (le son va au bout) ou ADSR (le son tient
+                la duree de la note puis relache). Pad = choisir le son, SELECT + pads = plusieurs ;
+                encodeur 1 = mode, 2 = relachement. Defaut : sons 1-4 ONE-SHOT, 5-16 ADSR.
   SETTINGS      4 onglets, boutons 1-4 : AUDIO / MIDI / COLOR / STATUS (MIDI ouvre directement
                 l'onglet MIDI). SETTINGS a nouveau = fermer : bouton 5 YES / bouton 6 NO.
                 COLOR : encodeur 1 cible GROUP / PADS ; GROUP : pad n = couleur n ;
@@ -134,7 +146,8 @@ PAT_SLOTS, PAT_BANKS = 64, 4    # 64 patterns par groupe : 4 banques de 16 (mode
 NAME_LEN = 8                    # noms courts des patterns et des scenes
 NAME_CHARS = ' ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-'
 NAME_PRESETS = ('', 'INTRO', 'VERSE', 'CHORUS', 'BRIDGE', 'BUILD', 'DROP', 'BREAK', 'FILL',
-                'OUTRO', 'MAIN', 'VAR')
+                'OUTRO', 'MAIN', 'VAR', 'DRUMS', 'PERC', 'BASS', 'GUIT', 'VOX', 'SYNTH', 'KEYS',
+                'PIANO', 'PAD', 'LEAD', 'STRINGS', 'BRASS', 'FX', 'SAMPLE', 'LOOP')
 NOTES = ['C-', 'C#', 'D-', 'D#', 'E-', 'F-', 'F#', 'G-', 'G#', 'A-', 'A#', 'B-']
 DRUMS = ['Kick', 'Snare', 'Closed HH', 'Open HH']        # sons 1-4 du moteur JUCE ; 5-16 = notes
 OSC_PORT = 57390                                      # fuzzy_pad_sound --osc
@@ -161,9 +174,12 @@ class Sound:
     def _pad4(b: bytes) -> bytes:
         return b + b'\0' * (4 - len(b) % 4)
 
-    def hit(self, sound: int, velocity: int, note: int) -> None:
-        msg = (self._pad4(b'/fuzzy/proto/hit') + self._pad4(b',iii')
-               + struct.pack('>iii', sound, velocity, note))
+    def hit(self, sound: int, velocity: int, note: int, tag: int = -1, mode: int = 0,
+            release_ms: int = 150, gate_ms: int = 0) -> None:
+        """Joue un son. tag = groupe (0-15) ; mode 0 ONE-SHOT, 1 ADSR (la note tient gate_ms,
+        ou jusqu'a /off si 0, puis relache en release_ms)."""
+        msg = (self._pad4(b'/fuzzy/proto/hit') + self._pad4(b',iiiiiii')
+               + struct.pack('>iiiiiii', sound, velocity, note, tag, mode, release_ms, gate_ms))
         try:
             self.sock.sendto(msg, self.addr)
         except OSError:
@@ -207,6 +223,13 @@ DEFAULT_MIDI = {'in': '', 'in_mode': 'OMNI', 'out': '', 'clock': 0, 'transport':
 CLOCK_MODES = ('OFF', 'SEND', 'RECEIVE')
 BUFFERS = (32, 64, 96, 128, 192, 256, 512)
 ENGINE_REPLY_PORT = 57391                             # le moteur renvoie son etat ici
+ENV_MODES = ('ONE-SHOT', 'ADSR')                      # enveloppe d'un son (comme Maschine)
+RELEASES = (5, 10, 20, 50, 80, 120, 150, 200, 300, 500, 800, 1200, 2000, 3000)   # ms
+
+
+def default_env(sound: int) -> dict:
+    """Batterie (sons 1-4) en ONE-SHOT ; notes (5-16) en ADSR : la note tient sa duree."""
+    return {'mode': 'ONE-SHOT' if sound <= 4 else 'ADSR', 'release': 150}
 # Gammes rangees en banques, comme sur Maschine (formules de degres du manuel MK3).
 _BANKS = {
     'Main': [('Chromatic', '1 b2 2 b3 3 4 b5 5 b6 6 b7 7'), ('Major', '1 2 3 4 5 6 7'),
@@ -410,6 +433,16 @@ class State:
         self.pat_index = {g: 0 for g in GROUPS}                # pattern choisi par groupe
         self.pat_queue: dict[str, int] = {}                    # changement a la fin du pattern
         self.pat_off: set[str] = set()                         # groupes sans pattern (silence)
+        self.env = {(g, s): default_env(s) for g in GROUPS for s in range(1, 17)}
+        self.rec_open: dict = {}               # pad tenu en REC : (ligne, piste, compteur, grille)
+        self.plugin_mode = False               # PLUG-IN : enveloppe des sons (plusieurs a la fois)
+        self.plugin_sel: set[int] = set()      # sons choisis avec SELECT + pad
+        self.plugin_knobs = {0: Knob(40), 1: Knob(25)}
+        self.events_mode = False               # EVENTS : piano roll de la piste choisie
+        self.pr_zoom = 32
+        self.pr_low = 48
+        self.pr_knobs = {0: Knob(20), 1: Knob(40), 2: Knob(25), 3: Knob(40),
+                         4: Knob(30), 5: Knob(25), 6: Knob(10), 7: Knob(25)}
         self.pat_start = {g: 0 for g in GROUPS}                # debut du pattern (compteur)
         self.pattern_mode = False
         self.pat_bank = 0
@@ -424,11 +457,14 @@ class State:
         self.scene_names = [''] * PAT_SLOTS
         self.name_edit = None                    # nom en cours d'edition : ('pattern', g, i) / ('scene', i)
         self.name_pos = 0
-        self.name_knobs = {0: Knob(40), 1: Knob(25), 2: Knob(40)}
+        self.name_knobs = {4: Knob(40), 5: Knob(25), 6: Knob(40)}   # sous l'ecran droit
+        self.group_names = {g: '' for g in GROUPS}       # noms courts des groupes
         self.trk_left = False                    # Keyboard / Chords : tracker sur l'ecran gauche
         self.trk_page = 0                        # 0 = pistes 1-8, 1 = pistes 9-16
         self.clipboard = None                    # Shift + pad 11 / 12 : ('note', case) ou ('track', cases)
         self.last_fn = None                      # 2e Shift + pad rapide : toute la piste
+        self.drag = None                         # molette 4D : appui long + rotation (deplacer / copier)
+        self.last_click = None                   # molette 4D : (heure, ligne, piste) du dernier clic court
         self.clip_pattern = None                 # Shift + pad 11 / 12 en mode PATTERN
         self.clip_scene = None                   # Shift + pad 11 / 12 en mode SCENE
         self.file_mode = False                   # FILE : projets (enregistrer, ouvrir...)
@@ -444,7 +480,8 @@ class State:
         self.arr_knobs = {0: Knob(40), 1: Knob(40), 2: Knob(70), 3: Knob(70)}   # 3-4 moins sensibles
         self.arr_half = False                    # bouton 3 HALF : repetitions / longueur par 0,5
         self.file_sel = 0
-        self.file_confirm = None
+        self.file_ask = None                     # question YES / NO en cours (action, projet)
+        self.file_moved = False                  # la liste a ete parcourue : SAVE vise ce projet
         self.project_name = 'SONG01'
         self.saved_text = ''                     # projet tel qu'enregistre (pour 'not saved')
         self.project_file = None                 # dossier du projet ouvert / enregistre
@@ -1368,14 +1405,19 @@ def play_note(st: State, group: str, snd: int, vel: int, note: int, gate: float 
         SOUND.send('/fuzzy/proto/midi/note', ch, note, vel, int(gate * 1000))
         st.midi_out_flash = time.monotonic()
     else:
-        SOUND.hit(snd, vel, note)
+        env = st.env[(group, snd)]
+        SOUND.hit(snd, vel, note, GROUPS.index(group), ENV_MODES.index(env['mode']),
+                  int(env['release']), int(gate * 1000))
 
 
 def release_notes(st: State, group: str, notes: list) -> None:
+    """Pad relache : fin des notes (MIDI OUT, et sons internes en ADSR)."""
     ch = st.midi['out_ch'].get(group, 0) if st.midi['out'] else 0
-    if ch:
-        for _, n in notes:
+    for snd, n in notes:
+        if ch:
             SOUND.send('/fuzzy/proto/midi/off', ch, n)
+        elif st.env[(group, snd)]['mode'] == 'ADSR':
+            SOUND.send('/fuzzy/proto/off', snd, n, GROUPS.index(group))
 
 
 def osc_parse(data: bytes):
@@ -1453,7 +1495,7 @@ def engine_listener(st: State, events: queue.Queue, running: threading.Event) ->
                 if v and st.audible(group):
                     play_note(st, group, snd, v, note)
             else:
-                release_notes(st, group, [(0, note)])
+                release_notes(st, group, [(st.sound if st.sound > 4 else 5, note)])
             events.put(('midi_note', group, note, vel))
         elif addr == '/fuzzy/proto/clock/in' and args:
             if st.midi['clock'] == 2:
@@ -1504,12 +1546,16 @@ def draw_left(st: State) -> Image.Image:
         return draw_mixer(st, 0)
     if st.file_mode:
         return draw_file(st, 0)
+    if st.plugin_mode:
+        return draw_plugin(st, 0)
     if st.arranger_mode:
         return draw_arranger(st, 0)
     if st.pattern_mode:
         return draw_patterns(st, 0)
     if st.scene_mode:
         return draw_scenes(st, 0)
+    if st.events_mode:
+        return draw_events(st, 0)
     if st.tracker16:
         return draw_tracks(st, 0)
     if kb_tracker(st):                               # Keyboard / Chords : tracker a gauche
@@ -1525,7 +1571,7 @@ def draw_left(st: State) -> Image.Image:
         pad = 13 + i % 4 - 4 * (i // 4)            # pad 13 en haut a gauche, comme sur la Maschine
         x, y = 8 + (i % 4) * 117, 34 + (i // 4) * 34
         lit = pad in st.down or st.flash.get(pad, 0) > time.monotonic()
-        chosen = pad == st.sound and st.step_mode and 'select' in st.held   # STEP + SELECT : inverse
+        chosen = pad == st.sound and 'select' in st.held   # SELECT tenu : le son choisi en blanc
         d.rectangle((x, y, x + 110, y + 28), fill='white' if chosen else shade(acc, 0.36) if lit else None,
                     outline=acc if pad == st.sound else (70, 70, 70), width=2)
         d.text((x + 6, y + 7), f'{pad:02d} {st.sound_name(pad)}', font=f, fill='black' if chosen else 'white')
@@ -1571,7 +1617,7 @@ def draw_patterns(st: State, half: int) -> Image.Image:
     g = st.group
     cur, queued = st.pat_index[g], st.pat_queue.get(g)
     if half == 0:
-        header(d, f'PATTERNS  Group {g}', f'Bank {st.pat_bank + 1}/{PAT_BANKS}', acc)
+        header(d, f'PATTERNS  Group {g} {st.group_names[g]}', f'Bank {st.pat_bank + 1}/{PAT_BANKS}', acc)
         for i in range(16):
             pad = 13 + i % 4 - 4 * (i // 4)            # pad 13 en haut a gauche
             idx = st.pat_bank * 16 + pad - 1
@@ -1607,7 +1653,8 @@ def draw_patterns(st: State, half: int) -> Image.Image:
     state = ('next: none' if queued == OFF else f'next: P{queued + 1:02d}' if queued is not None
              else 'NO PATTERN' if g in st.pat_off else 'playing' if st.playing else 'stopped')
     header(d, f"Pattern {cur + 1:02d} {pat.get('name', '')}  {g}", state, acc)
-    softkey(d, st, 3, 'NAME', st.name_edit is not None)
+    softkey(d, st, 2, 'GROUP', st.name_edit is not None and st.name_edit[0] == 'group')
+    softkey(d, st, 3, 'NAME', st.name_edit is not None and st.name_edit[0] == 'pattern')
     length = pat['length']
     cw = max(3, min(28, 456 // max(1, length)))      # largeur d'une ligne dans l'apercu
     playing = play_row(st)
@@ -1623,7 +1670,7 @@ def draw_patterns(st: State, half: int) -> Image.Image:
             elif r % 4 == 0:
                 d.rectangle((x, y + 2, x + 1, y + 4), fill=(60, 60, 70))
     lines = ['Pad: choose (while playing: at the end of', 'the pattern).  Chosen pad again: no pattern.',
-             'DUPLICATE + pad: copy here.  ERASE + pad: erase.', '< > : bank.  8: NAME.']
+             'DUPLICATE + pad: copy here.  ERASE + pad: erase.', '< > : bank.  NAME / GROUP: names.']
     if g in st.pat_off or queued == OFF:             # le bandeau est cache par NAME
         d.text((12, 146), f'Group {g}: no pattern (silent)' if g in st.pat_off
                else f'Group {g}: no pattern at the end', font=font(13), fill=(240, 160, 30))
@@ -1701,7 +1748,7 @@ def draw_scenes(st: State, half: int) -> Image.Image:
     lines = ['Pad: launch.  SELECT + pad: replace.  DUPLICATE + pad: copy.',
              'ERASE + pad: erase.  < > : bank.  SCENE again: back.',
              'SELECT + group: FREE (keeps its pattern) / fixed.',
-             'Button 8: NAME.']
+             'NAME: scene name.']
     for k, line in enumerate(lines):
         d.text((12, 188 + k * 20), line, font=font(12), fill=(180, 180, 180))
     toast_box(st, d, acc)
@@ -1792,7 +1839,7 @@ def draw_tracker(st: State) -> Image.Image:
                    + f'Trk {st.sound:02d} {st.group}')
     f = font(14)
     t = st.sound - 1
-    if st.step_mode and 'select' in st.held:         # STEP + SELECT : le son choisi en blanc
+    if 'select' in st.held:                          # SELECT tenu : le son choisi en blanc
         d.rectangle((0, 29, W, 48), fill='white')
         d.text((8, 31), f'Lin  Note Vol   {st.sound:02d} {st.sound_name(st.sound)}', font=f, fill='black')
     else:
@@ -1861,7 +1908,7 @@ def draw_tracks(st: State, first: int, left: bool | None = None) -> Image.Image:
         tr = first + t
         name = SHORT[tr] if tr < 4 else note_name(default_note(tr + 1))
         sel = tr == st.sound - 1
-        inv = sel and st.step_mode and 'select' in st.held        # STEP + SELECT : en blanc
+        inv = sel and 'select' in st.held                          # SELECT tenu : en blanc
         d.rectangle((x, 29, x + TRK_W - 3, 41), fill='white' if inv else acc if sel else shade(acc, 0.35))
         d.text((x + 3, 29), f'{tr + 1:02d} {name}', font=f, fill='black' if sel else 'white')
     # En lecture : la ligne d'infos du bas laisse la place a une 16e ligne du pattern
@@ -2005,12 +2052,16 @@ def _draw_right(st: State) -> Image.Image:
         return draw_mixer(st, 1)
     if st.file_mode:
         return draw_file(st, 1)
+    if st.plugin_mode:
+        return draw_plugin(st, 1)
     if st.arranger_mode:
         return draw_arranger(st, 1)
     if st.pattern_mode:
         return draw_patterns(st, 1)
     if st.scene_mode:
         return draw_scenes(st, 1)
+    if st.events_mode:
+        return draw_events(st, 1)
     if st.tracker16:
         return draw_tracks(st, 8)
     if st.right_view == 'chords':
@@ -2167,9 +2218,11 @@ def step_row(st: State, pad: int) -> int:
 def sound_for(st: State, pad: int) -> list:
     """Les notes a jouer tout de suite pour un pad frappe : [(son, note), ...]."""
     if ('shift' in st.held or st.pattern_mode or st.scene_mode or st.file_mode or st.arranger_mode
+            or (st.plugin_mode and 'select' in st.held)
             or st.settings and st.set_tab in ('COLOR', 'STATUS')):
         return []                          # AUDIO / MIDI : les pads jouent (tester la sortie)
-    if st.step_mode and 'select' in st.held:
+    if 'select' in st.held and not (st.pattern_mode or st.scene_mode or st.file_mode
+                                    or st.arranger_mode or st.plugin_mode):
         return []                          # SELECT + pad : on choisit le son, rien ne joue
     if st.step_mode:                       # sans REC : on ecoute le son ; avec REC : seulement
         if not st.recording or st.grid[step_row(st, pad)][st.sound - 1] is None:   # en ajoutant
@@ -2218,22 +2271,46 @@ def track_function(st: State, pad: int) -> None:
     name = f'Track {st.sound:02d}'
     now = time.monotonic()
     if pad in (5, 6):                                # Quantize : les notes sont deja sur la grille
-        st.toast = ('Quantize: notes are already on the grid', now + 1.5)
+        st.toast = ('Quantize: notes are already on the grid', now + 2)
+        return
+    if pad in (7, 8):                                # Nudge < / > : d'une ligne
+        d = -1 if pad == 7 else 1
+        last = st.last_fn
+        if last and last[0] == pad and now - last[1] < 1.0 and last[3] == t:
+            if last[4] is not None:                  # 2e appui : on defait le 1er deplacement
+                back = st.cursor - d
+                st.grid[back][t], st.grid[st.cursor][t] = st.grid[st.cursor][t], None
+                st.cursor = back
+            col = [st.grid[r][t] for r in range(rows)]   # puis toute la piste tourne
+            for r in range(rows):
+                st.grid[r][t] = col[(r - d) % rows]
+            st.last_fn = None
+            st.toast = (f"{name} nudged {'<' if d < 0 else '>'}", now + 2)
+            return
+        snapshot(st)                                 # Shift + pad 1 : annuler
+        to = st.cursor + d
+        moved = 0 <= to < rows and st.grid[st.cursor][t] and not st.grid[to][t]
+        if moved:
+            st.grid[to][t], st.grid[st.cursor][t] = st.grid[st.cursor][t], None
+            st.cursor = to
+        st.last_fn = (pad, now, st.cursor, t, True if moved else None)
+        st.toast = ((f"Note nudged {'<' if d < 0 else '>'}" if moved else 'Nudge: no note here, or no room')
+                    + '  - again: whole track', now + 2)
         return
     if pad == 12:                                    # Paste : colle ce qui a ete copie
         if not st.clipboard:
-            st.toast = ('Nothing to paste (Shift + pad 11 = copy)', now + 1.5)
+            st.toast = ('Nothing to paste (Shift + pad 11 = copy)', now + 2)
             return
         snapshot(st)
         if st.clipboard[0] == 'note':                # la note, a la ligne du curseur
             st.grid[st.cursor][t] = st.clipboard[1]
-            st.toast = (f'Note pasted line {st.cursor:02X}', now + 1.5)
+            st.toast = (f'Note pasted line {st.cursor:02X}', now + 2)
             st.cursor = min(rows - 1, st.cursor + 1) # pret pour coller a la ligne suivante
         else:                                        # toute la piste
             cells = st.clipboard[1]
             for r in range(min(rows, len(cells))):
                 st.grid[r][t] = cells[r]
-            st.toast = (f'Track pasted into {name}', now + 1.5)
+            st.toast = (f'Track pasted into {name}', now + 2)
         return
     last = st.last_fn                                # (pad, heure, ligne, piste, case d'avant)
     whole = last is not None and last[0] == pad and now - last[1] < 1.0 \
@@ -2248,11 +2325,11 @@ def track_function(st: State, pad: int) -> None:
     if pad == 11:                                    # Copy
         if whole:
             st.clipboard = ('track', [st.grid[r][t] for r in range(rows)])
-            st.toast = (f'{name} copied ({rows} lines)', now + 1.5)
+            st.toast = (f'{name} copied ({rows} lines)', now + 2)
         else:
             cell = st.grid[st.cursor][t]
             st.clipboard = ('note', cell)
-            st.toast = (f'Note copied ({cell_label(cell[0]).strip() if cell else "empty"}){hint}', now + 1.5)
+            st.toast = (f'Note copied ({cell_label(cell[0]).strip() if cell else "empty"}){hint}', now + 2)
         return
     if not whole:
         snapshot(st)                                 # Shift + pad 1 : annuler
@@ -2266,17 +2343,107 @@ def track_function(st: State, pad: int) -> None:
             cell = st.grid[r][t]
             if cell:
                 notes = tuple(max(0, min(127, x + n)) for x in cell_notes(cell[0]))
-                st.grid[r][t] = (notes if len(notes) > 1 else notes[0], cell[1])
-        amount = f"{'+' if n > 0 else ''}{n} semitone{'s' if abs(n) > 1 else ''}"
+                st.grid[r][t] = (notes if len(notes) > 1 else notes[0],) + tuple(cell[1:])
+        amount = (f"Oct {'+' if n > 0 else '-'}1" if abs(n) == 12
+                  else f"{'+' if n > 0 else ''}{n} semitone")
         msg = f'{name} {amount}' if whole else f'Note {amount}{hint}'
-    st.toast = (msg, now + 1.5)
+    st.toast = (msg, now + 2)
 
 
-def record(st: State, track: int, note, vel: int) -> None:
-    """Ecrit une note sur une piste : a la ligne qui joue (lecture) ou a la ligne du curseur."""
+DRAG_HOLD = 0.4                                  # appui long sur la molette 4D (secondes)
+DOUBLE_CLICK = 0.4                               # double appui rapide (secondes)
+
+
+def edit4d_ok(st: State) -> bool:
+    """Gestes d'edition a la molette 4D : TRACKER / EVENTS, a l'arret, hors menus."""
+    return (not st.playing and not st.settings and not st.mixer and not st.file_mode
+            and not st.arranger_mode and not st.pattern_mode and not st.scene_mode
+            and not st.plugin_mode and (st.tracker16 or kb_tracker(st) or st.events_mode))
+
+
+def drag_turn(st: State, delta: int) -> bool:
+    """Molette tournee pendant l'appui. Retourne True si le geste glisser est en cours."""
+    d = st.drag
+    if not d:
+        return False
+    if not d['active']:
+        if time.monotonic() - d['t0'] < DRAG_HOLD or not d['cell']:
+            return False                             # appui court : la molette bouge le curseur
+        d['active'] = True                           # appui long sur une note : on la prend
+        d['copy'] = d['copy'] or 'shift' in st.held
+        d['col'] = [st.grid[r][d['track']] for r in range(st.length)]
+        snapshot(st)                                 # Shift + pad 1 : annuler
+    t, col = d['track'], d['col']
+    st.cursor = max(0, min(st.length - 1, st.cursor + delta))
+    for r in range(st.length):                       # apercu : la colonne d'origine...
+        st.grid[r][t] = col[r]
+    if not d['copy']:
+        st.grid[d['row']][t] = None                  # ...sans la note (deplacer)
+    st.grid[st.cursor][t] = d['cell']                # ...et la note sous le curseur
+    if st.events_mode:
+        pr_follow_pitch(st)
+    st.toast = (f"{'Copy' if d['copy'] else 'Move'} to line {st.cursor:02X}  - release to drop",
+                time.monotonic() + 2)
+    return True
+
+
+def drag_release(st: State) -> None:
+    """Molette relachee : deposer la note, ou compter un clic (double appui = couper / coller)."""
+    d, st.drag = st.drag, None
+    now = time.monotonic()
+    if not d:
+        return
+    if d['active']:                                  # fin du glisser : la note reste ou elle est
+        t = d['track']
+        if st.cursor == d['row'] and not d['copy']:
+            st.toast = ('Note not moved', now + 2)
+        else:
+            replaced = d['col'][st.cursor] is not None and st.cursor != d['row']
+            st.toast = (f"Note {'copied' if d['copy'] else 'moved'} to line {st.cursor:02X}"
+                        + ('  (replaced a note)' if replaced else ''), now + 2)
+        st.last_click = None
+        return
+    if now - d['t0'] >= DRAG_HOLD:                   # appui long sans rotation : rien
+        st.last_click = None
+        return
+    t, row = st.sound - 1, st.cursor
+    last = st.last_click
+    if not (last and now - last[0] < DOUBLE_CLICK and last[1] == row and last[2] == t):
+        st.last_click = (now, row, t)                # 1er clic : on attend le 2e
+        return
+    st.last_click = None                             # double appui
+    cell = st.grid[row][t]
+    if cell:                                         # sur une note : couper
+        snapshot(st)
+        st.clipboard = ('note', cell)
+        st.grid[row][t] = None
+        st.toast = ('Note cut  - double press on an empty line: paste', now + 2)
+    elif st.clipboard and st.clipboard[0] == 'note' and st.clipboard[1]:
+        snapshot(st)                                 # sur une ligne vide : coller
+        st.grid[row][t] = st.clipboard[1]
+        st.toast = (f'Note pasted line {row:02X}', now + 2)
+    else:
+        st.toast = ('Nothing to paste (double press on a note = cut)', now + 2)
+
+
+def cell_len(cell) -> int:
+    """Duree d'une note en lignes (case : (note, velocite) ou (note, velocite, duree))."""
+    return cell[2] if cell and len(cell) > 2 else 1
+
+
+def with_len(cell, length: int):
+    return (cell[0], cell[1]) if length <= 1 else (cell[0], cell[1], length)
+
+
+def record(st: State, track: int, note, vel: int, pad: int | None = None) -> None:
+    """Ecrit une note sur une piste : a la ligne qui joue (lecture) ou a la ligne du curseur.
+    En lecture, avec le pad : sa duree sera celle de l'appui (fixee au relachement)."""
     snapshot(st, coalesce=st.playing)
     if st.playing:
-        st.grid[play_row(st)][track - 1] = (note, vel)
+        row = play_row(st)
+        st.grid[row][track - 1] = (note, vel)
+        if pad is not None:
+            st.rec_open[pad] = (row, track - 1, st.playhead, st.grid)
     else:
         st.grid[st.cursor][track - 1] = (note, vel)
         st.advance_on_release = True                 # avancer quand tous les pads sont relaches
@@ -2303,6 +2470,15 @@ def handle(st: State, ev: tuple) -> None:
         if st.arranger_mode:                         # ARRANGER : pad = ajouter la scene
             arranger_pad(st, pad)
             return
+        if st.plugin_mode:                           # PLUG-IN : choisir le son / la selection
+            if 'select' in st.held:
+                if not st.plugin_sel:
+                    st.plugin_sel.add(st.sound)
+                st.plugin_sel ^= {pad}
+            else:
+                st.plugin_sel.clear()
+            st.sound = pad
+            return
         if st.pattern_mode:                          # PATTERN : pads = patterns
             pattern_pad(st, pad, vel)
             return
@@ -2313,6 +2489,11 @@ def handle(st: State, ev: tuple) -> None:
             chord = set(st.user_chords[st.user_bank][st.user_slot - 1])
             chord ^= {pad - 1}
             st.user_chords[st.user_bank][st.user_slot - 1] = tuple(sorted(chord))
+            return
+        if 'select' in st.held and st.right_view in ('tracker', 'keyboard', 'chords') and not (
+                st.pattern_mode or st.scene_mode or st.file_mode or st.arranger_mode or st.plugin_mode):
+            st.sound = pad                           # SELECT + pad : choisir le son (sans jouer)
+            st.trk_page = (pad - 1) // 8
             return
         if st.step_mode and 'select' in st.held:     # STEP : SELECT + pad = choisir le son du pad
             st.sound = pad
@@ -2330,8 +2511,8 @@ def handle(st: State, ev: tuple) -> None:
             snapshot(st)
             st.grid[r][t] = None if st.grid[r][t] else (step_note(st), vel)
             return
-        if ('shift' in st.held and not st.playing and pad in (5, 6, 9, 11, 12, 13, 14, 15, 16)
-                and (st.tracker16 or kb_tracker(st))):
+        if ('shift' in st.held and not st.playing and pad in (5, 6, 7, 8, 9, 11, 12, 13, 14, 15, 16)
+                and (st.tracker16 or kb_tracker(st) or st.events_mode)):
             track_function(st, pad)                  # serigraphie MK3, sur la piste choisie
             return
         if keyboard and 'shift' in st.held and pad >= 13:   # comme serigraphie sur la MK3
@@ -2356,26 +2537,35 @@ def handle(st: State, ev: tuple) -> None:
                 st.last_chord_pad = pad
                 st.held_notes[pad] = [(n, vel) for n in notes]
                 if st.recording:
-                    record(st, st.sound, notes, vel)
+                    record(st, st.sound, notes, vel, pad)
             return
         if keyboard:                                 # pads = notes de la gamme
             note = st.pad_note(pad)
             st.held_notes[pad] = [(note, vel)]
             if st.recording:
-                record(st, st.sound, note, vel)
+                record(st, st.sound, note, vel, pad)
             return
         st.sound = pad                               # pads = sons du groupe
         if st.recording:
-            record(st, pad, default_note(pad), vel)
+            record(st, pad, default_note(pad), vel, pad)
     elif kind == 'pad_off':
         st.down.discard(ev[1])
         st.held_notes.pop(ev[1], None)
+        opened = st.rec_open.pop(ev[1], None)        # REC en lecture : duree = temps d'appui
+        if opened:
+            row, t, start, grid = opened
+            cell = grid[row][t]
+            if cell:
+                grid[row][t] = with_len(cell, max(1, min(st.length, st.playhead - start)))
         if not st.down and st.advance_on_release:
             st.cursor = min(st.length - 1, st.cursor + 1)
             st.advance_on_release = False
     elif kind == 'jog':                              # grosse molette 4D
-        if st.file_mode and not st.settings:         # FILE : choisir le projet
+        if 'nav_click' in st.held and edit4d_ok(st) and drag_turn(st, ev[1]):
+            pass                                     # appui long + rotation : la note suit
+        elif st.file_mode and not st.settings:         # FILE : choisir le projet
             st.file_sel = max(0, min(len(list_projects()) - 1, st.file_sel + ev[1]))
+            st.file_moved = True
         elif st.arranger_mode and not st.settings:   # ARRANGER : choisir l'entree
             st.arr_sel = max(0, min(len(st.arrangement) - 1, st.arr_sel + ev[1]))
         elif st.mixer or 'volume' in st.held:          # MIXER, ou VOLUME tenu : volume master
@@ -2383,8 +2573,12 @@ def handle(st: State, ev: tuple) -> None:
         elif 'tempo' in st.held:                     # TEMPO tenu + molette : tempo au BPM pres
             st.bpm = max(40, min(240, st.bpm + ev[1]))
             st.taps.clear()
-        elif not st.melodic() or st.tracker16 or kb_tracker(st):
+        elif st.events_mode and 'fixed_vel' in st.held:   # EVENTS : FIXED VEL + molette = velocite
+            edit_cell(st, False, ev[1] * 2)
+        elif not st.melodic() or st.tracker16 or kb_tracker(st) or st.events_mode:
             st.cursor = max(0, min(st.length - 1, st.cursor + ev[1]))
+            if st.events_mode:
+                pr_follow_pitch(st)
     elif kind == 'midi_note':                        # note recue en MIDI IN
         group, note, vel = ev[1], ev[2], ev[3]
         if vel and group == st.group:
@@ -2415,6 +2609,8 @@ def handle(st: State, ev: tuple) -> None:
     elif kind == 'button':
         name, pressed = ev[1], ev[2]
         (st.held.add if pressed else st.held.discard)(name)
+        if name == 'nav_click' and not pressed:      # molette 4D relachee
+            drag_release(st)
         if not pressed:
             return
         if st.settings and not st.set_confirm and settings_button(st, name):
@@ -2427,9 +2623,28 @@ def handle(st: State, ev: tuple) -> None:
         # SETTINGS ouvert par-dessus un mode : ses boutons (onglets, YES / NO) passent en premier
         if st.arranger_mode and not st.settings and arranger_button(st, name):   # SONG / GO / LOOP...
             return
+        if name == 'events' and not st.settings:    # EVENTS : piano roll
+            st.events_mode = not st.events_mode or st.mixer
+            st.mixer = False                         # le mixeur laisse la place
+            st.pattern_mode = st.scene_mode = st.file_mode = st.arranger_mode = st.plugin_mode = False
+            if st.events_mode:
+                pr_follow_pitch(st)
+            return
+        if st.events_mode and name == 'erase' and not st.settings:   # EVENTS : ERASE = effacer
+            if st.grid[st.cursor][st.sound - 1]:
+                snapshot(st)
+                st.grid[st.cursor][st.sound - 1] = None
+            return
+        if name == 'plug_in' and not st.settings:   # PLUG-IN : enveloppe des sons du groupe
+            st.plugin_mode = not st.plugin_mode or st.mixer
+            st.mixer = False
+            st.pattern_mode = st.scene_mode = st.file_mode = st.arranger_mode = False
+            st.plugin_sel.clear()
+            return
         if name == 'arranger':                       # ARRANGER : l'ordre des scenes (SONG)
-            st.arranger_mode = not st.arranger_mode
-            st.pattern_mode = st.scene_mode = st.file_mode = False
+            st.arranger_mode = not st.arranger_mode or st.mixer
+            st.mixer = False
+            st.pattern_mode = st.scene_mode = st.file_mode = st.plugin_mode = False
             st.name_edit = None
             return
         if st.file_mode and not st.settings and name in ('screen_5', 'screen_6', 'screen_7', 'screen_8'):
@@ -2443,12 +2658,20 @@ def handle(st: State, ev: tuple) -> None:
                     save_project(st)
                     st.toast = (f'Saved: {st.project_name}', time.monotonic() + 2)
             else:
-                st.file_mode = not st.file_mode
-                st.pattern_mode = st.scene_mode = st.arranger_mode = False
+                st.file_mode = not st.file_mode or st.mixer
+                st.mixer = False
+                st.pattern_mode = st.scene_mode = st.arranger_mode = st.plugin_mode = False
                 st.name_edit = None
                 names = list_projects()
                 cur = project_folder(st.project_name).stem
                 st.file_sel = names.index(cur) if cur in names else 0
+                st.file_moved = False
+            return
+        if st.pattern_mode and not st.settings and name == 'screen_7':   # 7 : nom du GROUPE
+            if st.name_edit and st.name_edit[0] == 'group':
+                st.name_edit = None
+            else:
+                st.name_edit, st.name_pos = ('group', st.group), 0
             return
         if (st.pattern_mode or st.scene_mode) and not st.settings and name == 'screen_8':   # 8 : NAME
             if st.name_edit:
@@ -2459,7 +2682,7 @@ def handle(st: State, ev: tuple) -> None:
                 st.name_edit, st.name_pos = ('scene', st.scene_current), 0
             return
         if name in ('pad_mode', 'keyboard', 'chords'):  # quitter PATTERN / SCENE / FILE vers ce mode
-            st.pattern_mode = st.scene_mode = st.file_mode = st.arranger_mode = False
+            st.pattern_mode = st.scene_mode = st.file_mode = st.arranger_mode = st.plugin_mode = False
             st.name_edit = None
         if name.startswith('group_'):
             letter = name[-1].upper()
@@ -2476,6 +2699,7 @@ def handle(st: State, ev: tuple) -> None:
                 st.link_toggle(g)
             else:
                 st.group = g
+                st.plugin_sel.clear()
         elif name == 'screen_7' and st.melodic() and not st.mixer and not st.nr_menu:
             if 'shift' in st.held:                   # Shift + 7 : lier tous les groupes / aucun
                 if len(st.linked) == len(GROUPS):
@@ -2566,6 +2790,10 @@ def handle(st: State, ev: tuple) -> None:
             st.held_notes.clear()
         elif name == 'nav_click' and st.pending_scale:   # clic 4D : appliquer tout de suite
             apply_pending_scale(st, force=True)
+        elif name == 'nav_click' and edit4d_ok(st):  # TRACKER / EVENTS : debut d'un geste
+            t = st.sound - 1
+            st.drag = {'t0': time.monotonic(), 'row': st.cursor, 'track': t,
+                       'cell': st.grid[st.cursor][t], 'copy': 'shift' in st.held, 'active': False}
         elif name == 'mixer':                        # MIXER : ouvrir / fermer le mixeur
             st.mixer = not st.mixer
             st.mixer_page = 0
@@ -2578,13 +2806,15 @@ def handle(st: State, ev: tuple) -> None:
         elif name == 'duplicate' and 'shift' in st.held:   # Shift + DUPLICATE : DOUBLE
             double_pattern(st)
         elif name == 'pattern':                      # PATTERN : pads = patterns du groupe
+            st.mixer = False                         # le mixeur laisse la place
             st.pattern_mode, st.scene_mode, st.file_mode = not st.pattern_mode, False, False
-            st.arranger_mode = False
+            st.arranger_mode = st.plugin_mode = False
             st.name_edit = None
             st.pat_bank = st.pat_index[st.group] // 16
         elif name == 'scene':                        # SCENE : pads = scenes
+            st.mixer = False                         # le mixeur laisse la place
             st.scene_mode, st.pattern_mode, st.file_mode = not st.scene_mode, False, False
-            st.arranger_mode = False
+            st.arranger_mode = st.plugin_mode = False
             st.name_edit = None
             if st.scene_current is not None:
                 st.scene_bank = st.scene_current // 16
@@ -2611,6 +2841,12 @@ def handle(st: State, ev: tuple) -> None:
         elif name in ('nav_left', 'nav_right'):       # 4D pousse gauche / droite : piste
             st.sound = max(1, min(16, st.sound + (1 if name == 'nav_right' else -1)))
             st.trk_page = (st.sound - 1) // 8
+        elif name == 'screen_3' and not st.mixer and st.events_mode:   # EVENTS -> TRACKER
+            st.events_mode = False
+            if st.right_view in ('keyboard', 'chords'):
+                st.trk_left = True
+            else:
+                st.tracker16 = True
         elif name == 'screen_3' and not st.mixer and st.right_view in ('keyboard', 'chords'):
             st.trk_left = not st.trk_left            # Keyboard / Chords : tracker a gauche seulement
         elif name == 'screen_3' and not st.mixer:    # TRACKER (bouton 3), dans tous les modes
@@ -2625,6 +2861,14 @@ def handle(st: State, ev: tuple) -> None:
         if st.name_edit and not st.settings:         # editeur de nom
             name_knob(st, i, ev[2])
             return
+        if (st.events_mode and not st.settings and not st.nr_menu and not st.mixer
+                and not (st.pattern_mode or st.scene_mode or st.file_mode or st.arranger_mode
+                         or st.plugin_mode)):        # EVENTS : piano roll
+            events_knob(st, i, ev[2])
+            return
+        if st.plugin_mode and not st.settings and not st.nr_menu:     # PLUG-IN : 1 mode, 2 relachement
+            plugin_knob(st, i, ev[2])
+            return
         if st.arranger_mode and not st.settings and not st.nr_menu:   # 1 entree, 2 repet., 3 scene
             arranger_knob(st, i, ev[2])
             return
@@ -2632,6 +2876,7 @@ def handle(st: State, ev: tuple) -> None:
             if i == 0:
                 n = st.scene_knobs[0].steps(ev[2])
                 st.file_sel = max(0, min(len(list_projects()) - 1, st.file_sel + n))
+                st.file_moved = st.file_moved or bool(n)
             return
         if st.scene_mode and not st.settings and not st.mixer and not st.nr_menu:     # 1 banque
             if i in st.scene_knobs:
@@ -2831,7 +3076,7 @@ def edit_cell(st: State, is_note: bool, n: int) -> None:
     if not cell:
         return
     snapshot(st, coalesce=True)
-    note, vol = cell
+    note, vol = cell[0], cell[1]
     if is_note and isinstance(note, tuple):           # accord : tout l'accord est transpose
         if all(0 <= x + n <= 119 for x in note):
             note = tuple(x + n for x in note)
@@ -2839,7 +3084,7 @@ def edit_cell(st: State, is_note: bool, n: int) -> None:
         note = max(0, min(119, note + n))
     else:
         vol = max(1, min(127, vol + n))
-    st.grid[st.cursor][st.sound - 1] = (note, vol)
+    st.grid[st.cursor][st.sound - 1] = (note, vol) + tuple(cell[2:])     # la duree est gardee
 
 
 OFF = -1                                             # "aucun pattern" (groupe silencieux)
@@ -2943,15 +3188,15 @@ def pattern_function(st: State, pad: int) -> None:
         undo(st, redo=pad in (2, 4))
         return
     if pad in (5, 6):
-        st.toast = ('Quantize: notes are already on the grid', now + 1.5)
+        st.toast = ('Quantize: notes are already on the grid', now + 2)
         return
     if pad == 11:
         st.clip_pattern = {'grid': [row[:] for row in pat['grid']], 'length': pat['length'],
                            'name': pat.get('name', '')}
-        st.toast = (f'{label} copied', now + 1.5)
+        st.toast = (f'{label} copied', now + 2)
         return
     if pad == 12 and not st.clip_pattern:
-        st.toast = ('Nothing to paste (Shift + pad 11 = copy)', now + 1.5)
+        st.toast = ('Nothing to paste (Shift + pad 11 = copy)', now + 2)
         return
     if pad not in (9, 12, 13, 14, 15, 16):
         return
@@ -2974,45 +3219,46 @@ def pattern_function(st: State, pad: int) -> None:
                 cell = pat['grid'][r][t]
                 if cell:
                     notes = tuple(max(0, min(127, x + n)) for x in cell_notes(cell[0]))
-                    pat['grid'][r][t] = (notes if len(notes) > 1 else notes[0], cell[1])
-        msg = f"{label} {'+' if n > 0 else ''}{n} semitone{'s' if abs(n) > 1 else ''} (tracks 5-16)"
-    st.toast = (msg, now + 1.5)
+                    pat['grid'][r][t] = (notes if len(notes) > 1 else notes[0],) + tuple(cell[1:])
+        amount = f"Oct {'+' if n > 0 else '-'}1" if abs(n) == 12 else f"{'+' if n > 0 else ''}{n} semitone"
+        msg = f'{label} {amount} (tracks 5-16)'
+    st.toast = (msg, now + 2)
 
 
 def scene_function(st: State, pad: int) -> None:
     """Mode SCENE, Shift + pad : 9 Clear, 11 Copy, 12 Paste, sur la scene choisie."""
     now, cur = time.monotonic(), st.scene_current
     if cur is None:
-        st.toast = ('Choose a scene first', now + 1.5)
+        st.toast = ('Choose a scene first', now + 2)
         return
     label = f'S{cur + 1:02d}'
     if pad == 11 and st.scenes[cur]:
         st.clip_scene = (dict(st.scenes[cur]), st.scene_names[cur])
-        st.toast = (f'{label} copied', now + 1.5)
+        st.toast = (f'{label} copied', now + 2)
     elif pad == 12:
         if not st.clip_scene:
-            st.toast = ('Nothing to paste (Shift + pad 11 = copy)', now + 1.5)
+            st.toast = ('Nothing to paste (Shift + pad 11 = copy)', now + 2)
             return
         st.scenes[cur], st.scene_names[cur] = dict(st.clip_scene[0]), st.clip_scene[1]
-        st.toast = (f'Pasted into {label}', now + 1.5)
+        st.toast = (f'Pasted into {label}', now + 2)
     elif pad == 9:
         st.scenes[cur], st.scene_names[cur] = None, ''
         st.scene_current = None
-        st.toast = (f'{label} cleared', now + 1.5)
+        st.toast = (f'{label} cleared', now + 2)
 
 
 def double_pattern(st: State) -> None:
     """Shift + DUPLICATE (DOUBLE) : le pattern choisi double de longueur, contenu recopie."""
     now = time.monotonic()
     if st.length * 2 > ROWS:
-        st.toast = (f'Double: {ROWS} lines maximum', now + 1.5)
+        st.toast = (f'Double: {ROWS} lines maximum', now + 2)
         return
     snapshot(st)
     n = st.length
     for r in range(n):
         st.grid[n + r] = st.grid[r][:]
     st.length = n * 2
-    st.toast = (f'Doubled: {n} -> {n * 2} lines', now + 1.5)
+    st.toast = (f'Doubled: {n} -> {n * 2} lines', now + 2)
     st.len_flash = now + 1.2
 
 
@@ -3042,12 +3288,15 @@ def project_data(st: State) -> dict:
             if pat is None:
                 continue
             cells = [[r, t, list(c[0]) if isinstance(c[0], tuple) else c[0], c[1]]
+                     + ([c[2]] if len(c) > 2 else [])          # duree (lignes) si > 1
                      for r in range(ROWS) for t, c in enumerate(pat['grid'][r]) if c]
             pats.append({'index': idx, 'name': pat.get('name', ''), 'length': pat['length'],
                          'cells': cells})
         groups[g] = {'patterns': pats, 'current': st.pat_index[g], 'off': g in st.pat_off,
+                     'name': st.group_names[g],
                      'volume': st.group_vol[g], 'key': st.keys[g],
-                     'sounds': {str(s): {'volume': st.sound_vol[(g, s)], 'params': st.params[(g, s)]}
+                     'sounds': {str(s): {'volume': st.sound_vol[(g, s)], 'params': st.params[(g, s)],
+                                         'envelope': st.env[(g, s)]}
                                 for s in range(1, 17)}}
     scenes = [{'index': i, 'name': st.scene_names[i], 'groups': sc}
               for i, sc in enumerate(st.scenes) if sc]
@@ -3132,9 +3381,11 @@ def load_project(st: State, name: str) -> None:
         st.patterns[g] = [None] * PAT_SLOTS
         for pd in gd.get('patterns', []):
             grid = [[None] * 16 for _ in range(ROWS)]
-            for r, t, note, vel in pd.get('cells', []):
+            for cell in pd.get('cells', []):
+                r, t, note, vel = cell[:4]
                 if 0 <= r < ROWS and 0 <= t < 16:
-                    grid[r][t] = (tuple(note) if isinstance(note, list) else note, vel)
+                    grid[r][t] = with_len((tuple(note) if isinstance(note, list) else note, vel),
+                                          int(cell[4]) if len(cell) > 4 else 1)
             st.patterns[g][pd['index']] = {'grid': grid, 'length': pd.get('length', 16),
                                            'name': pd.get('name', '')}
         cur = gd.get('current', 0)
@@ -3144,11 +3395,15 @@ def load_project(st: State, name: str) -> None:
         st.grids[g] = st.patterns[g][cur]['grid']
         (st.pat_off.add if gd.get('off') else st.pat_off.discard)(g)
         st.group_vol[g] = gd.get('volume', 100)
+        st.group_names[g] = gd.get('name', '')
         if gd.get('key'):
             st.keys[g].update(gd['key'])
         for s, sd in gd.get('sounds', {}).items():
             st.sound_vol[(g, int(s))] = sd.get('volume', 100)
             st.params[(g, int(s))] = list(sd.get('params', st.params[(g, int(s))]))
+            e = sd.get('envelope', {})
+            st.env[(g, int(s))] = {'mode': e.get('mode', default_env(int(s))['mode']),
+                                   'release': int(e.get('release', 150))}
     st.scenes = [None] * PAT_SLOTS
     st.scene_names = [''] * PAT_SLOTS
     for sd in data.get('scenes', []):
@@ -3195,62 +3450,78 @@ def new_project(st: State) -> None:
 
 def file_button(st: State, name: str) -> None:
     """Mode FILE : 5 SAVE, 6 LOAD, 7 NEW, 8 NAME ; Shift + 6 COPY, Shift + 7 DELETE (projet
-    choisi dans la liste). Un 2e appui confirme : SAVE sur un autre projet du meme nom,
+    choisi). Question YES (bouton 5) / NO (bouton 6) : SAVE sur un projet qui existe deja,
     LOAD / NEW avec des changements non enregistres, DELETE."""
     now = time.monotonic()
     names = list_projects()
     selected = names[st.file_sel % len(names)] if names else None
+    if st.file_ask:                                  # une question est posee : YES / NO
+        action, target = st.file_ask
+        st.file_ask = None
+        if name == 'screen_5':
+            file_do(st, action, target)
+        else:
+            st.toast = ('Cancelled', now + 2)
+        return
     shift = 'shift' in st.held
     action = {'screen_5': 'SAVE', 'screen_6': 'COPY' if shift else 'LOAD',
               'screen_7': 'DELETE' if shift else 'NEW', 'screen_8': 'NAME'}[name]
-    confirmed = st.file_confirm and st.file_confirm[0] == action and now - st.file_confirm[1] < 3
-
-    def ask(text):
-        st.file_confirm = (action, now)
-        st.toast = (text, now + 3)
-
     if action == 'NAME':
         st.name_edit, st.name_pos = (None, 0) if st.name_edit else (('project',), 0)
+        st.file_moved = False                        # SAVE : sous le nouveau nom
         return
     if action in ('LOAD', 'COPY', 'DELETE') and selected is None:
         st.toast = ('No project yet: SAVE first', now + 2)
         return
+    if action == 'SAVE' and st.file_moved and selected and selected != project_folder(st.project_name).stem:
+        st.file_ask = ('SAVE', selected)             # projet choisi dans la liste : on ecrase lui
+    elif action == 'SAVE' and project_folder(st.project_name).stem in names:
+        st.file_ask = ('SAVE', None)                 # le fichier existe : on demande
+    elif action in ('LOAD', 'NEW') and project_modified(st):
+        st.file_ask = (action, selected)
+    elif action == 'DELETE':
+        st.file_ask = ('DELETE', selected)
+    else:
+        file_do(st, action, None if action == 'SAVE' else selected)
+
+
+def file_question(st: State) -> str:
+    action, target = st.file_ask
+    return {'SAVE': f'Overwrite {target or st.project_name}?',
+            'LOAD': 'Not saved! Load anyway?', 'NEW': 'Not saved! New project anyway?',
+            'DELETE': f'Delete {target}?'}[action]
+
+
+def file_do(st: State, action: str, selected) -> None:
+    now = time.monotonic()
     if action == 'SAVE':
-        if would_overwrite(st) and not confirmed:
-            ask(f'{st.project_name} exists! SAVE again: overwrite')
-            return
+        if selected:                                 # enregistrer sous le nom choisi dans la liste
+            st.project_name = selected
         path = save_project(st)
         st.toast = (f'Saved: {st.project_name}', now + 2)
         print(f'Projet enregistre : {path}')
-    elif action in ('LOAD', 'NEW'):
-        if project_modified(st) and not confirmed:
-            ask('Not saved! Press again to continue')
-            return
-        if action == 'LOAD':
-            load_project(st, selected)
-            st.toast = (f'Loaded: {st.project_name}', now + 2)
-        else:
-            new_project(st)
-            st.toast = (f'New project: {st.project_name}', now + 2)
+    elif action == 'LOAD':
+        load_project(st, selected)
+        st.toast = (f'Loaded: {st.project_name}', now + 2)
+    elif action == 'NEW':
+        new_project(st)
+        st.toast = (f'New project: {st.project_name}', now + 2)
     elif action == 'COPY':
         new = copy_project(selected)
         st.toast = (f'Copy: {new}', now + 2)
         print(f'Projet copie : {selected} -> {new}')
         selected = new
     elif action == 'DELETE':
-        if not confirmed:
-            ask(f'Delete {selected}? Press DELETE again')
-            return
         delete_project(selected)
         if selected == st.project_file:              # le projet ouvert n'a plus de fichier
             st.project_file, st.saved_text = None, ''
         st.toast = (f'Deleted: {selected}', now + 2)
         print(f'Projet supprime : {selected}')
         selected = None
-    st.file_confirm = None
     names = list_projects()
     cur = selected if selected in names else project_folder(st.project_name).stem
     st.file_sel = names.index(cur) if cur in names else min(st.file_sel, max(0, len(names) - 1))
+    st.file_moved = False
 
 
 def draw_file(st: State, half: int) -> Image.Image:
@@ -3278,9 +3549,11 @@ def draw_file(st: State, half: int) -> Image.Image:
     modified = project_modified(st)
     header(d, '', '', acc)
     shift = 'shift' in st.held
-    labels = ('SAVE', 'COPY', 'DELETE', 'NAME') if shift else ('SAVE', 'LOAD', 'NEW', 'NAME')
+    labels = (('YES', 'NO', '', '') if st.file_ask else
+              ('SAVE', 'COPY', 'DELETE', 'NAME') if shift else ('SAVE', 'LOAD', 'NEW', 'NAME'))
     for k, label in enumerate(labels):
-        softkey(d, st, k, label, label == 'NAME' and st.name_edit is not None)
+        if label:
+            softkey(d, st, k, label, label == 'NAME' and st.name_edit is not None)
     pats = sum(1 for g in GROUPS for p in st.patterns[g]
                if p and any(c for r in p['grid'][:p['length']] for c in r))
     scenes = sum(1 for sc in st.scenes if sc)
@@ -3289,13 +3562,20 @@ def draw_file(st: State, half: int) -> Image.Image:
            fill=(240, 160, 30) if modified else (40, 200, 90))
     lines = [f'{pats} patterns with notes, {scenes} scenes, {len(st.arrangement)} song entries',
              f'{st.bpm} BPM', '',
+             'SAVE: under the name chosen in the list (if moved).',
              'SHIFT: copy or delete the selected project.',
              'SHIFT + FILE: quick save from any mode.',
              'Quitting saves automatically (old version',
              'kept as project.bak.json).']
     for k, line in enumerate(lines):
         d.text((12, 92 + k * 20), line, font=font(13), fill=(190, 190, 190))
-    toast_box(st, d, acc)
+    if st.file_ask:                                  # question YES / NO
+        rounded(d, (40, 100, 440, 190), fill=(14, 14, 20), outline=acc, width=2)
+        q = file_question(st)
+        d.text((240 - d.textlength(q, font=font(18)) / 2, 115), q, font=font(18), fill='white')
+        d.text((240 - d.textlength('YES  /  NO', font=font(14)) / 2, 152), 'YES  /  NO', font=font(14), fill=acc)
+    else:
+        toast_box(st, d, acc)
     name_overlay(st, d)
     return img
 
@@ -3360,10 +3640,10 @@ def arranger_pad(st: State, pad: int) -> None:
     idx = st.scene_bank * 16 + pad - 1
     now = time.monotonic()
     if st.scenes[idx] is None:
-        st.toast = (f'S{idx + 1:02d} is empty (make it in SCENE)', now + 1.5)
+        st.toast = (f'S{idx + 1:02d} is empty (make it in SCENE)', now + 2)
         return
     if len(st.arrangement) >= ARR_MAX:
-        st.toast = (f'{ARR_MAX} entries maximum', now + 1.5)
+        st.toast = (f'{ARR_MAX} entries maximum', now + 2)
         return
     pos = st.arr_sel + 1 if st.arrangement else 0
     st.arrangement.insert(pos, {'scene': idx, 'repeats': 1})
@@ -3376,7 +3656,7 @@ def arranger_button(st: State, name: str) -> bool:
     if name == 'screen_5':                           # SONG : la lecture suit l'arrangement
         st.arr_on = not st.arr_on
         st.arr_pos, st.arr_rows = 0, 0
-        st.toast = ('SONG mode ON' if st.arr_on else 'SONG mode OFF', now + 1.5)
+        st.toast = ('SONG mode ON' if st.arr_on else 'SONG mode OFF', now + 2)
     elif name == 'screen_6' and st.arrangement:      # GO : jouer a partir de l'entree choisie
         st.arr_on = True
         st.arr_pos, st.arr_rows = st.arr_sel, 0
@@ -3494,6 +3774,210 @@ def draw_arranger(st: State, half: int) -> Image.Image:
     return img
 
 
+def plugin_targets(st: State) -> list:
+    """Sons modifies en PLUG-IN : la selection (SELECT + pads), sinon le son choisi."""
+    return sorted(st.plugin_sel) or [st.sound]
+
+
+def plugin_knob(st: State, i: int, delta: int) -> None:
+    """PLUG-IN : 1 = mode d'enveloppe, 2 = relachement, pour tous les sons choisis."""
+    if i not in st.plugin_knobs:
+        return
+    n = st.plugin_knobs[i].steps(delta)
+    if not n:
+        return
+    targets = plugin_targets(st)
+    first = st.env[(st.group, targets[0])]
+    if i == 0:
+        mode = ENV_MODES[(ENV_MODES.index(first['mode']) + n) % len(ENV_MODES)]
+        for s in targets:
+            st.env[(st.group, s)]['mode'] = mode
+    else:
+        k = min(range(len(RELEASES)), key=lambda j: abs(RELEASES[j] - first['release']))
+        rel = RELEASES[max(0, min(len(RELEASES) - 1, k + n))]
+        for s in targets:
+            st.env[(st.group, s)]['release'] = rel
+
+
+def draw_plugin(st: State, half: int) -> Image.Image:
+    """PLUG-IN : enveloppe des sons du groupe (ONE-SHOT / ADSR, relachement)."""
+    acc = group_rgb(st)
+    img = Image.new('RGB', (W, H), (10, 10, 14))
+    d = ImageDraw.Draw(img)
+    targets = plugin_targets(st)
+    if half == 0:
+        header(d, f'PLUG-IN  Group {st.group}', f'{len(targets)} sound' + ('s' if len(targets) > 1 else ''), acc)
+        for i in range(16):
+            pad = 13 + i % 4 - 4 * (i // 4)            # pad 13 en haut a gauche
+            x, y = 8 + (i % 4) * 117, 32 + (i // 4) * 52
+            env = st.env[(st.group, pad)]
+            chosen = pad in targets
+            rounded(d, (x, y, x + 110, y + 46), fill=acc if chosen else (24, 24, 32),
+                    outline=shade(acc, 0.6))
+            ink = 'black' if chosen else 'white'
+            name = f'{pad:02d} {st.sound_name(pad)}'
+            d.text((x + 55 - d.textlength(name, font=font(12)) / 2, y + 5), name, font=font(12), fill=ink)
+            mode = 'ADSR' if env['mode'] == 'ADSR' else 'ONE-SHOT'
+            d.text((x + 55 - d.textlength(mode, font=font(13)) / 2, y + 25), mode, font=font(13),
+                   fill=ink if chosen else (170, 170, 170))
+        for k, t in enumerate(['Mode', 'Release', '', '']):
+            d.text((k * 120 + 10, 252), t, font=font(12), fill=(170, 170, 170))
+        return img
+    header(d, 'ENVELOPE', '', acc)
+    modes = {st.env[(st.group, s)]['mode'] for s in targets}
+    rels = {st.env[(st.group, s)]['release'] for s in targets}
+    names = ', '.join(f'{s:02d}' for s in targets)
+    d.text((12, 34), short('Sounds: ' + names, 52), font=font(14), fill='white')
+    param_box(d, 0, 'Mode', modes.pop() if len(modes) == 1 else 'mixed', acc, y=60)
+    param_box(d, 1, 'Release', f'{rels.pop()} ms' if len(rels) == 1 else 'mixed', acc, y=60,
+              dim=all(st.env[(st.group, s)]['mode'] == 'ONE-SHOT' for s in targets))
+    lines = ['ONE-SHOT: the sound plays to its end.',
+             'ADSR: the sound holds as long as the note,',
+             'then fades out with the release.',
+             'Pad: choose a sound (and hear it).',
+             'SELECT + pads: several sounds at once.',
+             'PLUG-IN again: back.']
+    for k, line in enumerate(lines):
+        d.text((12, 154 + k * 18), line, font=font(12), fill=(180, 180, 180))
+    return img
+
+
+# --- EVENTS : vue piano roll de la piste choisie ---------------------------------------
+PR_ZOOMS = (16, 32, 48, 64)                           # lignes visibles
+PR_ROWS = 18                                          # hauteurs visibles (demi-tons)
+
+
+def pr_window(st: State) -> tuple:
+    cols = st.pr_zoom                                # meme plus long que le pattern (zone grisee)
+    start = (st.cursor // cols) * cols
+    return start, cols
+
+
+def pr_follow_pitch(st: State) -> None:
+    """La vue suit la note choisie si elle sort de l'ecran."""
+    cell = st.grid[st.cursor][st.sound - 1]
+    if cell:
+        notes = cell_notes(cell[0])
+        if min(notes) < st.pr_low:
+            st.pr_low = max(0, min(notes) - 2)
+        elif max(notes) >= st.pr_low + PR_ROWS:
+            st.pr_low = min(127 - PR_ROWS, max(notes) - PR_ROWS + 3)
+
+
+def events_knob(st: State, i: int, delta: int) -> None:
+    """Gauche : 1 ligne, 2 zoom, 3 hauteur de la vue, 4 piste.
+    Droite : 5 deplacer la note, 6 hauteur, 7 velocite, 8 duree."""
+    if i not in st.pr_knobs:
+        return
+    n = st.pr_knobs[i].steps(delta)
+    if not n:
+        return
+    t = st.sound - 1
+    if i == 0:
+        st.cursor = max(0, min(st.length - 1, st.cursor + n))
+        pr_follow_pitch(st)
+    elif i == 1:
+        k = PR_ZOOMS.index(st.pr_zoom) if st.pr_zoom in PR_ZOOMS else 1
+        st.pr_zoom = PR_ZOOMS[max(0, min(len(PR_ZOOMS) - 1, k + n))]
+    elif i == 2:
+        st.pr_low = max(0, min(127 - PR_ROWS, st.pr_low + n))
+    elif i == 3:
+        st.sound = max(1, min(16, st.sound + n))
+        pr_follow_pitch(st)
+    elif i == 4:                                     # deplacer la note dans le temps
+        cell = st.grid[st.cursor][t]
+        to = st.cursor + n
+        if cell and 0 <= to < st.length and not st.grid[to][t]:
+            snapshot(st, coalesce=True)
+            st.grid[to][t], st.grid[st.cursor][t] = cell, None
+            st.cursor = to
+    elif i in (5, 6):                                # hauteur / velocite
+        edit_cell(st, i == 5, n)
+        pr_follow_pitch(st)
+    elif i == 7:                                     # duree (lignes)
+        cell = st.grid[st.cursor][t]
+        if cell:
+            snapshot(st, coalesce=True)
+            st.grid[st.cursor][t] = with_len(cell, max(1, min(st.length, cell_len(cell) + n)))
+
+
+def draw_events(st: State, half: int) -> Image.Image:
+    acc = group_rgb(st)
+    img = Image.new('RGB', (W, H), (10, 10, 14))
+    d = ImageDraw.Draw(img)
+    t = st.sound - 1
+    cell = st.grid[st.cursor][t]
+    if half == 0:
+        rec = step_label(st) + ('REC  ' if st.recording else '')
+        header(d, f'{pattern_title(st)}  T{st.sound:02d}', f'{rec}', acc)
+        softkey(d, st, 2, 'TRACKER', False)         # bouton 3 : passer au tracker
+        start, cols = pr_window(st)
+        x0, y0, gw, rh = 34, 30, 440, 12
+        cw = gw / cols
+        top = st.pr_low + PR_ROWS - 1                # hauteur du haut de l'ecran
+        end = x0 + max(0, min(cols, st.length - start)) * cw   # fin du pattern dans la vue
+        for k in range(PR_ROWS):                     # lignes de hauteur (touches noires sombres)
+            pitch = top - k
+            y = y0 + k * rh
+            black = pitch % 12 in (1, 3, 6, 8, 10)
+            d.rectangle((x0, y, x0 + gw, y + rh - 1), fill=(16, 16, 22) if black else (24, 24, 32))
+            if end < x0 + gw:                        # au-dela de la longueur du pattern
+                d.rectangle((end, y, x0 + gw, y + rh - 1), fill=(6, 6, 8))
+            if pitch % 12 == 0 or k == PR_ROWS - 1:
+                d.text((2, y - 1), note_name(pitch), font=font(10), fill=(150, 150, 150))
+        for c in range(cols + 1):                    # temps, mesures
+            r = start + c
+            if r % 4 == 0:
+                x = x0 + c * cw
+                d.line((x, y0, x, y0 + PR_ROWS * rh), fill=(70, 70, 85) if r % 16 == 0 else (40, 40, 50))
+        playing = play_row(st)
+        if start <= playing < start + cols:
+            x = x0 + (playing - start) * cw
+            d.rectangle((x, y0, x + max(1, cw - 1), y0 + PR_ROWS * rh), fill=(0, 70, 45))
+        x = x0 + (st.cursor - start) * cw            # curseur
+        d.rectangle((x, y0, x + max(2, cw - 1), y0 + PR_ROWS * rh), outline=(120, 120, 140))
+        for r in range(st.length):                   # notes (barres), meme celles qui debordent
+            c = st.grid[r][t]
+            if not c:
+                continue
+            length = cell_len(c)
+            if r + length <= start or r >= start + cols:
+                continue
+            a = max(r, start) - start
+            b = min(r + length, start + cols) - start
+            for n in cell_notes(c[0]):
+                if not st.pr_low <= n <= top:
+                    continue
+                y = y0 + (top - n) * rh
+                bright = 0.45 + 0.55 * c[1] / 127    # velocite = luminosite
+                sel = r == st.cursor
+                d.rectangle((x0 + a * cw + 1, y + 1, x0 + b * cw - 1, y + rh - 2),
+                            fill='white' if sel else shade(acc, bright), outline=None)
+        for k, label in enumerate(['Line', f'Zoom {cols}', 'View', 'Track']):
+            d.text((k * 120 + 10, 252), label, font=font(12), fill=(170, 170, 170))
+        return img
+    header(d, 'NOTE', f'Line {st.cursor:02X}', acc)
+    if cell:
+        param_box(d, 0, 'Position', f'{st.cursor:02X}', acc, y=40)
+        param_box(d, 1, 'Note', cell_label(cell[0]).strip(), acc, y=40)
+        param_box(d, 2, 'Velocity', f'{cell[1]}', acc, y=40)
+        n = cell_len(cell)
+        param_box(d, 3, 'Length', f'{n} line' + ('s' if n > 1 else ''), acc, y=40)
+    else:
+        d.text((12, 60), 'No note on this line.', font=font(16), fill='white')
+        d.text((12, 86), 'Turn encoder 1 (Line) or the 4D wheel.', font=font(13), fill=(170, 170, 170))
+    env = st.env[(st.group, st.sound)]['mode']
+    lines = [f'Sound {st.sound:02d} envelope: {env} (PLUG-IN to change).',
+             'Pads: play, REC: record (held = length).',
+             'FIXED VEL + 4D wheel: velocity.  ERASE: delete.',
+             'Stopped: Shift + pads',
+             '= Clear / Copy / Paste / transpose.', 'EVENTS again: back.']
+    for k, line in enumerate(lines):
+        d.text((12, 140 + k * 20), line, font=font(12), fill=(180, 180, 180))
+    toast_box(st, d, acc)
+    return img
+
+
 def current_combo(st: State) -> dict:
     """Les patterns qui jouent (ou joueront) maintenant, groupe par groupe."""
     return {g: st.pat_queue.get(g, OFF if g in st.pat_off else st.pat_index[g]) for g in GROUPS}
@@ -3551,6 +4035,8 @@ def name_target(st: State):
         return None
     if t[0] == 'project':
         return st.project_name, lambda v: setattr(st, 'project_name', v or 'SONG01')
+    if t[0] == 'group':
+        return st.group_names[t[1]], lambda v: st.group_names.__setitem__(t[1], v)
     if t[0] == 'pattern':
         pat = st.patterns[t[1]][t[2]]
         if pat is None:
@@ -3560,7 +4046,7 @@ def name_target(st: State):
 
 
 def name_knob(st: State, i: int, delta: int) -> None:
-    """Editeur de nom : 1 = position, 2 = lettre, 3 = nom tout pret."""
+    """Editeur de nom (encodeurs sous l'ecran droit) : 5 position, 6 lettre, 7 noms tout prets."""
     target = name_target(st)
     if target is None or i not in st.name_knobs:
         return
@@ -3569,9 +4055,9 @@ def name_knob(st: State, i: int, delta: int) -> None:
         return
     text, save = target
     chars = list(text.ljust(NAME_LEN))
-    if i == 0:
+    if i == 4:
         st.name_pos = max(0, min(NAME_LEN - 1, st.name_pos + n))
-    elif i == 1:
+    elif i == 5:
         k = NAME_CHARS.find(chars[st.name_pos])
         chars[st.name_pos] = NAME_CHARS[(max(k, 0) + n) % len(NAME_CHARS)]
         save(''.join(chars).rstrip())
@@ -3589,7 +4075,7 @@ def name_overlay(st: State, d: ImageDraw.ImageDraw) -> None:
     acc = group_rgb(st)
     t = st.name_edit
     what = (f'Pattern {t[2] + 1:02d} {t[1]}' if t[0] == 'pattern' else 'Project' if t[0] == 'project'
-            else f'Scene {t[1] + 1:02d}')
+            else f'Group {t[1]}' if t[0] == 'group' else f'Scene {t[1] + 1:02d}')
     d.rectangle((20, 40, 460, 230), fill=(15, 15, 20), outline=acc, width=3)
     d.text((40, 50), f'NAME  {what}', font=font(16), fill=acc)
     text = target[0].ljust(NAME_LEN)
@@ -3598,8 +4084,11 @@ def name_overlay(st: State, d: ImageDraw.ImageDraw) -> None:
         d.rectangle((x, 90, x + 40, 140), fill=acc if k == st.name_pos else (30, 30, 40))
         d.text((x + 20 - d.textlength(ch, font=font(30)) / 2, 96), ch, font=font(30),
                fill='black' if k == st.name_pos else 'white')
-    d.text((40, 160), 'Encoder 1: position   2: letter   3: ready names', font=font(13), fill=(180, 180, 180))
-    d.text((40, 184), 'Button 8: done', font=font(13), fill=acc)
+    d.text((40, 160), 'Encoders below: position / letter / ready names', font=font(13), fill=(180, 180, 180))
+    d.text((40, 184), 'Press the same button again: done', font=font(13), fill=acc)
+    d.rectangle((0, 248, W, H), fill=(15, 15, 20))
+    for k, label in enumerate(('Position', 'Letter', 'Names')):     # sous les encodeurs 5-7
+        d.text((k * 120 + 10, 252), label, font=font(12), fill=acc)
 
 
 def tick(st: State) -> bool:
@@ -3629,13 +4118,14 @@ def tick(st: State) -> bool:
             for t, cell in enumerate(st.grids[g][row]):     # toutes les pistes
                 if not cell:
                     continue
-                note, vol = cell
+                note, vol = cell[0], cell[1]
                 if current:
                     st.flash[t + 1] = now + 0.08
                 v = out_vel(st, g, t + 1, vol)
+                gate = 60 / st.bpm / 4 * (cell_len(cell) - 0.1)   # duree de la note (lignes)
                 for n in cell_notes(note):               # une note ou un accord
                     if v:
-                        play_note(st, g, t + 1, v, n, 60 / st.bpm / 4 * 0.9)
+                        play_note(st, g, t + 1, v, n, gate)
                     if current and t + 1 == st.sound:   # le clavier montre le son choisi
                         st.note_flash[n] = (now + 0.15, vol)
         st.playhead += 1
@@ -3649,7 +4139,7 @@ def tick(st: State) -> bool:
 # Retro-eclairage des boutons (rapport 0x80, 63 octets) - emplacements et
 # niveaux repris du pilote r22yb3m (MIT). Boutons mono : 4 = doux, 7 = vif.
 # Groupes A-H : couleurs de la palette NI, (douce, vive) pour chaque groupe.
-BUTTON_SLOTS = {'arranger': 2, 'file': 8, 'select': 55, 'restart': 37, 'pattern': 51, 'scene': 50, 'duplicate': 54, 'erase': 38, 'tempo': 23, 'play': 41, 'rec': 42, 'stop': 43, 'shift': 44, 'pad_mode': 46, 'keyboard': 47,
+BUTTON_SLOTS = {'fixed_vel': 45, 'plug_in': 1, 'events': 52, 'arranger': 2, 'file': 8, 'select': 55, 'restart': 37, 'pattern': 51, 'scene': 50, 'duplicate': 54, 'erase': 38, 'tempo': 23, 'play': 41, 'rec': 42, 'stop': 43, 'shift': 44, 'pad_mode': 46, 'keyboard': 47,
                 'chords': 48, 'step': 49, 'nav_prev': 6, 'nav_next': 7,
                 'mute': 57, 'solo': 56,
                 'mixer': 3, 'volume': 20,  # MIXER / VOLUME : emplacements supposes (21 = SWING)
@@ -3691,6 +4181,10 @@ def available_buttons(st: State) -> set:
     on.add('restart')                                  # RESTART : toujours possible
     on.add('file')                                     # FILE : projets ; Shift + FILE : enregistrer
     on.add('arranger')                                 # ARRANGER : l'ordre des scenes
+    on.add('plug_in')                                  # PLUG-IN : enveloppe des sons
+    on.add('events')                                   # EVENTS : piano roll
+    if st.events_mode:
+        on |= {'erase', 'fixed_vel'}                   # FIXED VEL + molette : velocite
     on.add('settings')                                 # SETTINGS : couleurs, Maschine, audio, MIDI
     on.add('midi_channel')                             # MIDI : SETTINGS > MIDI
     if st.settings and not st.set_confirm:
@@ -3707,17 +4201,19 @@ def available_buttons(st: State) -> set:
     on |= {'pattern', 'scene'}                         # PATTERN / SCENE
     if st.file_mode:
         return on | {'screen_5', 'screen_6', 'screen_7', 'screen_8'}
+    if st.plugin_mode:
+        return on | {'select'}
     if st.arranger_mode:
         return on | {'screen_3', 'screen_5', 'screen_6', 'screen_7', 'nav_prev', 'nav_next', 'erase',
                      'duplicate'}
     if st.pattern_mode or st.scene_mode:
         return on | {'nav_prev', 'nav_next', 'duplicate', 'erase', 'screen_8'} \
+            | ({'screen_7'} if st.pattern_mode else set()) \
             | ({'select'} if st.scene_mode else set())     # 8 : NAME ; SELECT + groupe : FREE
     on.add('duplicate')                                # Shift + DUPLICATE : DOUBLE (pattern x 2)
     if kb_tracker(st):
         on |= {'nav_prev', 'nav_next'}                 # < > : pistes 1-8 / 9-16
-    if st.step_mode:
-        on.add('select')                               # SELECT + pad : choisir le son
+    on.add('select')                                   # SELECT + pad : choisir le son
     if st.step_mode or st.mixer:
         on |= {'nav_prev', 'nav_next'}                 # < > : pages STEP ou pages du mixeur
     if not st.mixer:
@@ -3739,7 +4235,7 @@ def button_frame(st: State) -> bytes:
               'pad_mode': not st.melodic(), 'chords': st.right_view == 'chords',
               'step': st.step_mode, 'tempo': False, 'nav_prev': False, 'nav_next': False,
               'pattern': st.pattern_mode, 'scene': st.scene_mode, 'select': False, 'file': st.file_mode,
-              'arranger': st.arranger_mode or st.arr_on, 'restart': False, 'duplicate': False, 'erase': False,
+              'arranger': st.arranger_mode or st.arr_on, 'plug_in': st.plugin_mode, 'events': st.events_mode, 'fixed_vel': False, 'restart': False, 'duplicate': False, 'erase': False,
               'mute': bool(st.muted), 'solo': bool(st.solo),
               'mixer': st.mixer, 'volume': False,
               'screen_3': (st.set_tab == SET_TABS[2]) if st.settings else (st.tracker16 or kb_tracker(st)),
@@ -3789,6 +4285,10 @@ def led_frame(st: State) -> bytes:
             return pad_led_frame({p: hue_pair(p - 1)[1] for p in range(1, 17)})
         return pad_led_frame({p: pad_pair(st, p)[1 if p in st.set_selected else 0]
                               for p in range(1, 17)})
+    if st.plugin_mode:                                 # PLUG-IN : sons choisis vifs
+        targets = plugin_targets(st)
+        return pad_led_frame({p: pad_pair(st, p)[1] if (p in targets or p in st.down)
+                              else pad_pair(st, p)[0] for p in range(1, 17)})
     if st.arranger_mode:                               # ARRANGER : scenes pleines douces,
         colors = {}                                    # celle de l'entree choisie vive
         sel = st.arrangement[st.arr_sel]['scene'] if st.arrangement else None
@@ -3836,7 +4336,9 @@ def led_frame(st: State) -> bytes:
             else:
                 colors[p] = bright if (p in st.down or st.flash.get(p, 0) > now) else dim
         return pad_led_frame(colors)
-    if st.step_mode and 'select' in st.held:           # STEP + SELECT : les 16 sons, le choisi
+    if 'select' in st.held and not (st.pattern_mode or st.scene_mode or st.file_mode
+                                    or st.arranger_mode or st.plugin_mode or st.settings):
+        # SELECT tenu (Pad mode, Keyboard, Chords, STEP) : les 16 sons, le choisi en blanc
         return pad_led_frame({p: STEP_SOUND if p == st.sound else pad_pair(st, p)[0]   # en blanc
                               for p in range(1, 17)})
     if st.step_mode:
@@ -4132,6 +4634,12 @@ def main() -> int:
             if transport != last_transport:
                 SOUND.send('/fuzzy/proto/transport', int(st.playing), float(st.bpm))
                 last_transport = transport
+            if st.toast[1] and now > st.toast[1]:        # fin d'un message : l'effacer de l'ecran
+                st.toast = ('', 0.0)
+                dirty = True
+            if st.len_flash and now > st.len_flash:        # fin du grand cadre LENGTH
+                st.len_flash = 0.0
+                dirty = True
             if st.settings and st.set_tab in ('STATUS', 'AUDIO', 'MIDI') and now - last_draw > 0.5:
                 dirty = True                               # etat qui change tout seul
             with lock:

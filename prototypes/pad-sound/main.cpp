@@ -50,9 +50,14 @@ constexpr int kPanic = -1;   // evenement special : couper toutes les voix
 struct PadEvent
 {
     int pad = 0;          // 1..16
-    int velocity = 0;     // 1..127
+    int velocity = 0;     // 1..127 (0 = fin de note : voir kNoteOff)
     int note = -1;        // hauteur MIDI pour les pads 5-16 (-1 = hauteur par defaut du pad)
     juce::int64 ticks = 0; // instant de la lecture USB
+    int tag = -1;         // groupe (0-15) : une fin de note ne touche que ce groupe
+    int mode = 0;         // 0 = ONE-SHOT (le son va au bout), 1 = ADSR (tient, puis relache)
+    int releaseMs = 150;  // ADSR : relachement apres la fin de note
+    int gateMs = 0;       // ADSR : duree de la note (0 = jusqu'a /fuzzy/proto/off)
+    bool off = false;     // fin de note (ADSR)
 };
 
 class EventQueue
@@ -91,23 +96,36 @@ struct Voice
 {
     bool active = false;
     double phase = 0, time = 0, amp = 0;
-    int pad = 0;
+    int pad = 0, tag = -1;
+    bool adsr = false, held = false;        // ADSR : la note tient tant que "held"
+    double gate = 0, releaseTime = 0.15;    // gate : fin de note programmee (s, 0 = aucune)
     juce::Random noise;
     float hpState = 0;
     double fade = 1, fadeStep = 0;   // fondu de sortie quand le meme pad est rejoue
 
     int note = 60;
 
-    void start (int p, int velocity, int midiNote)
+    void start (const PadEvent& e)
     {
-        note = midiNote >= 0 ? midiNote : defaultNote (p);
-        pad = p; active = true; phase = 0; time = 0; fade = 1; fadeStep = 0;
-        amp = 0.35 * velocity / 127.0;   // volume par voix : laisse de la marge a plusieurs notes
+        note = e.note >= 0 ? e.note : defaultNote (e.pad);
+        pad = e.pad; tag = e.tag; active = true; phase = 0; time = 0; fade = 1; fadeStep = 0;
+        amp = 0.35 * e.velocity / 127.0;   // volume par voix : laisse de la marge a plusieurs notes
+        adsr = e.mode == 1;
+        held = adsr;
+        gate = adsr && e.gateMs > 0 ? e.gateMs / 1000.0 : 0;
+        releaseTime = juce::jlimit (0.005, 5.0, e.releaseMs / 1000.0);
     }
 
     void release (double sr)          // s'eteindre en 10 ms, sans clic
     {
         if (fadeStep <= 0) fadeStep = 1.0 / (0.010 * sr);
+    }
+
+    void noteOff (double sr)          // ADSR : fin de note, relachement
+    {
+        if (! held) return;
+        held = false;
+        fadeStep = 1.0 / (releaseTime * sr);
     }
 
     float render (double sr)
@@ -140,7 +158,9 @@ struct Voice
             default: { // notes
                 const double f = 440.0 * std::pow (2.0, (note - 69) / 12.0);
                 phase += 2 * juce::MathConstants<double>::pi * f * dt;
-                s = (float) ((std::sin (phase) + 0.3 * std::sin (2 * phase)) * 0.6 * env (0.6));
+                // ADSR : descend vers un palier (sustain 50 %) tant que la note tient
+                const double e = adsr ? (level = 0.5 + 0.5 * std::exp (-time / 0.3)) : env (0.6);
+                s = (float) ((std::sin (phase) + 0.3 * std::sin (2 * phase)) * 0.6 * e);
                 break;
             }
         }
@@ -149,6 +169,8 @@ struct Voice
         const double attack = std::min (1.0, time / (pad <= 4 ? 0.001 : 0.005));
         // La voix s'arrete quand elle est devenue inaudible (plus de coupure franche)
         if (time > 0.01 && level < 0.0005) active = false;
+        if (held && gate > 0 && time >= gate) noteOff (sr);       // fin de note programmee
+        if (held && time > 30) noteOff (sr);                      // securite : note oubliee
         if (fadeStep > 0)
         {
             fade -= fadeStep;
@@ -186,7 +208,15 @@ public:
                     if (v.active) v.release (sampleRate);   // fondu de 10 ms, sans clic
                 continue;
             }
-            trigger (e.pad, e.velocity, e.note);
+            if (e.off)
+            {
+                for (auto& v : voices)                   // ADSR : fin des notes de ce son
+                    if (v.active && v.pad == e.pad && v.tag == e.tag
+                        && (e.note < 0 || v.note == e.note))
+                        v.noteOff (sampleRate);
+                continue;
+            }
+            trigger (e);
             // Temps passe dans le programme entre la lecture USB et le depart du son
             const auto waited = juce::Time::highResolutionTicksToSeconds (
                                     juce::Time::getHighResolutionTicks() - e.ticks) * 1000.0;
@@ -217,19 +247,19 @@ private:
     // comme sur une Maschine. 48 voix laissent la place a ces fondus.
     std::array<Voice, 48> voices {};
 
-    void trigger (int pad, int velocity, int note)
+    void trigger (const PadEvent& e)
     {
         // Meme pad ET meme note : on eteint l'ancienne (un accord garde toutes ses notes)
-        const int wanted = note >= 0 ? note : defaultNote (pad);
+        const int wanted = e.note >= 0 ? e.note : defaultNote (e.pad);
         for (auto& v : voices)
-            if (v.active && v.pad == pad && v.note == wanted) v.release (sampleRate);
+            if (v.active && v.pad == e.pad && v.tag == e.tag && v.note == wanted) v.release (sampleRate);
         Voice* chosen = nullptr;
         for (auto& v : voices)
             if (! v.active) { chosen = &v; break; }
         if (chosen == nullptr)                       // toutes occupees : la plus ancienne
             for (auto& v : voices)
                 if (chosen == nullptr || v.time > chosen->time) chosen = &v;
-        chosen->start (pad, velocity, note);
+        chosen->start (e);
     }
 };
 
@@ -343,12 +373,31 @@ private:
             midi.setTransport (num (0) != 0, m.size() > 1 && m[1].isFloat32() ? m[1].getFloat32() : 120.0);
             return;
         }
+        if (address == "/fuzzy/proto/off")             // fin de note (son, note, groupe)
+        {
+            const int pad = num (0);
+            if (pad < 1 || pad > 16) return;
+            PadEvent e { pad, 0, num (1), juce::Time::getHighResolutionTicks() };
+            e.tag = m.size() > 2 ? num (2) : -1;
+            e.off = true;
+            queue.push (e);
+            return;
+        }
         if (address != "/fuzzy/proto/hit") return;
+        // son, velocite, note [, groupe, mode (0 ONE-SHOT / 1 ADSR), relachement ms, duree ms]
         if (m.size() < 3 || ! m[0].isInt32() || ! m[1].isInt32() || ! m[2].isInt32()) return;
         const int pad = m[0].getInt32();
         if (pad < 1 || pad > 16) return;
-        queue.push ({ pad, juce::jlimit (1, 127, m[1].getInt32()), m[2].getInt32(),
-                      juce::Time::getHighResolutionTicks() });
+        PadEvent e { pad, juce::jlimit (1, 127, m[1].getInt32()), m[2].getInt32(),
+                     juce::Time::getHighResolutionTicks() };
+        if (m.size() >= 7)
+        {
+            e.tag = num (3);
+            e.mode = num (4);
+            e.releaseMs = num (5);
+            e.gateMs = num (6);
+        }
+        queue.push (e);
     }
     EventQueue& queue;
     Requests& requests;
