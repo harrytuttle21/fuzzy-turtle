@@ -1,7 +1,7 @@
 {
  "arr_loop": false,
  "arrangement": [],
- "bpm": 120,
+ "bpm": 108,
  "format": "fuzzy-proto",
  "groups": {
   "A": {
@@ -12,11 +12,123 @@
     "root": 2,
     "type_idx": 3
    },
+   "kit": "Fuzzy Test Kit",
    "name": "",
    "off": false,
    "patterns": [
     {
-     "cells": [],
+     "cells": [
+      [
+       0,
+       0,
+       60,
+       62
+      ],
+      [
+       2,
+       0,
+       60,
+       16,
+       2
+      ],
+      [
+       2,
+       2,
+       60,
+       31
+      ],
+      [
+       3,
+       2,
+       60,
+       23
+      ],
+      [
+       4,
+       1,
+       60,
+       75
+      ],
+      [
+       5,
+       2,
+       60,
+       40
+      ],
+      [
+       7,
+       0,
+       60,
+       65
+      ],
+      [
+       8,
+       0,
+       60,
+       90
+      ],
+      [
+       9,
+       0,
+       60,
+       14
+      ],
+      [
+       9,
+       2,
+       60,
+       36
+      ],
+      [
+       10,
+       1,
+       60,
+       44
+      ],
+      [
+       10,
+       2,
+       60,
+       30
+      ],
+      [
+       11,
+       0,
+       60,
+       19,
+       2
+      ],
+      [
+       13,
+       2,
+       60,
+       21
+      ],
+      [
+       14,
+       1,
+       60,
+       75
+      ],
+      [
+       15,
+       0,
+       60,
+       58
+      ],
+      [
+       15,
+       1,
+       60,
+       59
+      ],
+      [
+       15,
+       3,
+       60,
+       34
+      ]
+     ],
      "index": 0,
      "length": 16,
      "name": ""
@@ -26,7 +138,7 @@
     "1": {
      "envelope": {
       "mode": "ONE-SHOT",
-      "release": 150
+      "release": 80
      },
      "params": [
       100,
@@ -34,100 +146,10 @@
       64,
       90
      ],
-     "volume": 100
+     "sample": "/Users/user/Developer/fuzzy-turtle/prototypes/kits/Fuzzy Test Kit/01 Kick.wav",
+     "volume": 89
     },
     "10": {
-     "envelope": {
-      "mode": "ADSR",
-      "release": 150
-     },
-     "params": [
-      100,
-      64,
-      64,
-      90
-     ],
-     "volume": 100
-    },
-    "11": {
-     "envelope": {
-      "mode": "ADSR",
-      "release": 150
-     },
-     "params": [
-      100,
-      64,
-      64,
-      90
-     ],
-     "volume": 100
-    },
-    "12": {
-     "envelope": {
-      "mode": "ADSR",
-      "release": 150
-     },
-     "params": [
-      100,
-      64,
-      64,
-      90
-     ],
-     "volume": 100
-    },
-    "13": {
-     "envelope": {
-      "mode": "ADSR",
-      "release": 150
-     },
-     "params": [
-      100,
-      64,
-      64,
-      90
-     ],
-     "volume": 100
-    },
-    "14": {
-     "envelope": {
-      "mode": "ADSR",
-      "release": 150
-     },
-     "params": [
-      100,
-      64,
-      64,
-      90
-     ],
-     "volume": 100
-    },
-    "15": {
-     "envelope": {
-      "mode": "ADSR",
-      "release": 150
-     },
-     "params": [
-      100,
-      64,
-      64,
-      90
-     ],
-     "volume": 100
-    },
-    "16": {
-     "envelope": {
-      "mode": "ADSR",
-      "release": 150
-     },
-     "params": [
-      100,
-      64,
-      64,
-      90
-     ],
-     "volume": 100
-    },
-    "2": {
      "envelope": {
       "mode": "ONE-SHOT",
       "release": 150
@@ -138,6 +160,105 @@
       64,
       90
      ],
+     "sample": "/Users/user/Developer/fuzzy-turtle/prototypes/kits/Fuzzy Test Kit/10 Crash.wav",
+     "volume": 100
+    },
+    "11": {
+     "envelope": {
+      "mode": "ONE-SHOT",
+      "release": 150
+     },
+     "params": [
+      100,
+      64,
+      64,
+      90
+     ],
+     "sample": "/Users/user/Developer/fuzzy-turtle/prototypes/kits/Fuzzy Test Kit/11 Ride.wav",
+     "volume": 100
+    },
+    "12": {
+     "envelope": {
+      "mode": "ONE-SHOT",
+      "release": 5
+     },
+     "params": [
+      100,
+      64,
+      64,
+      90
+     ],
+     "sample": "/Users/user/Developer/fuzzy-turtle/prototypes/kits/Fuzzy Test Kit/12 Cowbell.wav",
+     "volume": 100
+    },
+    "13": {
+     "envelope": {
+      "mode": "ONE-SHOT",
+      "release": 150
+     },
+     "params": [
+      100,
+      64,
+      64,
+      90
+     ],
+     "sample": "/Users/user/Developer/fuzzy-turtle/prototypes/kits/Fuzzy Test Kit/13 Shaker.wav",
+     "volume": 100
+    },
+    "14": {
+     "envelope": {
+      "mode": "ONE-SHOT",
+      "release": 150
+     },
+     "params": [
+      100,
+      64,
+      64,
+      90
+     ],
+     "sample": "/Users/user/Developer/fuzzy-turtle/prototypes/kits/Fuzzy Test Kit/14 Conga.wav",
+     "volume": 100
+    },
+    "15": {
+     "envelope": {
+      "mode": "ONE-SHOT",
+      "release": 150
+     },
+     "params": [
+      100,
+      64,
+      64,
+      90
+     ],
+     "sample": "/Users/user/Developer/fuzzy-turtle/prototypes/kits/Fuzzy Test Kit/15 Bass C2.wav",
+     "volume": 100
+    },
+    "16": {
+     "envelope": {
+      "mode": "ONE-SHOT",
+      "release": 150
+     },
+     "params": [
+      100,
+      64,
+      64,
+      90
+     ],
+     "sample": "/Users/user/Developer/fuzzy-turtle/prototypes/kits/Fuzzy Test Kit/16 Zap.wav",
+     "volume": 100
+    },
+    "2": {
+     "envelope": {
+      "mode": "ONE-SHOT",
+      "release": 500
+     },
+     "params": [
+      100,
+      64,
+      64,
+      90
+     ],
+     "sample": "/Users/user/Developer/fuzzy-turtle/prototypes/kits/Fuzzy Test Kit/02 Snare.wav",
      "volume": 100
     },
     "3": {
@@ -151,9 +272,37 @@
       64,
       90
      ],
+     "sample": "/Users/user/Developer/fuzzy-turtle/prototypes/kits/Fuzzy Test Kit/03 Closed HH.wav",
      "volume": 100
     },
     "4": {
+     "envelope": {
+      "mode": "ONE-SHOT",
+      "release": 80
+     },
+     "params": [
+      100,
+      64,
+      64,
+      90
+     ],
+     "sample": "/Users/user/Developer/fuzzy-turtle/prototypes/kits/Fuzzy Test Kit/04 Open HH.wav",
+     "volume": 100
+    },
+    "5": {
+     "envelope": {
+      "mode": "ADSR",
+      "release": 2000
+     },
+     "params": [
+      101,
+      64,
+      64,
+      90
+     ],
+     "volume": 100
+    },
+    "6": {
      "envelope": {
       "mode": "ONE-SHOT",
       "release": 150
@@ -164,37 +313,12 @@
       64,
       90
      ],
-     "volume": 100
-    },
-    "5": {
-     "envelope": {
-      "mode": "ADSR",
-      "release": 150
-     },
-     "params": [
-      100,
-      64,
-      64,
-      90
-     ],
-     "volume": 100
-    },
-    "6": {
-     "envelope": {
-      "mode": "ADSR",
-      "release": 150
-     },
-     "params": [
-      100,
-      64,
-      64,
-      90
-     ],
+     "sample": "/Users/user/Developer/fuzzy-turtle/prototypes/kits/Fuzzy Test Kit/06 Rim.wav",
      "volume": 100
     },
     "7": {
      "envelope": {
-      "mode": "ADSR",
+      "mode": "ONE-SHOT",
       "release": 150
      },
      "params": [
@@ -203,11 +327,12 @@
       64,
       90
      ],
+     "sample": "/Users/user/Developer/fuzzy-turtle/prototypes/kits/Fuzzy Test Kit/07 Low Tom.wav",
      "volume": 100
     },
     "8": {
      "envelope": {
-      "mode": "ADSR",
+      "mode": "ONE-SHOT",
       "release": 150
      },
      "params": [
@@ -216,11 +341,12 @@
       64,
       90
      ],
+     "sample": "/Users/user/Developer/fuzzy-turtle/prototypes/kits/Fuzzy Test Kit/08 Mid Tom.wav",
      "volume": 100
     },
     "9": {
      "envelope": {
-      "mode": "ADSR",
+      "mode": "ONE-SHOT",
       "release": 150
      },
      "params": [
@@ -229,10 +355,11 @@
       64,
       90
      ],
+     "sample": "/Users/user/Developer/fuzzy-turtle/prototypes/kits/Fuzzy Test Kit/09 High Tom.wav",
      "volume": 100
     }
    },
-   "volume": 119
+   "volume": 90
   },
   "A2": {
    "current": 0,
@@ -242,6 +369,7 @@
     "root": 0,
     "type_idx": 2
    },
+   "kit": "",
    "name": "",
    "off": false,
    "patterns": [
@@ -472,6 +600,7 @@
     "root": 2,
     "type_idx": 3
    },
+   "kit": "",
    "name": "",
    "off": false,
    "patterns": [
@@ -494,7 +623,7 @@
       64,
       90
      ],
-     "volume": 100
+     "volume": 93
     },
     "10": {
      "envelope": {
@@ -629,7 +758,7 @@
     "5": {
      "envelope": {
       "mode": "ADSR",
-      "release": 150
+      "release": 80
      },
      "params": [
       100,
@@ -702,6 +831,7 @@
     "root": 0,
     "type_idx": 2
    },
+   "kit": "",
    "name": "",
    "off": false,
    "patterns": [
@@ -932,6 +1062,7 @@
     "root": 2,
     "type_idx": 3
    },
+   "kit": "",
    "name": "",
    "off": false,
    "patterns": [
@@ -1162,6 +1293,7 @@
     "root": 0,
     "type_idx": 2
    },
+   "kit": "",
    "name": "",
    "off": false,
    "patterns": [
@@ -1392,6 +1524,7 @@
     "root": 2,
     "type_idx": 3
    },
+   "kit": "",
    "name": "",
    "off": false,
    "patterns": [
@@ -1622,6 +1755,7 @@
     "root": 0,
     "type_idx": 2
    },
+   "kit": "",
    "name": "",
    "off": false,
    "patterns": [
@@ -1852,6 +1986,7 @@
     "root": 2,
     "type_idx": 3
    },
+   "kit": "",
    "name": "",
    "off": false,
    "patterns": [
@@ -2082,6 +2217,7 @@
     "root": 0,
     "type_idx": 2
    },
+   "kit": "",
    "name": "",
    "off": false,
    "patterns": [
@@ -2312,6 +2448,7 @@
     "root": 2,
     "type_idx": 3
    },
+   "kit": "",
    "name": "",
    "off": false,
    "patterns": [
@@ -2542,6 +2679,7 @@
     "root": 0,
     "type_idx": 2
    },
+   "kit": "",
    "name": "",
    "off": false,
    "patterns": [
@@ -2772,6 +2910,7 @@
     "root": 2,
     "type_idx": 3
    },
+   "kit": "",
    "name": "",
    "off": false,
    "patterns": [
@@ -3002,6 +3141,7 @@
     "root": 0,
     "type_idx": 2
    },
+   "kit": "",
    "name": "",
    "off": false,
    "patterns": [
@@ -3232,6 +3372,7 @@
     "root": 2,
     "type_idx": 3
    },
+   "kit": "",
    "name": "",
    "off": false,
    "patterns": [
@@ -3462,6 +3603,7 @@
     "root": 0,
     "type_idx": 2
    },
+   "kit": "",
    "name": "",
    "off": false,
    "patterns": [

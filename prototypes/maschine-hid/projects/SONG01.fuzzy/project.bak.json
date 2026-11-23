@@ -29,8 +29,10 @@
     "root": 2,
     "type_idx": 3
    },
+   "kit": "",
    "name": "",
    "off": false,
+   "pan": 64,
    "patterns": [
     {
      "cells": [
@@ -252,11 +254,11 @@
      },
      "params": [
       100,
-      64,
+      66,
       64,
       90
      ],
-     "volume": 100
+     "volume": 94
     },
     "10": {
      "envelope": {
@@ -356,7 +358,7 @@
      },
      "params": [
       100,
-      64,
+      88,
       64,
       90
      ],
@@ -369,7 +371,7 @@
      },
      "params": [
       100,
-      64,
+      47,
       64,
       90
      ],
@@ -382,7 +384,7 @@
      },
      "params": [
       100,
-      64,
+      29,
       64,
       90
      ],
@@ -454,7 +456,7 @@
      "volume": 100
     }
    },
-   "volume": 119
+   "volume": 89
   },
   "A2": {
    "current": 0,
@@ -464,8 +466,10 @@
     "root": 0,
     "type_idx": 2
    },
+   "kit": "",
    "name": "",
    "off": false,
+   "pan": 64,
    "patterns": [
     {
      "cells": [],
@@ -694,8 +698,10 @@
     "root": 2,
     "type_idx": 3
    },
+   "kit": "",
    "name": "",
    "off": false,
+   "pan": 64,
    "patterns": [
     {
      "cells": [
@@ -969,7 +975,7 @@
      "volume": 100
     }
    },
-   "volume": 121
+   "volume": 100
   },
   "B2": {
    "current": 0,
@@ -979,8 +985,10 @@
     "root": 0,
     "type_idx": 2
    },
+   "kit": "",
    "name": "",
    "off": false,
+   "pan": 64,
    "patterns": [
     {
      "cells": [],
@@ -1209,8 +1217,10 @@
     "root": 2,
     "type_idx": 3
    },
+   "kit": "",
    "name": "",
    "off": false,
+   "pan": 127,
    "patterns": [
     {
      "cells": [
@@ -1478,7 +1488,7 @@
      "volume": 100
     }
    },
-   "volume": 125
+   "volume": 111
   },
   "C2": {
    "current": 0,
@@ -1488,8 +1498,10 @@
     "root": 0,
     "type_idx": 2
    },
+   "kit": "",
    "name": "",
    "off": false,
+   "pan": 64,
    "patterns": [
     {
      "cells": [],
@@ -1718,8 +1730,10 @@
     "root": 2,
     "type_idx": 3
    },
+   "kit": "",
    "name": "",
    "off": false,
+   "pan": 64,
    "patterns": [
     {
      "cells": [
@@ -1978,7 +1992,7 @@
      "volume": 100
     }
    },
-   "volume": 127
+   "volume": 111
   },
   "D2": {
    "current": 0,
@@ -1988,8 +2002,10 @@
     "root": 0,
     "type_idx": 2
    },
+   "kit": "",
    "name": "",
    "off": false,
+   "pan": 64,
    "patterns": [
     {
      "cells": [],
@@ -2218,8 +2234,10 @@
     "root": 2,
     "type_idx": 3
    },
+   "kit": "",
    "name": "",
    "off": false,
+   "pan": 64,
    "patterns": [
     {
      "cells": [],
@@ -2448,8 +2466,10 @@
     "root": 0,
     "type_idx": 2
    },
+   "kit": "",
    "name": "",
    "off": false,
+   "pan": 64,
    "patterns": [
     {
      "cells": [],
@@ -2678,8 +2698,10 @@
     "root": 2,
     "type_idx": 3
    },
+   "kit": "",
    "name": "",
    "off": false,
+   "pan": 64,
    "patterns": [
     {
      "cells": [],
@@ -2908,8 +2930,10 @@
     "root": 0,
     "type_idx": 2
    },
+   "kit": "",
    "name": "",
    "off": false,
+   "pan": 64,
    "patterns": [
     {
      "cells": [],
@@ -3138,8 +3162,10 @@
     "root": 2,
     "type_idx": 3
    },
+   "kit": "",
    "name": "",
    "off": false,
+   "pan": 64,
    "patterns": [
     {
      "cells": [],
@@ -3368,8 +3394,10 @@
     "root": 0,
     "type_idx": 2
    },
+   "kit": "",
    "name": "",
    "off": false,
+   "pan": 64,
    "patterns": [
     {
      "cells": [],
@@ -3598,8 +3626,10 @@
     "root": 2,
     "type_idx": 3
    },
+   "kit": "",
    "name": "",
    "off": false,
+   "pan": 64,
    "patterns": [
     {
      "cells": [],
@@ -3828,8 +3858,10 @@
     "root": 0,
     "type_idx": 2
    },
+   "kit": "",
    "name": "",
    "off": false,
+   "pan": 64,
    "patterns": [
     {
      "cells": [],
@@ -4061,7 +4093,7 @@
   "G",
   "H"
  ],
- "master": 76,
+ "master": 127,
  "name": "SONG01",
  "scenes": [
   {

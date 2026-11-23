@@ -7,7 +7,15 @@
   "E": 9,
   "F": 12,
   "G": 13,
-  "H": 15
+  "H": 15,
+  "A2": 1,
+  "B2": 2,
+  "C2": 5,
+  "D2": 6,
+  "E2": 9,
+  "F2": 12,
+  "G2": 13,
+  "H2": 15
  },
  "pad_hue": {
   "A:15": 1
@@ -15,51 +23,99 @@
  "keys": {
   "A": {
    "root": 2,
-   "octave": 2,
+   "octave": 3,
    "bank_idx": 0,
-   "type_idx": 8
+   "type_idx": 3
   },
   "B": {
    "root": 2,
-   "octave": 2,
+   "octave": 3,
    "bank_idx": 0,
-   "type_idx": 8
+   "type_idx": 3
   },
   "C": {
    "root": 2,
-   "octave": 2,
+   "octave": 3,
    "bank_idx": 0,
-   "type_idx": 8
+   "type_idx": 3
   },
   "D": {
    "root": 2,
-   "octave": 2,
+   "octave": 3,
    "bank_idx": 0,
-   "type_idx": 8
+   "type_idx": 3
   },
   "E": {
    "root": 2,
-   "octave": 2,
+   "octave": 3,
    "bank_idx": 0,
-   "type_idx": 8
+   "type_idx": 3
   },
   "F": {
    "root": 2,
-   "octave": 2,
+   "octave": 3,
    "bank_idx": 0,
-   "type_idx": 8
+   "type_idx": 3
   },
   "G": {
    "root": 2,
-   "octave": 2,
+   "octave": 3,
    "bank_idx": 0,
-   "type_idx": 8
+   "type_idx": 3
   },
   "H": {
    "root": 2,
-   "octave": 2,
+   "octave": 3,
    "bank_idx": 0,
-   "type_idx": 8
+   "type_idx": 3
+  },
+  "A2": {
+   "root": 0,
+   "octave": 3,
+   "bank_idx": 0,
+   "type_idx": 2
+  },
+  "B2": {
+   "root": 0,
+   "octave": 3,
+   "bank_idx": 0,
+   "type_idx": 2
+  },
+  "C2": {
+   "root": 0,
+   "octave": 3,
+   "bank_idx": 0,
+   "type_idx": 2
+  },
+  "D2": {
+   "root": 0,
+   "octave": 3,
+   "bank_idx": 0,
+   "type_idx": 2
+  },
+  "E2": {
+   "root": 0,
+   "octave": 3,
+   "bank_idx": 0,
+   "type_idx": 2
+  },
+  "F2": {
+   "root": 0,
+   "octave": 3,
+   "bank_idx": 0,
+   "type_idx": 2
+  },
+  "G2": {
+   "root": 0,
+   "octave": 3,
+   "bank_idx": 0,
+   "type_idx": 2
+  },
+  "H2": {
+   "root": 0,
+   "octave": 3,
+   "bank_idx": 0,
+   "type_idx": 2
   }
  },
  "linked": [
@@ -71,5 +127,45 @@
   "F",
   "G",
   "H"
- ]
+ ],
+ "audio": {
+  "output": "",
+  "maschine_audio": true,
+  "rate": 0,
+  "buffer": 96,
+  "input": ""
+ },
+ "midi": {
+  "in": "",
+  "in_mode": "OMNI",
+  "out": "",
+  "clock": 0,
+  "transport": true,
+  "thru": false,
+  "out_ch": {
+   "A": 0,
+   "B": 0,
+   "C": 0,
+   "D": 0,
+   "E": 0,
+   "F": 0,
+   "G": 0,
+   "H": 0,
+   "A2": 0,
+   "B2": 0,
+   "C2": 0,
+   "D2": 0,
+   "E2": 0,
+   "F2": 0,
+   "G2": 0,
+   "H2": 0
+  }
+ },
+ "project": "SONG01",
+ "pc": {
+  "keys": false,
+  "layout": "AZERTY",
+  "space": true,
+  "length": 300
+ }
 }

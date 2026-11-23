@@ -21,6 +21,7 @@
 // Licence : GPLv3 (JUCE utilise sous AGPLv3).
 
 #include <juce_audio_devices/juce_audio_devices.h>
+#include <juce_audio_formats/juce_audio_formats.h>
 #include <juce_osc/juce_osc.h>
 #include <hidapi.h>
 
@@ -58,6 +59,8 @@ struct PadEvent
     int releaseMs = 150;  // ADSR : relachement apres la fin de note
     int gateMs = 0;       // ADSR : duree de la note (0 = jusqu'a /fuzzy/proto/off)
     bool off = false;     // fin de note (ADSR)
+    int synth = 0;        // synthe : 1 Kick, 2 Snare, 3 Closed HH, 4 Open HH, 5 Tone (0 = celui du pad)
+    int pan = 64;         // stereo : 0 gauche, 64 centre, 127 droite
 };
 
 class EventQueue
@@ -92,6 +95,54 @@ int defaultNote (int pad)
     return 48 + scale[deg % 5] + 12 * (deg / 5);
 }
 
+// ----------------------------------------------------------------------------
+// Sampler : un fichier audio par son (16 groupes x 16 sons). Les fichiers sont lus par le
+// fil principal ; le moteur audio ne fait que lire un pointeur (aucun verrou, aucune attente).
+struct Sample
+{
+    juce::AudioBuffer<float> data;
+    double rate = 44100;   // frequence du fichier
+    int root = 60;         // note a laquelle le fichier joue a sa hauteur d'origine
+};
+
+class SampleBank
+{
+public:
+    const Sample* get (int tag, int pad) const
+    {
+        if (tag < 0 || tag > 15 || pad < 1 || pad > 16) return nullptr;
+        return slots[(size_t) (tag * 16 + pad - 1)].load (std::memory_order_acquire);
+    }
+    // Fil principal seulement. Les anciens samples sont gardes en memoire : une voix qui
+    // joue encore peut les lire sans risque.
+    void set (int tag, int pad, std::unique_ptr<Sample> sample)
+    {
+        if (tag < 0 || tag > 15 || pad < 1 || pad > 16) return;
+        const Sample* p = sample.get();
+        if (sample) keep.push_back (std::move (sample));
+        slots[(size_t) (tag * 16 + pad - 1)].store (p, std::memory_order_release);
+    }
+private:
+    std::array<std::atomic<const Sample*>, 256> slots {};
+    std::vector<std::unique_ptr<Sample>> keep;
+};
+
+std::unique_ptr<Sample> loadSample (juce::AudioFormatManager& formats, const juce::String& path, int root)
+{
+    std::unique_ptr<juce::AudioFormatReader> reader (formats.createReaderFor (juce::File (path)));
+    if (reader == nullptr || reader->lengthInSamples <= 0) return nullptr;
+    const int length = (int) std::min<juce::int64> (reader->lengthInSamples,
+                                                    (juce::int64) (reader->sampleRate * 30));   // 30 s maximum
+    const int channels = (int) std::min (2u, reader->numChannels);
+    auto sample = std::make_unique<Sample>();
+    sample->data.setSize (channels, length + 1);
+    sample->data.clear();
+    reader->read (&sample->data, 0, length, 0, true, channels > 1);
+    sample->rate = reader->sampleRate;
+    sample->root = root;
+    return sample;
+}
+
 struct Voice
 {
     bool active = false;
@@ -104,12 +155,24 @@ struct Voice
     double fade = 1, fadeStep = 0;   // fondu de sortie quand le meme pad est rejoue
 
     int note = 60;
+    int kind = 5;                            // synthe joue (1-4 batterie, 5 Tone)
+    float gainL = 1, gainR = 1;              // stereo (au centre : 1 et 1)
+    const Sample* sample = nullptr;          // fichier joue (nullptr = son de synthese)
+    double pos = 0, step = 1;                // lecture du fichier
 
-    void start (const PadEvent& e)
+    void start (const PadEvent& e, const Sample* smp = nullptr, double sr = 48000)
     {
         note = e.note >= 0 ? e.note : defaultNote (e.pad);
         pad = e.pad; tag = e.tag; active = true; phase = 0; time = 0; fade = 1; fadeStep = 0;
-        amp = 0.35 * e.velocity / 127.0;   // volume par voix : laisse de la marge a plusieurs notes
+        sample = smp;
+        kind = e.synth >= 1 && e.synth <= 5 ? e.synth : (e.pad <= 4 ? e.pad : 5);
+        const float p = juce::jlimit (0, 127, e.pan) / 127.0f;
+        gainL = std::min (1.0f, 2.0f * (1.0f - p));
+        gainR = std::min (1.0f, 2.0f * p);
+        pos = 0;
+        step = smp ? smp->rate / sr * std::pow (2.0, (note - smp->root) / 12.0) : 1;
+        // volume par voix : laisse de la marge a plusieurs notes (un sample est deja mixe)
+        amp = (smp ? 0.8 : 0.35) * e.velocity / 127.0;
         adsr = e.mode == 1;
         held = adsr;
         gate = adsr && e.gateMs > 0 ? e.gateMs / 1000.0 : 0;
@@ -134,7 +197,30 @@ struct Voice
         float s = 0;
         double level = 1;   // niveau de l'enveloppe principale, pour savoir quand la voix s'eteint
         auto env = [this, &level] (double decay) { level = std::exp (-time / decay); return level; };
-        switch (pad)
+        if (sample != nullptr)
+        {   // sample : lecture avec interpolation, la voix s'arrete a la fin du fichier
+            const auto& data = sample->data;
+            const int i0 = (int) pos;
+            if (i0 + 1 >= data.getNumSamples())
+            {
+                active = false;
+                return 0;
+            }
+            const float frac = (float) (pos - i0);
+            float v = 0;
+            for (int ch = 0; ch < data.getNumChannels(); ++ch)
+            {
+                const float* d = data.getReadPointer (ch);
+                v += d[i0] + (d[i0 + 1] - d[i0]) * frac;
+            }
+            s = v / (float) data.getNumChannels();
+            // fin du fichier : fondu de 5 ms (un fichier coupe net fait un petit clic)
+            const double left = (data.getNumSamples() - 1 - pos) / sample->rate / step;
+            if (left < 0.005)
+                s *= (float) std::max (0.0, left / 0.005);
+            pos += step;
+        }
+        else switch (kind)
         {
             case 1: { // grosse caisse : sinus qui descend de 150 a 45 Hz
                 const double f = 45 + 105 * std::exp (-time / 0.04);
@@ -152,7 +238,7 @@ struct Voice
             case 4: { // charleston ouvert
                 const float n = noise.nextFloat() * 2 - 1;
                 const float hp = n - hpState; hpState = n;   // filtre passe-haut tres simple
-                s = (float) (hp * 0.5 * env (pad == 3 ? 0.04 : 0.3));
+                s = (float) (hp * 0.5 * env (kind == 3 ? 0.04 : 0.3));
                 break;
             }
             default: { // notes
@@ -166,7 +252,7 @@ struct Voice
         }
         // Attaque : le son ne demarre jamais d'un coup (sinon "clic").
         // 1 ms pour garder le punch de la batterie, 5 ms pour les notes.
-        const double attack = std::min (1.0, time / (pad <= 4 ? 0.001 : 0.005));
+        const double attack = std::min (1.0, time / (sample ? 0.0005 : kind <= 4 ? 0.001 : 0.005));
         // La voix s'arrete quand elle est devenue inaudible (plus de coupure franche)
         if (time > 0.01 && level < 0.0005) active = false;
         if (held && gate > 0 && time >= gate) noteOff (sr);       // fin de note programmee
@@ -185,7 +271,7 @@ struct Voice
 class Engine : public juce::AudioIODeviceCallback
 {
 public:
-    explicit Engine (EventQueue& q) : queue (q) {}
+    Engine (EventQueue& q, const SampleBank& b) : queue (q), bank (b) {}
 
     void audioDeviceAboutToStart (juce::AudioIODevice* device) override
     {
@@ -243,12 +329,19 @@ public:
         }
         for (int i = 0; i < numSamples; ++i)
         {
-            float mix = 0;
+            float left = 0, right = 0;
             for (auto& v : voices)
-                if (v.active) mix += v.render (sampleRate);
-            mix = std::tanh (mix);                       // securite si beaucoup de notes s'empilent
-            for (int ch = 0; ch < numOut; ++ch)
-                if (out[ch] != nullptr) out[ch][i] = (ch < kMaxOut && playOn[ch]) ? mix : 0.0f;
+                if (v.active)
+                {
+                    const float s = v.render (sampleRate);
+                    left += s * v.gainL;
+                    right += s * v.gainR;
+                }
+            left = std::tanh (left);                     // securite si beaucoup de notes s'empilent
+            right = std::tanh (right);
+            for (int ch = 0; ch < numOut; ++ch)          // sorties paires = gauche, impaires = droite
+                if (out[ch] != nullptr)
+                    out[ch][i] = (ch < kMaxOut && playOn[ch]) ? (ch % 2 == 0 ? left : right) : 0.0f;
         }
     }
 
@@ -261,6 +354,7 @@ public:
 
 private:
     EventQueue& queue;
+    const SampleBank& bank;
     // Un pad rejoue (meme note) fait s'eteindre son son precedent en 10 ms (fondu),
     // comme sur une Maschine. 48 voix laissent la place a ces fondus.
     std::array<Voice, 48> voices {};
@@ -277,7 +371,7 @@ private:
         if (chosen == nullptr)                       // toutes occupees : la plus ancienne
             for (auto& v : voices)
                 if (chosen == nullptr || v.time > chosen->time) chosen = &v;
-        chosen->start (e);
+        chosen->start (e, bank.get (e.tag, e.pad), sampleRate);
     }
 };
 
@@ -333,11 +427,14 @@ void readPads (hid_device* dev, EventQueue& queue)
 struct AudioRequest { juce::String output, input; int sampleRate = 0, buffer = 0; };
 struct MidiRequest { juce::String input, output; int clock = 0; bool transport = false, thru = false; };
 
+struct SampleRequest { int tag = 0, pad = 1, root = 60; juce::String path; };
+
 struct Requests
 {
     std::mutex lock;
     std::optional<AudioRequest> audio;
     std::optional<MidiRequest> midi;
+    std::vector<SampleRequest> samples;
 };
 
 // ----------------------------------------------------------------------------
@@ -374,6 +471,12 @@ private:
         {
             std::lock_guard<std::mutex> g (requests.lock);
             requests.midi = MidiRequest { str (0), str (1), num (2), num (3) != 0, num (4) != 0 };
+            return;
+        }
+        if (address == "/fuzzy/proto/sample")         // groupe, son, fichier ("" = synthese), note d'origine
+        {
+            std::lock_guard<std::mutex> g (requests.lock);
+            requests.samples.push_back ({ num (0), num (1), num (3), str (2) });
             return;
         }
         if (address == "/fuzzy/proto/midi/note")
@@ -415,6 +518,10 @@ private:
             e.releaseMs = num (5);
             e.gateMs = num (6);
         }
+        if (m.size() >= 8)
+            e.synth = num (7);
+        if (m.size() >= 9)
+            e.pan = num (8);
         queue.push (e);
     }
     EventQueue& queue;
@@ -485,7 +592,10 @@ int main (int argc, char* argv[])
     }
 
     EventQueue queue;
-    Engine engine (queue);
+    SampleBank bank;
+    juce::AudioFormatManager formats;
+    formats.registerBasicFormats();                  // WAV, AIFF, FLAC, Ogg (+ formats du Mac)
+    Engine engine (queue, bank);
     juce::AudioDeviceManager audio;
     const auto err = audio.initialiseWithDefaultDevices (0, 2);
     if (err.isNotEmpty()) { std::printf ("Audio : %s\n", err.toRawUTF8()); return 1; }
@@ -562,10 +672,30 @@ int main (int argc, char* argv[])
         // Reglages demandes par SETTINGS > AUDIO / MIDI
         std::optional<AudioRequest> audioReq;
         std::optional<MidiRequest> midiReq;
+        std::vector<SampleRequest> sampleReqs;
         {
             std::lock_guard<std::mutex> g (requests.lock);
             audioReq.swap (requests.audio);
             midiReq.swap (requests.midi);
+            sampleReqs.swap (requests.samples);
+        }
+        for (const auto& r : sampleReqs)                 // samples a charger (kit, ou retour a la synthese)
+        {
+            if (r.path.isEmpty())
+            {
+                bank.set (r.tag, r.pad, nullptr);
+                continue;
+            }
+            auto sample = loadSample (formats, r.path, r.root);
+            if (sample == nullptr)
+            {
+                std::printf ("Sample illisible : %s\n", r.path.toRawUTF8());
+                juce::OSCMessage bad ("/fuzzy/proto/sample/error");
+                bad.addString (r.path);
+                sendUi (bad);
+                continue;
+            }
+            bank.set (r.tag, r.pad, std::move (sample));
         }
         if (audioReq)
         {

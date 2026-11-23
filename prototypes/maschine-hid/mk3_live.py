@@ -175,11 +175,11 @@ class Sound:
         return b + b'\0' * (4 - len(b) % 4)
 
     def hit(self, sound: int, velocity: int, note: int, tag: int = -1, mode: int = 0,
-            release_ms: int = 150, gate_ms: int = 0) -> None:
+            release_ms: int = 150, gate_ms: int = 0, synth: int = 0, pan: int = 64) -> None:
         """Joue un son. tag = groupe (0-15) ; mode 0 ONE-SHOT, 1 ADSR (la note tient gate_ms,
         ou jusqu'a /off si 0, puis relache en release_ms)."""
-        msg = (self._pad4(b'/fuzzy/proto/hit') + self._pad4(b',iiiiiii')
-               + struct.pack('>iiiiiii', sound, velocity, note, tag, mode, release_ms, gate_ms))
+        msg = (self._pad4(b'/fuzzy/proto/hit') + self._pad4(b',iiiiiiiii')
+               + struct.pack('>iiiiiiiii', sound, velocity, note, tag, mode, release_ms, gate_ms, synth, pan))
         try:
             self.sock.sendto(msg, self.addr)
         except OSError:
@@ -217,7 +217,17 @@ GROUPS = tuple('ABCDEFGH') + tuple(f'{g}2' for g in 'ABCDEFGH')   # 16 groupes :
 def bank_groups(st) -> tuple:
     """Les 8 groupes de la banque du groupe choisi (A-H ou A2-H2) : ceux des 8 boutons."""
     return GROUPS[8:] if st.group.endswith('2') else GROUPS[:8]
-SET_TABS = ('AUDIO', 'MIDI', 'COLOR', 'STATUS')      # boutons 1-4 dans SETTINGS (20/11)
+SET_TABS = ('AUDIO', 'MIDI', 'COLORS', 'STATUS')     # boutons 1-4 dans SETTINGS (20/11)
+# Bouton 3 de SETTINGS : COLORS, 2e appui = KEYS (clavier de l'ordinateur)
+DEFAULT_PC = {'keys': False, 'layout': 'AZERTY', 'space': True, 'length': 300}
+PC_LENGTHS = (100, 150, 200, 300, 500, 800, 1200)       # duree d'une note jouee au clavier (ms)
+# Touches = notes (decalage en demi-tons depuis le C de l'octave), comme le « clavier
+# musical » des logiciels : rangee du milieu = touches blanches, rangee du haut = noires.
+PC_LAYOUTS = {
+    'AZERTY': {'notes': dict(zip('qzsedftgyhujkolpm', range(17))), 'oct': 'wx', 'vel': 'cv',
+               'white': 'QSDFGHJKLM', 'black': 'ZE TYU OP'},
+    'QWERTY': {'notes': dict(zip('awsedftgyhujkolp;', range(17))), 'oct': 'zx', 'vel': 'cv',
+               'white': 'ASDFGHJKL;', 'black': 'WE TYU OP'}}
 DEFAULT_AUDIO = {'output': '', 'maschine_audio': True, 'rate': 0, 'buffer': 96, 'input': ''}
 DEFAULT_MIDI = {'in': '', 'in_mode': 'OMNI', 'out': '', 'clock': 0, 'transport': True, 'thru': False}
 CLOCK_MODES = ('OFF', 'SEND', 'RECEIVE')
@@ -225,6 +235,47 @@ BUFFERS = (32, 64, 96, 128, 192, 256, 512)
 ENGINE_REPLY_PORT = 57391                             # le moteur renvoie son etat ici
 ENV_MODES = ('ONE-SHOT', 'ADSR')                      # enveloppe d'un son (comme Maschine)
 RELEASES = (5, 10, 20, 50, 80, 120, 150, 200, 300, 500, 800, 1200, 2000, 3000)   # ms
+
+
+# Kits de batterie : un dossier = un kit (fichiers audio ranges par nom -> pads 1 a 16)
+KIT_DIRS = (Path(__file__).resolve().parent.parent / 'kits',        # prototypes/kits (kit de test)
+            Path.home() / 'Music' / 'Fuzzy Kits')                    # tes kits
+AUDIO_EXT = {'.wav', '.aif', '.aiff', '.flac', '.ogg', '.mp3', '.m4a'}
+
+
+def kit_files(folder: Path) -> list:
+    """Les 16 premiers fichiers audio du dossier, par ordre de nom (01 Kick, 02 Snare...)."""
+    try:
+        files = [f for f in folder.iterdir() if f.is_file() and f.suffix.lower() in AUDIO_EXT
+                 and not f.name.startswith('.')]
+    except OSError:
+        return []
+    return sorted(files, key=lambda f: f.name.lower())[:16]
+
+
+def list_kits() -> list:
+    """[(nom, dossier)] : les dossiers de KIT_DIRS qui contiennent des fichiers audio."""
+    kits = []
+    for base in KIT_DIRS:
+        if base.is_dir():
+            for d in sorted(base.iterdir(), key=lambda p: p.name.lower()):
+                if d.is_dir() and kit_files(d):
+                    kits.append((d.name, d))
+    return kits
+
+
+SYNTHS = ('Kick', 'Snare', 'Closed HH', 'Open HH', 'Tone')   # synthes du moteur (1-5)
+
+
+def default_synth(sound: int) -> int:
+    """Synthe par defaut d'un son : 1-4 batterie, 5-16 Tone."""
+    return sound if sound <= 4 else 5
+
+
+def sample_label(path: str) -> str:
+    """Nom court d'un sample : '01 Kick.wav' -> 'Kick'."""
+    stem = Path(path).stem.lstrip('0123456789 -_.') or Path(path).stem
+    return stem[:11]
 
 
 def default_env(sound: int) -> dict:
@@ -359,17 +410,28 @@ def load_settings(st) -> None:
         midi = data.get('midi', {})
         st.midi.update({k: v for k, v in midi.items() if k in DEFAULT_MIDI})
         st.midi['out_ch'].update({g: int(c) for g, c in midi.get('out_ch', {}).items() if g in GROUPS})
+        st.pc.update({k: v for k, v in data.get('pc', {}).items() if k in DEFAULT_PC})
     except (OSError, ValueError, KeyError, TypeError, AttributeError):
         pass
 
 
+def write_text(path: Path, text: str) -> None:
+    """Ecrit un fichier. S'il appartient a root (cree un jour avec sudo) et refuse l'ecriture,
+    on le remplace : le dossier est a toi, donc l'ancien fichier peut etre supprime."""
+    try:
+        path.write_text(text)
+    except PermissionError:
+        path.unlink()
+        path.write_text(text)
+
+
 def save_settings(st) -> None:
     try:
-        SETTINGS_FILE.write_text(json.dumps({
+        write_text(SETTINGS_FILE, json.dumps({
             'group_hue': st.group_hue,
             'pad_hue': {f'{g}:{p}': h for (g, p), h in st.pad_hue.items() if h is not None},
             'keys': st.keys, 'linked': sorted(st.linked),
-            'audio': st.audio, 'midi': st.midi, 'project': st.project_name},
+            'audio': st.audio, 'midi': st.midi, 'project': st.project_name, 'pc': st.pc},
             indent=1))
     except OSError as e:
         print('Sauvegarde des reglages impossible :', e)
@@ -377,8 +439,8 @@ def save_settings(st) -> None:
 
 def save_user_chords(st) -> None:
     try:
-        USER_FILE.write_text(json.dumps({'banks': [[list(c) for c in b] for b in st.user_chords]},
-                                        indent=1))
+        write_text(USER_FILE, json.dumps({'banks': [[list(c) for c in b] for b in st.user_chords]},
+                                         indent=1))
     except OSError as e:
         print('Sauvegarde des accords USER impossible :', e)
 
@@ -437,7 +499,14 @@ class State:
         self.rec_open: dict = {}               # pad tenu en REC : (ligne, piste, compteur, grille)
         self.plugin_mode = False               # PLUG-IN : enveloppe des sons (plusieurs a la fois)
         self.plugin_sel: set[int] = set()      # sons choisis avec SELECT + pad
-        self.plugin_knobs = {0: Knob(40), 1: Knob(25)}
+        self.plugin_knobs = {0: Knob(40), 1: Knob(25), 4: Knob(40)}
+        self.samples: dict = {}                # (groupe, son) -> fichier audio (sinon : synthese)
+        self.kit_names = {g: '' for g in GROUPS}   # kit charge sur chaque groupe
+        self.sent_samples: dict = {}           # ce que le moteur a deja recu
+        self.browse = None                     # PLUG-IN : liste ouverte ('kit' / 'synth' / None)
+        self.kit_sel = 0
+        self.synth_sel = 0
+        self.synth: dict = {}                  # (groupe, son) -> synthe choisi (1-5, sinon : celui du pad)
         self.events_mode = False               # EVENTS : piano roll de la piste choisie
         self.pr_zoom = 32
         self.pr_low = 48
@@ -488,6 +557,8 @@ class State:
         self.toast = ('', 0.0)                   # court message a l'ecran (texte, fin)
         self.muted: set[str] = set()                           # MUTE + groupe
         self.solo: set[str] = set()                            # SOLO + groupe(s)
+        self.sound_muted: set = set()                          # MUTE + pad : (groupe, son)
+        self.sound_solo: set = set()                           # SOLO + pad(s) : (groupe, son)
         self.undo_stack: list = []                             # Shift + pad 3 / 4
         self.redo_stack: list = []
         self.last_undo_push = 0.0
@@ -507,6 +578,8 @@ class State:
         self.mixer_page = 0
         self.master = 100
         self.group_vol = {g: 100 for g in GROUPS}
+        self.group_pan = {g: 64 for g in GROUPS}       # stereo des groupes (0 G, 64 centre, 127 D)
+        self.mix_pan = False                           # MIXER : bouton 4 = vue PAN
         self.sound_vol = {(g, s): 100 for g in GROUPS for s in range(1, 17)}
         self.mix_knobs = [Knob(4) for _ in range(8)]
         # Settings (Shift + MIDI) : couleurs des groupes et des pads
@@ -531,6 +604,10 @@ class State:
         self.set_backup = None
         # SETTINGS : onglets COLOR / MASCHINE / AUDIO / MIDI (boutons 1-4 au-dessus des ecrans)
         self.set_tab = 'AUDIO'
+        self.pc = dict(DEFAULT_PC)                     # SETTINGS > KEYS : clavier de l'ordinateur
+        self.pc_knobs = {i: Knob(40) for i in range(4)}
+        self.pc_oct = 0                                # octave du clavier (touches W / X ou Z / X)
+        self.pc_vel = 100                              # velocite du clavier (touches C / V)
         self.device_info = ('Maschine MK3', '?')     # modele, firmware
         self.ni_paused = False
         self.exclusive = False
@@ -628,6 +705,17 @@ class State:
     def length(self, value: int) -> None:
         self.patterns[self.group][self.pat_index[self.group]]['length'] = value
 
+    def sound_audible(self, g: str, s: int) -> bool:
+        """Un son joue s'il n'est pas coupe et, si un Solo existe dans son groupe, s'il en fait partie."""
+        if (g, s) in self.sound_muted:
+            return False
+        return (g, s) in self.sound_solo or not any(k[0] == g for k in self.sound_solo)
+
+    def sound_tag(self, s: int, g: str | None = None) -> str:
+        """'M' son coupe, 'S' son en solo, '' sinon."""
+        key = (g or self.group, s)
+        return 'M' if key in self.sound_muted else 'S' if key in self.sound_solo else ''
+
     def audible(self, g: str) -> bool:
         """Un groupe joue s'il n'est pas coupe et, si un Solo existe, s'il en fait partie."""
         return g not in self.muted and (not self.solo or g in self.solo)
@@ -701,8 +789,12 @@ class State:
                 notes[n] = max(v, notes.get(n, 0))
         return notes
 
-    def sound_name(self, s: int) -> str:
-        return DRUMS[s - 1] if s <= 4 else f'Note {note_name(default_note(s))}'
+    def sound_name(self, s: int, group: str | None = None) -> str:
+        path = self.samples.get((group or self.group, s))
+        if path:                                     # sample d'un kit
+            return sample_label(path)
+        synth = self.synth.get((group or self.group, s), default_synth(s))
+        return SYNTHS[synth - 1] if synth <= 4 else f'Note {note_name(default_note(s))}'
 
 
 # --- Pads / boutons / LED par hidapi (mode partage, sans sudo) ----------------------
@@ -908,12 +1000,19 @@ def mixer_channels(st: State):
 
 
 def mix_get(st: State, key) -> int:
+    if st.mix_pan:                                   # vue PAN : stereo (Pan du son = PLUG-IN / Pad mode)
+        return st.params[key[1:]][1] if key[0] == 'sound' else st.group_pan[key[1]]
     return st.sound_vol[key[1:]] if key[0] == 'sound' else st.group_vol[key[1]]
 
 
 def mix_set(st: State, key, v: int) -> None:
     v = max(0, min(127, v))
-    if key[0] == 'sound':
+    if st.mix_pan:
+        if key[0] == 'sound':
+            st.params[key[1:]][1] = v
+        else:
+            st.group_pan[key[1]] = v
+    elif key[0] == 'sound':
         st.sound_vol[key[1:]] = v
     else:
         st.group_vol[key[1]] = v
@@ -924,26 +1023,53 @@ def draw_mixer(st: State, half: int) -> Image.Image:
     acc = group_rgb(st)
     img = Image.new('RGB', (W, H), (10, 10, 14))
     d = ImageDraw.Draw(img)
-    what = f'Group {st.group} sounds' if not st.melodic() else 'Groups'
-    if half == 0:
-        header(d, f'MIXER  {what}', f'page {st.mixer_page + 1}/2', acc)
+    what = f'{st.group} sounds' if not st.melodic() else 'Groups'
+    # bandeau : couleur du groupe pour ses sons (Pad mode) ; neutre pour les groupes (chaque voie
+    # a sa couleur, les pads montrent le groupe)
+    neutral = acc if not st.melodic() else (58, 58, 66)
+    if half == 0:                                    # boutons 3 TRACKER, 4 PAN
+        header(d, f"{'PAN' if st.mix_pan else 'MIXER'}  {what}", '', neutral)
+        keys = None if not st.melodic() else (34, 34, 40)
+        softkey(d, st, 2, 'TRACKER', False, keys)
+        softkey(d, st, 3, 'PAN', st.mix_pan, keys)
     else:
-        header(d, f'MASTER {st.master}', '4D: master   < > page', acc)
+        header(d, f'MASTER {st.master}', f'page {st.mixer_page + 1}/2   < >', neutral)
     chans = mixer_channels(st)[half * 4: half * 4 + 4]
     for k, (name, key) in enumerate(chans):
         x = k * 120
         v = mix_get(st, key)
-        off = key[0] == 'group' and key[1] in GROUPS and not st.audible(key[1])
-        d.text((x + 10, 34), name, font=font(13), fill=(120, 120, 120) if off else 'white')
+        # voie de groupe : la couleur de CE groupe (comme son bouton) ; le bandeau garde
+        # la couleur du groupe choisi
+        col = hue_rgb(st.group_hue[key[1]]) if key[0] == 'group' else acc
+        if key[0] == 'sound':                         # son coupe / hors solo dans son groupe
+            off = not st.sound_audible(key[1], key[2])
+            tag = st.sound_tag(key[2], key[1])
+        else:
+            off = key[1] in GROUPS and not st.audible(key[1])
+            tag = 'M' if off else ''
+        d.text((x + 60 - d.textlength(name, font=font(13)) / 2, 34), name, font=font(13),
+               fill=(120, 120, 120) if off else 'white')        # centre au-dessus de l'encodeur
         rounded(d, (x + 40, 58, x + 80, 230), outline=(70, 70, 80), r=6)
+        if st.mix_pan:                               # PAN : gauche en haut, droite en bas
+            mid, pos = 144, 60 + round(166 * v / 127)
+            d.rectangle((x + 43, min(mid, pos), x + 77, max(mid, pos)), fill=(90, 90, 90) if off else col)
+            d.line((x + 36, mid, x + 84, mid), fill=(220, 220, 220), width=1)   # centre
+            d.text((x + 28, 60), 'L', font=font(12), fill=(170, 170, 170))
+            d.text((x + 28, 214), 'R', font=font(12), fill=(170, 170, 170))
+            val = 'C' if v == 64 else f'L{64 - v}' if v < 64 else f'R{v - 64}'
+            d.text((x + 60 - d.textlength(val, font=font(14)) / 2, 238), val, font=font(14), fill='white')
+            if tag:
+                d.text((x + 86, 60), tag, font=font(14), fill=(200, 60, 60) if tag == 'M' else (240, 200, 40))
+            continue
         hgt = round(168 * v / 127)
         if hgt:
-            d.rectangle((x + 43, 228 - hgt, x + 77, 227), fill=(90, 90, 90) if off else acc)
+            d.rectangle((x + 43, 228 - hgt, x + 77, 227), fill=(90, 90, 90) if off else col)
         d.line((x + 36, 228 - round(168 * 100 / 127), x + 84, 228 - round(168 * 100 / 127)),
                fill=(220, 220, 220), width=1)            # repere du niveau normal (100)
-        d.text((x + 34, 238), f'{v * 100 // 100:3d}', font=font(14), fill='white')
-        if off:
-            d.text((x + 86, 60), 'M', font=font(14), fill=(200, 60, 60))
+        val = str(v)                                 # centre sous la voie
+        d.text((x + 60 - d.textlength(val, font=font(14)) / 2, 238), val, font=font(14), fill='white')
+        if tag:
+            d.text((x + 86, 60), tag, font=font(14), fill=(200, 60, 60) if tag == 'M' else (240, 200, 40))
     return img
 
 
@@ -951,6 +1077,8 @@ def draw_mixer(st: State, half: int) -> Image.Image:
 def tab_bar(d: ImageDraw.ImageDraw, st: State) -> None:
     """Onglets COLOR / MASCHINE / AUDIO / MIDI sous les boutons 1-4."""
     for k, tab in enumerate(SET_TABS):
+        if tab == 'COLORS' and st.set_tab == 'KEYS':
+            tab = 'KEYS'                               # bouton 3 : COLORS, 2e appui KEYS
         softkey(d, st, k, tab, st.set_tab == tab)
 
 
@@ -990,8 +1118,10 @@ def draw_settings(st: State, half: int) -> Image.Image:
     tab = st.set_tab
     if half == 0:
         tab_bar(d, st)
-    if tab == 'COLOR':
+    if tab == 'COLORS':
         draw_set_color(st, d, half, acc)
+    elif tab == 'KEYS':
+        draw_set_keys(st, d, half, acc)
     elif tab == 'STATUS':
         draw_set_maschine(st, d, half, acc)
     elif tab == 'AUDIO':
@@ -1008,9 +1138,50 @@ def draw_settings(st: State, half: int) -> Image.Image:
     return img
 
 
+def draw_set_keys(st: State, d, half: int, acc) -> None:
+    """SETTINGS > KEYS : clavier de l'ordinateur (jouer, barre d'espace)."""
+    pc, lay = st.pc, PC_LAYOUTS[st.pc['layout']]
+    if half == 0:
+        d.text((10, 36), 'COMPUTER KEYBOARD', font=font(14), fill=acc)
+        lines = ['Keys of the computer play the chosen sound',
+                 '(the terminal window must be in front).',
+                 'Same switch: button 6 in KEYBOARD.',
+                 'Button 3 again: COLORS.']
+        for k, line in enumerate(lines):
+            d.text((10, 60 + k * 20), line, font=font(13), fill=(190, 190, 190))
+        param_box(d, 0, 'Play keys', 'ON' if pc['keys'] else 'OFF', acc, y=150)
+        param_box(d, 1, 'Layout', pc['layout'], acc, y=150)
+        param_box(d, 2, 'Space bar', 'PLAY/STOP' if pc['space'] else 'OFF', acc, y=150)
+        param_box(d, 3, 'Note length', f"{pc['length']} ms", acc, y=150)
+        return
+    header(d, 'KEY MAP', pc['layout'], acc)
+    white, black = lay['white'], lay['black']
+    names = ['C', 'D', 'E', 'F', 'G', 'A', 'B', 'C', 'D', 'E']
+    for k, key in enumerate(white):                    # touches blanches
+        x = 10 + k * 46
+        rounded(d, (x, 96, x + 42, 160), fill=(225, 225, 225), outline=(90, 90, 90))
+        d.text((x + 21 - d.textlength(key, font=font(16)) / 2, 108), key, font=font(16), fill='black')
+        d.text((x + 21 - d.textlength(names[k], font=font(12)) / 2, 138), names[k], font=font(12),
+               fill=(90, 90, 90))
+    for k, key in enumerate(black):                    # touches noires, entre les blanches
+        if key == ' ':
+            continue
+        x = 10 + k * 46 + 25
+        rounded(d, (x, 40, x + 38, 90), fill=(30, 30, 36), outline=acc)
+        d.text((x + 19 - d.textlength(key, font=font(16)) / 2, 54), key, font=font(16), fill='white')
+    o, v = lay['oct'].upper(), lay['vel'].upper()
+    d.text((10, 176), f'{o[0]} / {o[1]} : octave - / +      {v[0]} / {v[1]} : velocity - / +',
+           font=font(13), fill=(190, 190, 190))
+    d.text((10, 198), 'Space bar : PLAY / STOP' if pc['space'] else 'Space bar : off',
+           font=font(13), fill=(190, 190, 190))
+    d.text((10, 222), f'Octave {st.octave + st.pc_oct}   Velocity {st.pc_vel}   Sound {st.sound:02d}',
+           font=font(13), fill=acc)
+
+
 def draw_set_color(st: State, d, half: int, acc) -> None:
     if half == 0:
         d.text((10, 36), f'COLORS  Group {st.group}', font=font(14), fill=acc)
+        d.text((W - 170, 36), 'Button 3 again: KEYS', font=font(12), fill=(140, 140, 140))
         d.text((10, 58), f'Target : {st.set_target}', font=font(20), fill='white')
         if st.set_target == 'GROUP':
             lines = ['Pads = the 16 colors.', 'Tap a pad: color of group ' + st.group + '.',
@@ -1023,7 +1194,7 @@ def draw_set_color(st: State, d, half: int, acc) -> None:
         for k, line in enumerate(lines):
             d.text((10, 94 + k * 22), line, font=font(14), fill=(190, 190, 190))
         for k, t in enumerate(['Target', 'Color', 'SETTINGS = close', '']):
-            d.text((k * 120 + 10, 254), t, font=font(12), fill=(160, 160, 160))
+            d.text((k * 120 + 60 - d.textlength(t, font=font(12)) / 2, 254), t, font=font(12), fill=(160, 160, 160))
         return
     header(d, 'PADS', 'saved on close', acc)
     for pad in range(1, 17):
@@ -1290,7 +1461,8 @@ def refresh_status(st: State) -> None:
 def open_settings(st: State) -> None:
     import copy
     st.settings, st.set_confirm = True, False
-    st.set_backup = (dict(st.group_hue), dict(st.pad_hue), copy.deepcopy(st.audio), copy.deepcopy(st.midi))
+    st.set_backup = (dict(st.group_hue), dict(st.pad_hue), copy.deepcopy(st.audio), copy.deepcopy(st.midi),
+                     dict(st.pc))
     st.set_selected.clear()
     if st.set_tab == 'STATUS':
         refresh_status(st)
@@ -1298,6 +1470,9 @@ def open_settings(st: State) -> None:
 
 def settings_button(st: State, name: str) -> bool:
     """Boutons dans SETTINGS (hors YES / NO). Renvoie True si le bouton est utilise ici."""
+    if name == 'screen_3' and st.set_tab in ('COLORS', 'KEYS'):
+        st.set_tab = 'KEYS' if st.set_tab == 'COLORS' else 'COLORS'   # 2e appui : l'autre page
+        return True
     if name in ('screen_1', 'screen_2', 'screen_3', 'screen_4'):
         st.set_tab = SET_TABS[int(name[-1]) - 1]
         if st.set_tab == 'STATUS':
@@ -1321,7 +1496,24 @@ def cycle(options: list, current, n: int):
 
 
 def settings_knob(st: State, i: int, delta: int) -> None:
-    """Encodeurs des onglets AUDIO (1-5) et MIDI (1-7)."""
+    """Encodeurs des onglets AUDIO (1-5), MIDI (1-7) et KEYS (1-4)."""
+    if st.set_tab == 'KEYS' and i in st.pc_knobs:
+        n = st.pc_knobs[i].steps(delta)
+        if not n:
+            return
+        pc = st.pc
+        if i == 0:
+            pc['keys'] = not pc['keys']
+            if pc['keys']:
+                print_pc_keys(st)
+        elif i == 1:
+            pc['layout'] = 'QWERTY' if pc['layout'] == 'AZERTY' else 'AZERTY'
+        elif i == 2:
+            pc['space'] = not pc['space']
+        else:
+            k = PC_LENGTHS.index(pc['length']) if pc['length'] in PC_LENGTHS else 3
+            pc['length'] = PC_LENGTHS[max(0, min(len(PC_LENGTHS) - 1, k + n))]
+        return
     if st.set_tab == 'AUDIO' and i in st.audio_knobs:
         n = st.audio_knobs[i].steps(delta)
         if not n:
@@ -1383,6 +1575,100 @@ def send_midi(st: State) -> None:
                int(m['thru']))
 
 
+def sync_samples(st: State) -> None:
+    """Envoie au moteur les samples qui ont change (fichier, ou '' = retour a la synthese)."""
+    for key in set(st.samples) | set(st.sent_samples):
+        path = st.samples.get(key, '')
+        if st.sent_samples.get(key, '') != path:
+            g, snd = key
+            SOUND.send('/fuzzy/proto/sample', GROUPS.index(g), snd, path, default_note(snd))
+            if path:
+                st.sent_samples[key] = path
+            else:
+                st.sent_samples.pop(key, None)
+
+
+def load_kit(st: State, folder: Path) -> None:
+    """Charge un kit sur les 16 pads du groupe : fichiers par ordre de nom, en ONE-SHOT."""
+    files = kit_files(folder)
+    for snd in range(1, 17):
+        if snd <= len(files):
+            st.samples[(st.group, snd)] = str(files[snd - 1])
+            st.env[(st.group, snd)]['mode'] = 'ONE-SHOT'     # une batterie joue jusqu'au bout
+        else:
+            st.samples.pop((st.group, snd), None)
+    st.kit_names[st.group] = folder.name
+    sync_samples(st)
+    st.toast = (f'Kit {folder.name}: {len(files)} sounds on group {st.group}', time.monotonic() + 2)
+
+
+def print_pc_keys(st: State) -> None:
+    """Affiche le clavier musical dans le terminal (ecran de l'ordinateur)."""
+    lay = PC_LAYOUTS[st.pc['layout']]
+    o, v = lay['oct'].upper(), lay['vel'].upper()
+    print('\nClavier de l\'ordinateur ACTIF (' + st.pc['layout'] + ') - la fenetre du terminal doit etre devant')
+    top = [' '] * 40
+    for k, key in enumerate(lay['black']):            # touches noires entre les blanches
+        top[3 + 4 * k] = key
+    print(''.join(top).rstrip())
+    print(' ' + '   '.join(lay['white']))
+    print(' C   D   E   F   G   A   B   C   D   E')
+    print(f' {o[0]} / {o[1]} : octave - / +    {v[0]} / {v[1]} : velocite - / +    espace : PLAY / STOP\n')
+
+
+def pc_key(st: State, ch: str) -> None:
+    """Une touche du clavier de l'ordinateur (lue dans le terminal)."""
+    if ch == ' ' and st.pc['space']:                  # barre d'espace : PLAY / STOP
+        st.playing = not st.playing
+        st.step_manual = None
+        st.next_row_time = time.monotonic()
+        return
+    if not st.pc['keys']:
+        return
+    lay, c = PC_LAYOUTS[st.pc['layout']], ch.lower()
+    now = time.monotonic()
+    if c in lay['oct']:                               # octave - / +
+        st.pc_oct = max(-st.octave, min(8 - st.octave, st.pc_oct + (1 if c == lay['oct'][1] else -1)))
+        st.toast = (f'Keys: octave {st.octave + st.pc_oct}', now + 2)
+    elif c in lay['vel']:                             # velocite - / +
+        st.pc_vel = max(1, min(127, st.pc_vel + (16 if c == lay['vel'][1] else -16)))
+        st.toast = (f'Keys: velocity {st.pc_vel}', now + 2)
+    elif c in lay['notes']:
+        note = max(0, min(127, 12 * (st.octave + st.pc_oct + 1) + lay['notes'][c]))
+        snd = st.sound
+        v = out_vel(st, st.group, snd, st.pc_vel)
+        if v and st.audible(st.group):
+            play_note(st, st.group, snd, v, note, st.pc['length'] / 1000)
+        st.note_flash[note] = (now + 0.15, st.pc_vel)
+        if snd <= 16:
+            st.flash[snd] = now + 0.1
+        if st.recording:
+            record(st, snd, note, st.pc_vel)
+
+
+def pc_keys_listener(events: queue.Queue, running: threading.Event) -> None:
+    """Lit le clavier de l'ordinateur dans le terminal (touche par touche, sans Entree)."""
+    if not sys.stdin.isatty():
+        return
+    import termios, tty, select
+    fd = sys.stdin.fileno()
+    try:
+        old = termios.tcgetattr(fd)
+    except termios.error:
+        return
+    atexit.register(lambda: termios.tcsetattr(fd, termios.TCSADRAIN, old))   # meme en cas d'erreur
+    try:
+        tty.setcbreak(fd)                             # Ctrl+C fonctionne toujours
+        while running.is_set():
+            ready, _, _ = select.select([fd], [], [], 0.2)
+            if ready:
+                ch = os.read(fd, 1).decode(errors='ignore')
+                if ch:
+                    events.put(('pc_key', ch))
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old)
+
+
 def engine_sync(st: State, keep_output: bool) -> None:
     """Premier etat du moteur recu : lui envoyer les reglages enregistres."""
     a = st.audio
@@ -1393,6 +1679,8 @@ def engine_sync(st: State, keep_output: bool) -> None:
         send_audio(st)
         st.audio_action = time.monotonic()
     send_midi(st)
+    st.sent_samples = {}                               # moteur (re)demarre : tout renvoyer
+    sync_samples(st)
     st.engine_synced = True
     threading.Thread(target=scan_card_types, args=(st,), daemon=True).start()
 
@@ -1400,6 +1688,8 @@ def engine_sync(st: State, keep_output: bool) -> None:
 def play_note(st: State, group: str, snd: int, vel: int, note: int, gate: float = 0.0) -> None:
     """Joue une note : moteur interne, ou MIDI OUT si le groupe est envoye dehors (gate en s ;
     0 = note-off envoye au relachement)."""
+    if not st.sound_audible(group, snd):             # MUTE / SOLO du son dans son groupe
+        return
     ch = st.midi['out_ch'].get(group, 0) if st.midi['out'] else 0
     if ch:
         SOUND.send('/fuzzy/proto/midi/note', ch, note, vel, int(gate * 1000))
@@ -1407,7 +1697,8 @@ def play_note(st: State, group: str, snd: int, vel: int, note: int, gate: float 
     else:
         env = st.env[(group, snd)]
         SOUND.hit(snd, vel, note, GROUPS.index(group), ENV_MODES.index(env['mode']),
-                  int(env['release']), int(gate * 1000))
+                  int(env['release']), int(gate * 1000), st.synth.get((group, snd), 0),
+                  max(0, min(127, st.params[(group, snd)][1] + st.group_pan[group] - 64)))   # Pan son + groupe
 
 
 def release_notes(st: State, group: str, notes: list) -> None:
@@ -1479,6 +1770,9 @@ def engine_listener(st: State, events: queue.Queue, running: threading.Event) ->
                              'out_count': args[5], 'bpm': args[6]}
             if st.settings and st.set_tab == 'MIDI':
                 events.put(('redraw',))
+        elif addr == '/fuzzy/proto/sample/error' and args:
+            st.toast = (f'Unreadable sample: {Path(args[0]).name}', time.monotonic() + 3)
+            events.put(('redraw',))
         elif addr == '/fuzzy/proto/midi/in' and len(args) >= 3:
             st.midi_in_flash = time.monotonic()
             ch, note, vel = args
@@ -1574,7 +1868,11 @@ def draw_left(st: State) -> Image.Image:
         chosen = pad == st.sound and 'select' in st.held   # SELECT tenu : le son choisi en blanc
         d.rectangle((x, y, x + 110, y + 28), fill='white' if chosen else shade(acc, 0.36) if lit else None,
                     outline=acc if pad == st.sound else (70, 70, 70), width=2)
-        d.text((x + 6, y + 7), f'{pad:02d} {st.sound_name(pad)}', font=f, fill='black' if chosen else 'white')
+        silent = not st.sound_audible(st.group, pad)
+        tag = ' M' if (st.group, pad) in st.sound_muted else ' S' if (st.group, pad) in st.sound_solo else ''
+        label = f'{pad:02d} {st.sound_name(pad)[:10 - len(tag)]}{tag}'
+        d.text((x + 55 - d.textlength(label, font=f) / 2, y + 7), label, font=f,   # centre dans la case
+               fill='black' if chosen else (110, 110, 110) if silent else 'white')
     vals = st.params[(st.group, st.sound)]
     for i, name in enumerate(PARAMS):
         x = i * 120
@@ -1647,7 +1945,7 @@ def draw_patterns(st: State, half: int) -> Image.Image:
                 centered('empty', y + 26, font(11))
         labels = [f'Bank {st.pat_bank + 1}', '', '', '']
         for k, t in enumerate(labels):
-            d.text((k * 120 + 10, 252), t, font=font(12), fill=(170, 170, 170))
+            d.text((k * 120 + 60 - d.textlength(t, font=font(12)) / 2, 252), t, font=font(12), fill=(170, 170, 170))
         return img
     pat = st.patterns[g][cur]
     state = ('next: none' if queued == OFF else f'next: P{queued + 1:02d}' if queued is not None
@@ -1806,16 +2104,18 @@ def view_top(st: State, visible: int) -> int:
     return max(0, min(center - visible // 2, st.length - visible))
 
 
-def softkey(d: ImageDraw.ImageDraw, st: State, slot: int, text: str, active: bool) -> None:
-    """Etiquette d'un bouton au-dessus de l'ecran (slot 0-3 de cet ecran) :
+def softkey(d: ImageDraw.ImageDraw, st: State, slot: int, text: str, active: bool,
+            color=None) -> None:
+    """Etiquette d'un bouton au-dessus de l'ecran (slot 0-3 de cet ecran), centree :
     sombre = disponible, blanche = fonction active."""
     x0 = 4 + slot * 120
+    tx = x0 + 54 - d.textlength(text, font=font(16)) / 2
     if active:
         d.rectangle((x0, 3, x0 + 108, 23), fill='white')
-        d.text((x0 + 10, 4), text, font=font(16), fill='black')
+        d.text((tx, 4), text, font=font(16), fill='black')
     else:
-        d.rectangle((x0, 3, x0 + 108, 23), fill=shade(group_rgb(st), 0.35), outline=(20, 20, 20))
-        d.text((x0 + 10, 4), text, font=font(16), fill=(235, 235, 235))
+        d.rectangle((x0, 3, x0 + 108, 23), fill=color or shade(group_rgb(st), 0.35), outline=(20, 20, 20))
+        d.text((tx, 4), text, font=font(16), fill=(235, 235, 235))
 
 
 def softkey_header(d: ImageDraw.ImageDraw, st: State, right: str) -> None:
@@ -1866,7 +2166,7 @@ def draw_tracker(st: State) -> Image.Image:
     values = [f'{st.cursor:02X}', cell_label(cell[0]) if cell else '---',
               f'{cell[1]:02X}' if cell else '--', f'{st.length}']
     for i in range(4):
-        d.text((i * 120 + 10, 250), f'{labels[i]} {values[i]}', font=font(12), fill=(180, 180, 180))
+        d.text((i * 120 + 60 - d.textlength(f'{labels[i]} {values[i]}', font=font(12)) / 2, 250), f'{labels[i]} {values[i]}', font=font(12), fill=(180, 180, 180))
     length_overlay(st, d)
     return img
 
@@ -1909,8 +2209,15 @@ def draw_tracks(st: State, first: int, left: bool | None = None) -> Image.Image:
         name = SHORT[tr] if tr < 4 else note_name(default_note(tr + 1))
         sel = tr == st.sound - 1
         inv = sel and 'select' in st.held                          # SELECT tenu : en blanc
-        d.rectangle((x, 29, x + TRK_W - 3, 41), fill='white' if inv else acc if sel else shade(acc, 0.35))
-        d.text((x + 3, 29), f'{tr + 1:02d} {name}', font=f, fill='black' if sel else 'white')
+        silent = not st.sound_audible(st.group, tr + 1)            # coupee / hors solo : grisee
+        fill = 'white' if inv else acc if sel else (45, 45, 50) if silent else shade(acc, 0.35)
+        d.rectangle((x, 29, x + TRK_W - 3, 41), fill=fill)
+        tag = st.sound_tag(tr + 1)
+        d.text((x + 3, 29), f'{tr + 1:02d}' + ('' if tag else f' {name}'), font=f,
+               fill='black' if sel else (120, 120, 120) if silent else 'white')
+        if tag:                                      # piste coupee / en solo : M ou S a la place du nom
+            d.text((x + 24, 29), 'MUTE' if tag == 'M' else 'SOLO', font=f, fill='black' if sel else
+                   (230, 70, 70) if tag == 'M' else (240, 200, 40))
     # En lecture : la ligne d'infos du bas laisse la place a une 16e ligne du pattern
     rows = TRK_ROWS + 1 if st.playing else TRK_ROWS
     top = view_top(st, rows)
@@ -1932,8 +2239,9 @@ def draw_tracks(st: State, first: int, left: bool | None = None) -> Image.Image:
                 d.rectangle((x - 1, y - 1, x + TRK_W - 4, y + 12),
                             fill=shade(acc, 0.6 if st.recording else 0.45))
             cell = st.grid[r][tr]
+            silent = not st.sound_audible(st.group, tr + 1)
             d.text((x + 3, y), f'{cell_label(cell[0])} {cell[1]:02X}' if cell else '--- --',
-                   font=f, fill='white' if cell else (80, 80, 80))
+                   font=f, fill=((95, 95, 95) if silent else 'white') if cell else (80, 80, 80))
     if not left and not st.playing:
         length_label(st, d)
     if left and not st.playing:
@@ -1976,6 +2284,7 @@ def draw_keyboard(st: State) -> Image.Image:
             scale = ()                             # points de gamme seulement en Harmonizer
     else:
         softkey_header(d, st, step_label(st) + f'{KEY_NAMES[st.root]}{st.octave} {scale_name}'[:24])
+        softkey(d, st, 1, 'PC KEYS', st.pc['keys'])     # bouton 6 : clavier de l'ordinateur
         d.text((10, 30), link_label(st), font=font(11), fill=(150, 150, 150))
     low = 12 * (st.octave + 1)                     # 3 octaves a partir du C de l'octave
     high = low + 36
@@ -2027,7 +2336,7 @@ def draw_keyboard(st: State) -> Image.Image:
         labels = [scale_name[:14], f'Root {KEY_NAMES[st.root]}', BANKS[st.bank_idx][0],
                   f'Octave {st.octave}']
     for i, t in enumerate(labels):
-        d.text((i * 120 + 10, 254), t, font=font(12), fill=(180, 180, 180))
+        d.text((i * 120 + 60 - d.textlength(t, font=font(12)) / 2, 254), t, font=font(12), fill=(180, 180, 180))
     scale_dropdown(st, d)
     return img
 
@@ -2113,7 +2422,7 @@ def draw_chords(st: State) -> Image.Image:
     labels = [f'{st.scale()[0]}'[:14], f'Mode {st.chord_mode}', st.chord_set_label(),
               f'Pos {st.position:+d}']
     for k, t in enumerate(labels):
-        d.text((k * 120 + 10, 254), t, font=font(12), fill=(180, 180, 180))
+        d.text((k * 120 + 60 - d.textlength(t, font=font(12)) / 2, 254), t, font=font(12), fill=(180, 180, 180))
     scale_dropdown(st, d)
     return img
 
@@ -2218,8 +2527,9 @@ def step_row(st: State, pad: int) -> int:
 def sound_for(st: State, pad: int) -> list:
     """Les notes a jouer tout de suite pour un pad frappe : [(son, note), ...]."""
     if ('shift' in st.held or st.pattern_mode or st.scene_mode or st.arranger_mode
+            or ({'mute', 'solo'} & st.held)                      # MUTE / SOLO + pad : rien ne joue
             or (st.plugin_mode and 'select' in st.held)
-            or st.settings and st.set_tab in ('COLOR', 'STATUS')):
+            or st.settings and st.set_tab in ('COLORS', 'STATUS')):
         return []                          # AUDIO / MIDI : les pads jouent (tester la sortie)
     if 'select' in st.held and not (st.pattern_mode or st.scene_mode or st.file_mode
                                     or st.arranger_mode or st.plugin_mode):
@@ -2456,7 +2766,7 @@ def handle(st: State, ev: tuple) -> None:
         st.down.add(pad)
         keyboard = st.melodic()                      # Keyboard ou Chords
         if st.settings:                              # SETTINGS > COLORS
-            if st.set_confirm or st.set_tab != 'COLOR':
+            if st.set_confirm or st.set_tab != 'COLORS':
                 return
             if st.set_target == 'GROUP':
                 st.group_hue[st.group] = pad - 1     # pad n = teinte n
@@ -2464,6 +2774,21 @@ def handle(st: State, ev: tuple) -> None:
                 st.pad_hue.pop((st.group, pad), None)   # retour a la couleur du groupe
             else:
                 st.set_selected ^= {pad}
+            return
+        if ({'mute', 'solo'} & st.held) and not (st.pattern_mode or st.scene_mode or st.arranger_mode):
+            key = (st.group, pad)                    # MUTE / SOLO + pad : le son du pad dans le groupe
+            now = time.monotonic()
+            shown = (st.plugin_mode or st.mixer or st.tracker16 or kb_tracker(st)
+                     or (not st.melodic() and not st.step_mode))     # l'ecran montre deja l'etat
+            if 'mute' in st.held:
+                st.sound_muted ^= {key}
+                msg = f"Sound {pad:02d} {st.sound_name(pad)} " + ('muted' if key in st.sound_muted else 'on')
+            else:
+                st.sound_solo ^= {key}
+                solo = sorted(k[1] for k in st.sound_solo if k[0] == st.group)
+                msg = ('Solo: ' + ', '.join(f'{k:02d}' for k in solo)) if solo else 'Solo off'
+            if not shown:
+                st.toast = (msg, now + 2)
             return
         if st.file_mode:                             # FILE : les pads jouent, sans rien modifier
             if st.right_view == 'chords' and not st.step_mode:
@@ -2566,12 +2891,16 @@ def handle(st: State, ev: tuple) -> None:
         if not st.down and st.advance_on_release:
             st.cursor = min(st.length - 1, st.cursor + 1)
             st.advance_on_release = False
+    elif kind == 'pc_key':                           # clavier de l'ordinateur
+        pc_key(st, ev[1])
     elif kind == 'jog':                              # grosse molette 4D
         if 'nav_click' in st.held and edit4d_ok(st) and drag_turn(st, ev[1]):
             pass                                     # appui long + rotation : la note suit
         elif st.file_mode and not st.settings:         # FILE : choisir le projet
             st.file_sel = max(0, min(len(list_projects()) - 1, st.file_sel + ev[1]))
             st.file_moved = True
+        elif st.plugin_mode and st.browse and not st.settings:   # PLUG-IN > KIT / SYNTH : choisir
+            browse_move(st, ev[1])
         elif st.arranger_mode and not st.settings:   # ARRANGER : choisir l'entree
             st.arr_sel = max(0, min(len(st.arrangement) - 1, st.arr_sel + ev[1]))
         elif st.mixer or 'volume' in st.held:          # MIXER, ou VOLUME tenu : volume master
@@ -2629,6 +2958,16 @@ def handle(st: State, ev: tuple) -> None:
                 open_settings(st)
             st.set_tab = 'MIDI'
             return
+        if st.mixer and not st.settings and name in ('screen_3', 'screen_4'):
+            if name == 'screen_4':                   # 4 : PAN (stereo) / volumes
+                st.mix_pan = not st.mix_pan
+            else:                                    # 3 : retour au TRACKER
+                st.mixer = st.mix_pan = st.events_mode = False
+                if st.right_view in ('keyboard', 'chords'):
+                    st.trk_left = True
+                else:
+                    st.tracker16 = True
+            return
         # SETTINGS ouvert par-dessus un mode : ses boutons (onglets, YES / NO) passent en premier
         if st.arranger_mode and not st.settings and arranger_button(st, name):   # SONG / GO / LOOP...
             return
@@ -2649,6 +2988,10 @@ def handle(st: State, ev: tuple) -> None:
             st.mixer = st.nr_menu = False
             st.pattern_mode = st.scene_mode = st.file_mode = st.arranger_mode = False
             st.plugin_sel.clear()
+            st.browse = None
+            return
+        if st.plugin_mode and not st.settings and name in ('screen_6', 'screen_7', 'screen_8'):
+            plugin_button(st, name)                  # 6 KIT / LOAD, 7 CANCEL, 8 SYNTH
             return
         if name == 'arranger':                       # ARRANGER : l'ordre des scenes (SONG)
             st.arranger_mode = not st.arranger_mode or st.mixer
@@ -2729,8 +3072,8 @@ def handle(st: State, ev: tuple) -> None:
             if name == 'screen_5':                   # YES : sauvegarder
                 save_settings(st)
             else:                                    # NO : revenir aux reglages d'avant
-                hues, pads, audio, midi = st.set_backup
-                st.group_hue, st.pad_hue = hues, pads
+                hues, pads, audio, midi, pc = st.set_backup
+                st.group_hue, st.pad_hue, st.pc = hues, pads, pc
                 if audio != st.audio:
                     st.audio = audio
                     send_audio(st)
@@ -2803,9 +3146,21 @@ def handle(st: State, ev: tuple) -> None:
             t = st.sound - 1
             st.drag = {'t0': time.monotonic(), 'row': st.cursor, 'track': t,
                        'cell': st.grid[st.cursor][t], 'copy': 'shift' in st.held, 'active': False}
+        elif name == 'screen_6' and st.right_view == 'keyboard' and not st.mixer and not st.tracker16:
+            st.pc['keys'] = not st.pc['keys']        # 6 : jouer avec le clavier de l'ordinateur
+            if st.pc['keys']:
+                print_pc_keys(st)
+            st.toast = ('Computer keys ON (see the terminal)' if st.pc['keys'] else 'Computer keys OFF',
+                        time.monotonic() + 2)
+            save_settings(st)
         elif name == 'mixer':                        # MIXER : ouvrir / fermer le mixeur
             st.mixer = not st.mixer
             st.mixer_page = 0
+            st.mix_pan = False
+            if st.mixer:                             # les encodeurs vont au mixeur
+                st.plugin_mode = st.arranger_mode = st.file_mode = False
+                st.nr_menu = False
+                st.browse = None
         elif name in ('nav_left', 'nav_right', 'nav_prev', 'nav_next') and st.mixer:   # page 1 / 2
             st.mixer_page = 1 if name in ('nav_right', 'nav_next') else 0
         elif name == 'screen_8' and st.right_view == 'chords' and st.chord_mode == 'USER':
@@ -2864,7 +3219,7 @@ def handle(st: State, ev: tuple) -> None:
             tap_tempo(st)
     elif kind == 'knob':
         i = ev[1] - 1
-        if st.settings and st.set_tab in ('AUDIO', 'MIDI'):
+        if st.settings and st.set_tab in ('AUDIO', 'MIDI', 'KEYS'):
             settings_knob(st, i, ev[2])
             return
         if st.name_edit and not st.settings:         # editeur de nom
@@ -3303,9 +3658,12 @@ def project_data(st: State) -> dict:
                          'cells': cells})
         groups[g] = {'patterns': pats, 'current': st.pat_index[g], 'off': g in st.pat_off,
                      'name': st.group_names[g],
-                     'volume': st.group_vol[g], 'key': st.keys[g],
+                     'volume': st.group_vol[g], 'pan': st.group_pan[g], 'key': st.keys[g],
+                     'kit': st.kit_names[g],
                      'sounds': {str(s): {'volume': st.sound_vol[(g, s)], 'params': st.params[(g, s)],
-                                         'envelope': st.env[(g, s)]}
+                                         'envelope': st.env[(g, s)],
+                                         **({'sample': st.samples[(g, s)]} if (g, s) in st.samples else {}),
+                                         **({'synth': SYNTHS[st.synth[(g, s)] - 1]} if (g, s) in st.synth else {})}
                                 for s in range(1, 17)}}
     scenes = [{'index': i, 'name': st.scene_names[i], 'groups': sc}
               for i, sc in enumerate(st.scenes) if sc]
@@ -3404,7 +3762,12 @@ def load_project(st: State, name: str) -> None:
         st.grids[g] = st.patterns[g][cur]['grid']
         (st.pat_off.add if gd.get('off') else st.pat_off.discard)(g)
         st.group_vol[g] = gd.get('volume', 100)
+        st.group_pan[g] = gd.get('pan', 64)
         st.group_names[g] = gd.get('name', '')
+        st.kit_names[g] = gd.get('kit', '')
+        for snd in range(1, 17):
+            st.samples.pop((g, snd), None)
+            st.synth.pop((g, snd), None)
         if gd.get('key'):
             st.keys[g].update(gd['key'])
         for s, sd in gd.get('sounds', {}).items():
@@ -3413,6 +3776,10 @@ def load_project(st: State, name: str) -> None:
             e = sd.get('envelope', {})
             st.env[(g, int(s))] = {'mode': e.get('mode', default_env(int(s))['mode']),
                                    'release': int(e.get('release', 150))}
+            if sd.get('sample'):
+                st.samples[(g, int(s))] = sd['sample']
+            if sd.get('synth') in SYNTHS:
+                st.synth[(g, int(s))] = SYNTHS.index(sd['synth']) + 1
     st.scenes = [None] * PAT_SLOTS
     st.scene_names = [''] * PAT_SLOTS
     for sd in data.get('scenes', []):
@@ -3426,6 +3793,7 @@ def load_project(st: State, name: str) -> None:
     st.arr_on = bool(data.get('song_mode', False))
     st.arr_sel = 0
     st.cursor = 0
+    sync_samples(st)
     st.saved_text = project_text(st)
     st.project_file = name
 
@@ -3750,7 +4118,7 @@ def draw_arranger(st: State, half: int) -> Image.Image:
             d.text((370, y), f'{bars:g} bar' + ('s' if bars != 1 else ''), font=font(15),
                    fill=ink if e.get('bars') else (150, 150, 150))   # blanc : longueur choisie
         for k, t in enumerate(['Entry', 'Scene', 'Repeats', 'Length']):
-            d.text((k * 120 + 10, 252), t, font=font(12), fill=(170, 170, 170))
+            d.text((k * 120 + 60 - d.textlength(t, font=font(12)) / 2, 252), t, font=font(12), fill=(170, 170, 170))
         return img
     header(d, '', '', acc)
     softkey(d, st, 0, 'SONG', st.arr_on)
@@ -3788,12 +4156,65 @@ def plugin_targets(st: State) -> list:
     return sorted(st.plugin_sel) or [st.sound]
 
 
+def browse_move(st: State, n: int) -> None:
+    """Liste ouverte de PLUG-IN : kit ou synthe suivant / precedent (molette 4D, encodeur 5)."""
+    if st.browse == 'kit':
+        st.kit_sel = max(0, min(len(list_kits()) - 1, st.kit_sel + n))
+    elif st.browse == 'synth':
+        st.synth_sel = max(0, min(len(SYNTHS) - 1, st.synth_sel + n))
+
+
+def plugin_button(st: State, name: str) -> None:
+    """PLUG-IN : 6 KIT (liste des kits ; 2e appui = LOAD), 8 SYNTH (liste des synthes ;
+    2e appui = LOAD), 7 CANCEL."""
+    now = time.monotonic()
+    targets = plugin_targets(st)
+    if name == 'screen_7':                           # CANCEL
+        st.browse = None
+    elif name == 'screen_6' and st.browse is None:   # ouvrir la liste des kits
+        kits = list_kits()
+        if not kits:
+            st.toast = ('No kit: folders of .wav in prototypes/kits or ~/Music/Fuzzy Kits', now + 3)
+            return
+        names = [k[0] for k in kits]
+        cur = st.kit_names[st.group]
+        st.kit_sel = names.index(cur) if cur in names else min(st.kit_sel, len(kits) - 1)
+        st.browse = 'kit'
+    elif name == 'screen_6' and st.browse == 'kit':  # LOAD : le kit choisi sur le groupe
+        kits = list_kits()
+        if kits:
+            load_kit(st, kits[min(st.kit_sel, len(kits) - 1)][1])
+        st.browse = None
+    elif name == 'screen_8' and st.browse is None:   # ouvrir la liste des synthes
+        st.synth_sel = st.synth.get((st.group, targets[0]), default_synth(targets[0])) - 1
+        st.browse = 'synth'
+    elif name == 'screen_8' and st.browse == 'synth':   # LOAD : ce synthe sur les sons choisis
+        synth = st.synth_sel + 1
+        for snd in targets:
+            st.samples.pop((st.group, snd), None)
+            if synth == default_synth(snd):
+                st.synth.pop((st.group, snd), None)
+            else:
+                st.synth[(st.group, snd)] = synth
+            st.env[(st.group, snd)]['mode'] = 'ONE-SHOT' if synth <= 4 else 'ADSR'
+        if not any((st.group, snd) in st.samples for snd in range(1, 17)):
+            st.kit_names[st.group] = ''
+        sync_samples(st)
+        st.browse = None
+        st.toast = (f"{SYNTHS[synth - 1]} on sound{'s' if len(targets) > 1 else ''} "
+                    + ', '.join(f'{snd:02d}' for snd in targets), now + 2)
+
+
 def plugin_knob(st: State, i: int, delta: int) -> None:
-    """PLUG-IN : 1 = mode d'enveloppe, 2 = relachement, pour tous les sons choisis."""
+    """PLUG-IN : 1 = mode d'enveloppe, 2 = relachement, pour tous les sons choisis ;
+    5 = kit ou synthe dans la liste ouverte (KIT / SYNTH)."""
     if i not in st.plugin_knobs:
         return
     n = st.plugin_knobs[i].steps(delta)
     if not n:
+        return
+    if i == 4:
+        browse_move(st, n)
         return
     targets = plugin_targets(st)
     first = st.env[(st.group, targets[0])]
@@ -3823,16 +4244,49 @@ def draw_plugin(st: State, half: int) -> Image.Image:
             chosen = pad in targets
             rounded(d, (x, y, x + 110, y + 46), fill=acc if chosen else (24, 24, 32),
                     outline=shade(acc, 0.6))
-            ink = 'black' if chosen else 'white'
+            silent = not st.sound_audible(st.group, pad)
+            tag = st.sound_tag(pad)
+            ink = 'black' if chosen else (110, 110, 110) if silent else 'white'
             name = f'{pad:02d} {st.sound_name(pad)}'
             d.text((x + 55 - d.textlength(name, font=font(12)) / 2, y + 5), name, font=font(12), fill=ink)
-            mode = 'ADSR' if env['mode'] == 'ADSR' else 'ONE-SHOT'
+            mode = {'M': 'MUTE', 'S': 'SOLO'}.get(tag) or ('ADSR' if env['mode'] == 'ADSR' else 'ONE-SHOT')
+            color = ((230, 70, 70) if tag == 'M' else (240, 200, 40) if tag == 'S'
+                     else (90, 90, 90) if silent else (170, 170, 170))
             d.text((x + 55 - d.textlength(mode, font=font(13)) / 2, y + 25), mode, font=font(13),
-                   fill=ink if chosen else (170, 170, 170))
+                   fill=ink if chosen else color)
         for k, t in enumerate(['Mode', 'Release', '', '']):
-            d.text((k * 120 + 10, 252), t, font=font(12), fill=(170, 170, 170))
+            d.text((k * 120 + 60 - d.textlength(t, font=font(12)) / 2, 252), t, font=font(12), fill=(170, 170, 170))
         return img
-    header(d, 'ENVELOPE', '', acc)
+    def keys(labels, title):                         # etiquettes des boutons 5-8, en haut
+        header(d, title, '', acc)
+        for k, t in enumerate(labels):
+            if t:
+                softkey(d, st, k, t, False)
+
+    if st.browse:                                      # liste des kits / des synthes
+        if st.browse == 'kit':
+            items = [(kname, f'{len(kit_files(folder))} sounds') for kname, folder in list_kits()]
+            sel, labels = st.kit_sel, ['', 'LOAD', 'CANCEL', '']
+            hint = '4D wheel / encoder 5: choose.  Own kits: ~/Music/Fuzzy Kits'
+        else:
+            items = [(name, 'drum' if k < 4 else 'notes') for k, name in enumerate(SYNTHS)]
+            sel, labels = st.synth_sel, ['', '', 'CANCEL', 'LOAD']
+            hint = '4D wheel / encoder 5: choose.  LOAD: on the chosen sounds'
+        keys(labels, 'KIT' if st.browse == 'kit' else 'SYNTH')
+        top = max(0, min(sel - 4, len(items) - 9))
+        for k, (iname, info) in enumerate(items[top:top + 9]):
+            y = 34 + k * 21
+            chosen = top + k == sel
+            if chosen:
+                d.rectangle((6, y - 1, W - 6, y + 18), fill=acc)
+            ink = 'black' if chosen else 'white'
+            d.text((12, y), short(iname, 40), font=font(14), fill=ink)
+            d.text((W - 80, y), info, font=font(12), fill=ink if chosen else (150, 150, 150))
+        if not items:
+            d.text((12, 40), 'Nothing found.', font=font(14), fill='white')
+        d.text((12, 250), hint, font=font(11), fill=(140, 140, 140))
+        return img
+    keys(['', 'KIT', '', 'SYNTH'], 'ENVELOPE')
     modes = {st.env[(st.group, s)]['mode'] for s in targets}
     rels = {st.env[(st.group, s)]['release'] for s in targets}
     names = ', '.join(f'{s:02d}' for s in targets)
@@ -3840,14 +4294,19 @@ def draw_plugin(st: State, half: int) -> Image.Image:
     param_box(d, 0, 'Mode', modes.pop() if len(modes) == 1 else 'mixed', acc, y=60)
     param_box(d, 1, 'Release', f'{rels.pop()} ms' if len(rels) == 1 else 'mixed', acc, y=60,
               dim=all(st.env[(st.group, s)]['mode'] == 'ONE-SHOT' for s in targets))
-    lines = ['ONE-SHOT: the sound plays to its end.',
-             'ADSR: the sound holds as long as the note,',
+    src = st.samples.get((st.group, targets[0]))
+    synth = SYNTHS[st.synth.get((st.group, targets[0]), default_synth(targets[0])) - 1]
+    d.text((12, 150), short(('Sample: ' + Path(src).name) if src else f'Synth: {synth}', 52),
+           font=font(13), fill='white')
+    if st.kit_names[st.group]:
+        d.text((12, 168), short(f'Kit on group {st.group}: {st.kit_names[st.group]}', 52),
+               font=font(12), fill=(170, 170, 170))
+    lines = ['ONE-SHOT: plays to its end. ADSR: holds the note,',
              'then fades out with the release.',
-             'Pad: choose a sound (and hear it).',
              'SELECT + pads: several sounds at once.',
-             'PLUG-IN again: back.']
+             'KIT: 16 samples on the pads.  SYNTH: a synth sound.']
     for k, line in enumerate(lines):
-        d.text((12, 154 + k * 18), line, font=font(12), fill=(180, 180, 180))
+        d.text((12, 192 + k * 15), line, font=font(12), fill=(170, 170, 170))
     return img
 
 
@@ -3963,7 +4422,7 @@ def draw_events(st: State, half: int) -> Image.Image:
                 d.rectangle((x0 + a * cw + 1, y + 1, x0 + b * cw - 1, y + rh - 2),
                             fill='white' if sel else shade(acc, bright), outline=None)
         for k, label in enumerate(['Line', f'Zoom {cols}', 'View', 'Track']):
-            d.text((k * 120 + 10, 252), label, font=font(12), fill=(170, 170, 170))
+            d.text((k * 120 + 60 - d.textlength(label, font=font(12)) / 2, 252), label, font=font(12), fill=(170, 170, 170))
         return img
     header(d, 'NOTE', f'Line {st.cursor:02X}', acc)
     if cell:
@@ -4097,7 +4556,7 @@ def name_overlay(st: State, d: ImageDraw.ImageDraw) -> None:
     d.text((40, 184), 'Press the same button again: done', font=font(13), fill=acc)
     d.rectangle((0, 248, W, H), fill=(15, 15, 20))
     for k, label in enumerate(('Position', 'Letter', 'Names')):     # sous les encodeurs 5-7
-        d.text((k * 120 + 10, 252), label, font=font(12), fill=acc)
+        d.text((k * 120 + 60 - d.textlength(label, font=font(12)) / 2, 252), label, font=font(12), fill=acc)
 
 
 def tick(st: State) -> bool:
@@ -4211,7 +4670,8 @@ def available_buttons(st: State) -> set:
     if st.file_mode:
         return on | {'screen_5', 'screen_6', 'screen_7', 'screen_8'}
     if st.plugin_mode:
-        return on | {'select'}
+        return on | {None: {'select', 'screen_6', 'screen_8'}, 'kit': {'screen_6', 'screen_7'},
+                     'synth': {'screen_7', 'screen_8'}}[st.browse]
     if st.arranger_mode:
         return on | {'screen_3', 'screen_5', 'screen_6', 'screen_7', 'nav_prev', 'nav_next', 'erase',
                      'duplicate'}
@@ -4225,8 +4685,12 @@ def available_buttons(st: State) -> set:
     on.add('select')                                   # SELECT + pad : choisir le son
     if st.step_mode or st.mixer:
         on |= {'nav_prev', 'nav_next'}                 # < > : pages STEP ou pages du mixeur
+    if st.mixer:
+        on |= {'screen_3', 'screen_4'}                 # 3 TRACKER, 4 PAN
     if not st.mixer:
         on.add('screen_3')                             # TRACKER
+        if st.right_view == 'keyboard' and not st.tracker16:
+            on.add('screen_6')                         # PC KEYS
         if st.right_view == 'chords' and st.chord_mode == 'USER':
             on.add('screen_8')                         # EDIT des accords User
         if st.melodic():
@@ -4247,16 +4711,18 @@ def button_frame(st: State) -> bytes:
               'arranger': st.arranger_mode or st.arr_on, 'plug_in': st.plugin_mode, 'events': st.events_mode, 'fixed_vel': False, 'restart': False, 'duplicate': False, 'erase': False,
               'mute': bool(st.muted), 'solo': bool(st.solo),
               'mixer': st.mixer, 'volume': False,
-              'screen_3': (st.set_tab == SET_TABS[2]) if st.settings else (st.tracker16 or kb_tracker(st)),
+              'screen_3': (st.set_tab in ('COLORS', 'KEYS')) if st.settings else
+                          (not st.mixer and (st.tracker16 or kb_tracker(st))),
               'screen_8': (st.name_edit is not None) if (st.pattern_mode or st.scene_mode)
                           else (st.user_edit and not st.settings), 'screen_7': st.link_edit,
               'settings': st.settings, 'follow': st.follow,
               'midi_channel': st.settings and st.set_tab == 'MIDI',
               'screen_1': st.settings and st.set_tab == SET_TABS[0],
               'screen_2': st.settings and st.set_tab == SET_TABS[1],
-              'screen_4': st.settings and st.set_tab == SET_TABS[3],
+              'screen_4': (st.set_tab == SET_TABS[3]) if st.settings else (st.mixer and st.mix_pan),
               'note_repeat': st.nr_active, 'lock': st.nr_lock,
-              'screen_5': st.arranger_mode and st.arr_on, 'screen_6': False}
+              'screen_5': st.arranger_mode and st.arr_on,
+              'screen_6': st.right_view == 'keyboard' and st.pc['keys'] and not st.settings}
     if st.arranger_mode:
         active['screen_7'] = st.arr_loop
         active['screen_3'] = st.arr_half
@@ -4287,16 +4753,23 @@ def led_frame(st: State) -> bytes:
     Mode STEP : pas avec note = vif, pas vide = eteint, pas en lecture = blanc."""
     now = time.monotonic()
     dim, bright = hue_pair(st.group_hue[st.group])
-    if st.settings and st.set_tab != 'COLOR':          # AUDIO / MIDI : pads pour tester le son
+    if st.settings and st.set_tab != 'COLORS':         # AUDIO / MIDI / KEYS : pads pour tester le son
         return pad_led_frame({p: bright if p in st.down else dim for p in range(1, 17)})
     if st.settings:
         if st.set_target == 'GROUP':                   # pad n = teinte n (vive)
             return pad_led_frame({p: hue_pair(p - 1)[1] for p in range(1, 17)})
         return pad_led_frame({p: pad_pair(st, p)[1 if p in st.set_selected else 0]
                               for p in range(1, 17)})
-    if st.plugin_mode:                                 # PLUG-IN : sons choisis vifs
+    if ({'mute', 'solo'} & st.held) and not (st.pattern_mode or st.scene_mode or st.arranger_mode
+                                              or st.settings):
+        # MUTE / SOLO tenu : coupe = eteint, en solo = vif, les autres = doux
+        return pad_led_frame({p: 0 if (st.group, p) in st.sound_muted
+                              else pad_pair(st, p)[1] if (st.group, p) in st.sound_solo
+                              else pad_pair(st, p)[0] for p in range(1, 17)})
+    if st.plugin_mode:                                 # PLUG-IN : sons choisis vifs, coupes eteints
         targets = plugin_targets(st)
         return pad_led_frame({p: pad_pair(st, p)[1] if (p in targets or p in st.down)
+                              else 0 if not st.sound_audible(st.group, p)
                               else pad_pair(st, p)[0] for p in range(1, 17)})
     if st.arranger_mode:                               # ARRANGER : scenes pleines douces,
         colors = {}                                    # celle de l'entree choisie vive
@@ -4344,6 +4817,8 @@ def led_frame(st: State) -> bytes:
                 colors[p] = 0                          # SET / USER : pads 1-12 (accords definis)
             else:
                 colors[p] = bright if (p in st.down or st.flash.get(p, 0) > now) else dim
+            if not st.sound_audible(st.group, st.sound) and p not in st.down and not shift:
+                colors[p] = 0                          # son joue coupe (MUTE / SOLO) : eteint
         return pad_led_frame(colors)
     if 'select' in st.held and not (st.pattern_mode or st.scene_mode or st.file_mode
                                     or st.arranger_mode or st.plugin_mode or st.settings):
@@ -4366,7 +4841,9 @@ def led_frame(st: State) -> bytes:
                 colors[p] = 0
         return pad_led_frame(colors)
     return pad_led_frame({p: pad_pair(st, p)[1] if (p in st.down or st.flash.get(p, 0) > now
-                                                   or p == st.sound) else pad_pair(st, p)[0]
+                                                   or p == st.sound or (st.group, p) in st.sound_solo)
+                          else 0 if not st.sound_audible(st.group, p)    # son coupe : eteint
+                          else pad_pair(st, p)[0]
                           for p in range(1, 17)})
 
 
@@ -4606,7 +5083,8 @@ def main() -> int:
             time.sleep(0.001)
 
     threads = [threading.Thread(target=reader, daemon=True), threading.Thread(target=player, daemon=True),
-               threading.Thread(target=engine_listener, args=(st, events, running), daemon=True)]
+               threading.Thread(target=engine_listener, args=(st, events, running), daemon=True),
+               threading.Thread(target=pc_keys_listener, args=(events, running), daemon=True)]
     for t in threads:
         t.start()
 
