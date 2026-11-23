@@ -60,6 +60,8 @@ bool MaschineMk3::openUsb (std::string& error)
         {
             if (product.empty())
                 product = pid == kProductMk3 ? "Maschine MK3" : "Maschine+";
+            hidInterface = pid == kProductPlus ? kHidInterfacePlus : kHidInterface;
+            displayInterface = pid == kProductPlus ? kDisplayInterfacePlus : kDisplayInterface;
             return true;
         }
     error = "Maschine introuvable (branchee et allumee ?)";
@@ -81,7 +83,7 @@ bool MaschineMk3::openExclusive (std::string& error)
         for (int i = 0; i < cfg->bNumInterfaces; ++i)
         {
             const auto& alt = cfg->interface[i].altsetting[0];
-            if (alt.bInterfaceNumber != kHidInterface)
+            if (alt.bInterfaceNumber != hidInterface)
                 continue;
             for (int e = 0; e < alt.bNumEndpoints; ++e)
             {
@@ -94,19 +96,19 @@ bool MaschineMk3::openExclusive (std::string& error)
     }
     if (! endpointIn)
     {
-        error = "interface 4 de la Maschine introuvable";
+        error = "interface HID de la Maschine introuvable";
         close();
         return false;
     }
 
-    int rc = libusb_claim_interface (handle, kHidInterface);
-    if (rc != 0 && libusb_kernel_driver_active (handle, kHidInterface) == 1)
+    int rc = libusb_claim_interface (handle, hidInterface);
+    if (rc != 0 && libusb_kernel_driver_active (handle, hidInterface) == 1)
     {
         // Pilote du systeme (NI) en place : on le detache (macOS : droits administrateur)
-        if (libusb_detach_kernel_driver (handle, kHidInterface) == 0)
+        if (libusb_detach_kernel_driver (handle, hidInterface) == 0)
         {
             detached = true;
-            rc = libusb_claim_interface (handle, kHidInterface);
+            rc = libusb_claim_interface (handle, hidInterface);
         }
     }
     if (rc != 0)
@@ -132,13 +134,13 @@ void MaschineMk3::close()
     if (handle != nullptr)
     {
         if (claimed)
-            libusb_release_interface (handle, kHidInterface);
+            libusb_release_interface (handle, hidInterface);
         if (displayClaimed)
-            libusb_release_interface (handle, kDisplayInterface);
+            libusb_release_interface (handle, displayInterface);
         if (displayDetached)
-            libusb_attach_kernel_driver (handle, kDisplayInterface);
+            libusb_attach_kernel_driver (handle, displayInterface);
         if (detached)
-            libusb_attach_kernel_driver (handle, kHidInterface);
+            libusb_attach_kernel_driver (handle, hidInterface);
         libusb_close (handle);
         handle = nullptr;
     }
@@ -231,7 +233,7 @@ bool MaschineMk3::openDisplay (std::string& error)
         for (int i = 0; i < cfg->bNumInterfaces; ++i)
         {
             const auto& alt = cfg->interface[i].altsetting[0];
-            if (alt.bInterfaceNumber != kDisplayInterface)
+            if (alt.bInterfaceNumber != displayInterface)
                 continue;
             for (int e = 0; e < alt.bNumEndpoints; ++e)
             {
@@ -244,13 +246,13 @@ bool MaschineMk3::openDisplay (std::string& error)
         libusb_free_config_descriptor (cfg);
     }
     if (! endpointDisplay)
-        endpointDisplay = 0x04;                       // valeur connue de la MK3
-    int rc = libusb_claim_interface (handle, kDisplayInterface);
+        endpointDisplay = 0x04;                       // valeur connue (MK3 et Maschine+)
+    int rc = libusb_claim_interface (handle, displayInterface);
     // Mode exclusif seulement : detacher le pilote (sudo ; emporte toute la Maschine sur macOS)
-    if (rc != 0 && mode == Access::Exclusive && libusb_detach_kernel_driver (handle, kDisplayInterface) == 0)
+    if (rc != 0 && mode == Access::Exclusive && libusb_detach_kernel_driver (handle, displayInterface) == 0)
     {
         displayDetached = true;
-        rc = libusb_claim_interface (handle, kDisplayInterface);
+        rc = libusb_claim_interface (handle, displayInterface);
     }
     if (rc != 0)
     {
@@ -286,7 +288,7 @@ bool MaschineMk3::write (const uint8_t* data, int length)
         return libusb_interrupt_transfer (handle, endpointOut, bytes, length, &done, 100) == 0;
     // Sans point de sortie : HID SET_REPORT par le canal de controle
     return libusb_control_transfer (handle, 0x21, 0x09, (uint16_t) (0x0200 | data[0]),
-                                    kHidInterface, bytes, (uint16_t) length, 100) == length;
+                                    hidInterface, bytes, (uint16_t) length, 100) == length;
 }
 
 } // namespace fuzzy::control

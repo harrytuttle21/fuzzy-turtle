@@ -1719,7 +1719,7 @@
     "type_idx": 3
    },
    "name": "",
-   "off": false,
+   "off": true,
    "patterns": [
     {
      "cells": [
@@ -4061,7 +4061,7 @@
   "G",
   "H"
  ],
- "master": 76,
+ "master": 127,
  "name": "SONG01",
  "scenes": [
   {

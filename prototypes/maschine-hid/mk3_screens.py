@@ -26,8 +26,9 @@ import argparse, ctypes as C, ctypes.util, os, struct, sys, time
 
 from PIL import Image, ImageChops, ImageDraw, ImageFont
 
-VID, PID_MK3 = 0x17CC, 0x1600
-DISPLAY_INTERFACE, DISPLAY_ENDPOINT = 5, 0x04
+VID, PID_MK3, PID_PLUS = 0x17CC, 0x1600, 0x1820     # Maschine MK3, Maschine+ (mode controleur)
+DISPLAY_INTERFACE, DISPLAY_ENDPOINT = 5, 0x04          # MK3 ; Maschine+ : interface 6
+DISPLAY_INTERFACES = {0x1600: 5, 0x1820: 6}
 W, H = 480, 272
 USB_TIMEOUT_MS = 2500
 ORANGE = (252, 95, 0)           # couleur d'accent Fuzzy #FC5F00 (celle du logo)
@@ -116,22 +117,29 @@ class Screens:
         self.ctx = C.c_void_p()
         if self.lib.libusb_init(C.byref(self.ctx)) < 0:
             raise MK3Error('libusb_init a echoue')
-        self.handle = self.lib.libusb_open_device_with_vid_pid(self.ctx, VID, PID_MK3)
+        self.handle, self.product = None, ''
+        for pid, name in ((PID_MK3, 'Maschine MK3'), (PID_PLUS, 'Maschine+')):
+            self.handle = self.lib.libusb_open_device_with_vid_pid(self.ctx, VID, pid)
+            if self.handle:
+                self.product, self.iface = name, DISPLAY_INTERFACES[pid]
+                break
         if not self.handle:
             self.lib.libusb_exit(self.ctx)
-            raise MK3Error('Maschine MK3 (17cc:1600) introuvable : branchee et allumee ?')
+            raise MK3Error('Maschine MK3 (17cc:1600) ou Maschine+ (17cc:1820) introuvable : '
+                           'branchee, allumee (Maschine+ en mode controleur) ?')
+        print(f'[diag] ecrans : {self.product}')
         self.claimed = self.detached = False
-        bound = self.lib.libusb_kernel_driver_active(self.handle, DISPLAY_INTERFACE)
-        print(f'[diag] pilote systeme sur l\'interface 5 : code {bound} '
+        bound = self.lib.libusb_kernel_driver_active(self.handle, self.iface)
+        print(f'[diag] pilote systeme sur l\'interface {self.iface} : code {bound} '
               '(0 = libre, 1 = occupee, -12 = question non geree)')
-        rc = self.lib.libusb_claim_interface(self.handle, DISPLAY_INTERFACE)
-        print(f'[diag] reservation de l\'interface 5 : code {rc} (0 = OK)')
+        rc = self.lib.libusb_claim_interface(self.handle, self.iface)
+        print(f'[diag] reservation de l\'interface {self.iface} : code {rc} (0 = OK)')
         if rc != 0 and bound == 1 and detach:
-            d = self.lib.libusb_detach_kernel_driver(self.handle, DISPLAY_INTERFACE)
+            d = self.lib.libusb_detach_kernel_driver(self.handle, self.iface)
             print(f'[diag] detachement du pilote systeme : code {d} (0 = OK)')
             if d == 0:
                 self.detached = True
-                rc = self.lib.libusb_claim_interface(self.handle, DISPLAY_INTERFACE)
+                rc = self.lib.libusb_claim_interface(self.handle, self.iface)
                 print(f'[diag] nouvelle reservation : code {rc} (0 = OK)')
         if rc != 0:
             self.close()
@@ -154,9 +162,9 @@ class Screens:
     def close(self) -> None:
         if getattr(self, 'handle', None):
             if getattr(self, 'claimed', False):
-                self.lib.libusb_release_interface(self.handle, DISPLAY_INTERFACE)
+                self.lib.libusb_release_interface(self.handle, self.iface)
             if getattr(self, 'detached', False):
-                self.lib.libusb_attach_kernel_driver(self.handle, DISPLAY_INTERFACE)
+                self.lib.libusb_attach_kernel_driver(self.handle, self.iface)
             self.lib.libusb_close(self.handle)
             self.handle = None
         self.lib.libusb_exit(self.ctx)

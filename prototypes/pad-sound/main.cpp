@@ -192,6 +192,22 @@ public:
         sampleRate = device->getCurrentSampleRate();
         bufferSize = device->getCurrentBufferSizeSamples();
         outputLatency = device->getOutputLatencyInSamples();
+        // Sorties qui recoivent le son : 1-2 (Main), et la prise casque si elle a ses propres
+        // sorties (Maschine+ : 3-4 "Headphone"). La MK3 recopie deja Main dans le casque.
+        const auto names = device->getOutputChannelNames();
+        const auto active = device->getActiveOutputChannels();
+        const bool copiesItself = device->getName().containsIgnoreCase ("MK3");
+        int slot = 0;
+        for (int ch = 0; ch < names.size() && slot < kMaxOut; ++ch)
+        {
+            if (! active[ch])
+                continue;
+            const bool phones = names[ch].containsIgnoreCase ("headphone")
+                             || names[ch].containsIgnoreCase ("phones");
+            playOn[slot++] = ch < 2 || (phones && ! copiesItself);
+        }
+        for (; slot < kMaxOut; ++slot)
+            playOn[slot] = false;
     }
     void audioDeviceStopped() override {}
 
@@ -232,12 +248,14 @@ public:
                 if (v.active) mix += v.render (sampleRate);
             mix = std::tanh (mix);                       // securite si beaucoup de notes s'empilent
             for (int ch = 0; ch < numOut; ++ch)
-                if (out[ch] != nullptr) out[ch][i] = mix;
+                if (out[ch] != nullptr) out[ch][i] = (ch < kMaxOut && playOn[ch]) ? mix : 0.0f;
         }
     }
 
     double sampleRate = 48000;
     int bufferSize = 0, outputLatency = 0;
+    static constexpr int kMaxOut = 32;
+    bool playOn[kMaxOut] = { true, true };       // sorties qui recoivent le son
     std::atomic<int> hits { 0 }, lastPad { 0 }, lastVelocity { 0 };
     std::atomic<double> lastWaitMs { 0 };
 
@@ -405,6 +423,14 @@ private:
     juce::OSCReceiver receiver;
 };
 
+// Toutes les sorties de la carte sont ouvertes (le moteur choisit ou envoyer le son)
+void openAllOutputs (juce::AudioDeviceManager::AudioDeviceSetup& setup)
+{
+    setup.useDefaultOutputChannels = false;
+    setup.outputChannels.clear();
+    setup.outputChannels.setRange (0, 32, true);
+}
+
 // Applique une demande de reglage audio (fil principal)
 void applyAudio (juce::AudioDeviceManager& audio, const AudioRequest& r)
 {
@@ -415,6 +441,7 @@ void applyAudio (juce::AudioDeviceManager& audio, const AudioRequest& r)
         setup.sampleRate = r.sampleRate;
     if (r.buffer > 0)
         setup.bufferSize = r.buffer;
+    openAllOutputs (setup);
     const auto err = audio.setAudioDeviceSetup (setup, true);
     if (err.isNotEmpty())
         std::printf ("Audio : %s\n", err.toRawUTF8());
@@ -483,6 +510,7 @@ int main (int argc, char* argv[])
         if (chosen.isNotEmpty())
             setup.outputDeviceName = chosen;
     }
+    openAllOutputs (setup);
     audio.setAudioDeviceSetup (setup, true);
     audio.addAudioCallback (&engine);
 

@@ -26,8 +26,10 @@ public:
     static constexpr uint16_t kVendor = 0x17cc;
     static constexpr uint16_t kProductMk3 = 0x1600;
     static constexpr uint16_t kProductPlus = 0x1820;
-    static constexpr int kHidInterface = 4;
-    static constexpr int kDisplayInterface = 5;
+    static constexpr int kHidInterface = 4;         // MK3 (Maschine+ : 5)
+    static constexpr int kDisplayInterface = 5;     // MK3 (Maschine+ : 6)
+    static constexpr int kHidInterfacePlus = 5;
+    static constexpr int kDisplayInterfacePlus = 6;
 
     enum class Access { Shared, Exclusive };
     using Callback = std::function<void (const Event&)>;
@@ -72,6 +74,7 @@ private:
     unsigned char endpointDisplay = 0;
     bool claimed = false, detached = false, displayClaimed = false, displayDetached = false;
     std::string product;
+    int hidInterface = kHidInterface, displayInterface = kDisplayInterface;   // selon le modele
     Mk3Decoder dec;
     Callback onEvent;
     std::thread reader;

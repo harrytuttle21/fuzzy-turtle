@@ -2217,7 +2217,7 @@ def step_row(st: State, pad: int) -> int:
 
 def sound_for(st: State, pad: int) -> list:
     """Les notes a jouer tout de suite pour un pad frappe : [(son, note), ...]."""
-    if ('shift' in st.held or st.pattern_mode or st.scene_mode or st.file_mode or st.arranger_mode
+    if ('shift' in st.held or st.pattern_mode or st.scene_mode or st.arranger_mode
             or (st.plugin_mode and 'select' in st.held)
             or st.settings and st.set_tab in ('COLOR', 'STATUS')):
         return []                          # AUDIO / MIDI : les pads jouent (tester la sortie)
@@ -2465,7 +2465,13 @@ def handle(st: State, ev: tuple) -> None:
             else:
                 st.set_selected ^= {pad}
             return
-        if st.file_mode:                             # FILE : les pads ne font rien
+        if st.file_mode:                             # FILE : les pads jouent, sans rien modifier
+            if st.right_view == 'chords' and not st.step_mode:
+                notes = st.chord_notes(pad)
+                if notes:
+                    st.held_notes[pad] = [(n, vel) for n in notes]
+            elif st.right_view == 'keyboard' and not st.step_mode:
+                st.held_notes[pad] = [(st.pad_note(pad), vel)]
             return
         if st.arranger_mode:                         # ARRANGER : pad = ajouter la scene
             arranger_pad(st, pad)
@@ -2616,6 +2622,9 @@ def handle(st: State, ev: tuple) -> None:
         if st.settings and not st.set_confirm and settings_button(st, name):
             return
         if name == 'midi_channel':                   # MIDI : ouvre SETTINGS > MIDI
+            if st.settings and st.set_tab == 'MIDI' and not st.set_confirm:
+                st.set_confirm = True                # 2e appui : fermer (sauvegarder ? YES / NO)
+                return
             if not st.settings:
                 open_settings(st)
             st.set_tab = 'MIDI'
@@ -2625,7 +2634,7 @@ def handle(st: State, ev: tuple) -> None:
             return
         if name == 'events' and not st.settings:    # EVENTS : piano roll
             st.events_mode = not st.events_mode or st.mixer
-            st.mixer = False                         # le mixeur laisse la place
+            st.mixer = st.nr_menu = False            # le menu Note Repeat se range, l'arpege continue                         # le mixeur laisse la place
             st.pattern_mode = st.scene_mode = st.file_mode = st.arranger_mode = st.plugin_mode = False
             if st.events_mode:
                 pr_follow_pitch(st)
@@ -2637,13 +2646,13 @@ def handle(st: State, ev: tuple) -> None:
             return
         if name == 'plug_in' and not st.settings:   # PLUG-IN : enveloppe des sons du groupe
             st.plugin_mode = not st.plugin_mode or st.mixer
-            st.mixer = False
+            st.mixer = st.nr_menu = False
             st.pattern_mode = st.scene_mode = st.file_mode = st.arranger_mode = False
             st.plugin_sel.clear()
             return
         if name == 'arranger':                       # ARRANGER : l'ordre des scenes (SONG)
             st.arranger_mode = not st.arranger_mode or st.mixer
-            st.mixer = False
+            st.mixer = st.nr_menu = False
             st.pattern_mode = st.scene_mode = st.file_mode = st.plugin_mode = False
             st.name_edit = None
             return
@@ -2659,7 +2668,7 @@ def handle(st: State, ev: tuple) -> None:
                     st.toast = (f'Saved: {st.project_name}', time.monotonic() + 2)
             else:
                 st.file_mode = not st.file_mode or st.mixer
-                st.mixer = False
+                st.mixer = st.nr_menu = False
                 st.pattern_mode = st.scene_mode = st.arranger_mode = st.plugin_mode = False
                 st.name_edit = None
                 names = list_projects()
@@ -2806,13 +2815,13 @@ def handle(st: State, ev: tuple) -> None:
         elif name == 'duplicate' and 'shift' in st.held:   # Shift + DUPLICATE : DOUBLE
             double_pattern(st)
         elif name == 'pattern':                      # PATTERN : pads = patterns du groupe
-            st.mixer = False                         # le mixeur laisse la place
+            st.mixer = st.nr_menu = False            # le mixeur et le menu Note Repeat laissent la place
             st.pattern_mode, st.scene_mode, st.file_mode = not st.pattern_mode, False, False
             st.arranger_mode = st.plugin_mode = False
             st.name_edit = None
             st.pat_bank = st.pat_index[st.group] // 16
         elif name == 'scene':                        # SCENE : pads = scenes
-            st.mixer = False                         # le mixeur laisse la place
+            st.mixer = st.nr_menu = False            # le mixeur et le menu Note Repeat laissent la place
             st.scene_mode, st.pattern_mode, st.file_mode = not st.scene_mode, False, False
             st.arranger_mode = st.plugin_mode = False
             st.name_edit = None
