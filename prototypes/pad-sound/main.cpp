@@ -47,6 +47,7 @@ std::atomic<bool> gRunning { true };
 // ----------------------------------------------------------------------------
 // Evenement "pad frappe", transmis du lecteur HID au moteur audio sans verrou.
 constexpr int kPanic = -1;   // evenement special : couper toutes les voix
+constexpr int kLiveOff = -2; // evenement special : fin de toutes les notes jouees en direct (tenues)
 
 struct PadEvent
 {
@@ -59,7 +60,7 @@ struct PadEvent
     int releaseMs = 150;  // ADSR : relachement apres la fin de note
     int gateMs = 0;       // ADSR : duree de la note (0 = jusqu'a /fuzzy/proto/off)
     bool off = false;     // fin de note (ADSR)
-    int synth = 0;        // synthe : 1 Kick, 2 Snare, 3 Closed HH, 4 Open HH, 5 Tone (0 = celui du pad)
+    int synth = 0;        // synthe : 1 Kick, 2 Snare, 3 Closed HH, 4 Open HH, 5 Tone, 6 Click (0 = celui du pad)
     int pan = 64;         // stereo : 0 gauche, 64 centre, 127 droite
 };
 
@@ -165,7 +166,7 @@ struct Voice
         note = e.note >= 0 ? e.note : defaultNote (e.pad);
         pad = e.pad; tag = e.tag; active = true; phase = 0; time = 0; fade = 1; fadeStep = 0;
         sample = smp;
-        kind = e.synth >= 1 && e.synth <= 5 ? e.synth : (e.pad <= 4 ? e.pad : 5);
+        kind = e.synth >= 1 && e.synth <= 6 ? e.synth : (e.pad <= 4 ? e.pad : 5);
         const float p = juce::jlimit (0, 127, e.pan) / 127.0f;
         gainL = std::min (1.0f, 2.0f * (1.0f - p));
         gainR = std::min (1.0f, 2.0f * p);
@@ -241,6 +242,12 @@ struct Voice
                 s = (float) (hp * 0.5 * env (kind == 3 ? 0.04 : 0.3));
                 break;
             }
+            case 6: { // metronome : bip court a la hauteur de la note
+                const double f = 440.0 * std::pow (2.0, (note - 69) / 12.0);
+                phase += 2 * juce::MathConstants<double>::pi * f * dt;
+                s = (float) (std::sin (phase) * env (0.018));
+                break;
+            }
             default: { // notes
                 const double f = 440.0 * std::pow (2.0, (note - 69) / 12.0);
                 phase += 2 * juce::MathConstants<double>::pi * f * dt;
@@ -252,7 +259,7 @@ struct Voice
         }
         // Attaque : le son ne demarre jamais d'un coup (sinon "clic").
         // 1 ms pour garder le punch de la batterie, 5 ms pour les notes.
-        const double attack = std::min (1.0, time / (sample ? 0.0005 : kind <= 4 ? 0.001 : 0.005));
+        const double attack = std::min (1.0, time / (sample ? 0.0005 : kind <= 4 || kind == 6 ? 0.001 : 0.005));
         // La voix s'arrete quand elle est devenue inaudible (plus de coupure franche)
         if (time > 0.01 && level < 0.0005) active = false;
         if (held && gate > 0 && time >= gate) noteOff (sr);       // fin de note programmee
@@ -304,6 +311,12 @@ public:
         PadEvent e;
         while (queue.pop (e))
         {
+            if (e.pad == kLiveOff)
+            {   // plus aucun pad tenu : toute note encore "tenue" sans duree est relachee
+                for (auto& v : voices)
+                    if (v.active && v.held && v.gate <= 0) v.noteOff (sampleRate);
+                continue;
+            }
             if (e.pad == kPanic)
             {
                 for (auto& v : voices)
@@ -492,6 +505,11 @@ private:
         if (address == "/fuzzy/proto/transport")
         {
             midi.setTransport (num (0) != 0, m.size() > 1 && m[1].isFloat32() ? m[1].getFloat32() : 120.0);
+            return;
+        }
+        if (address == "/fuzzy/proto/off_live")        // plus aucun pad tenu
+        {
+            queue.push ({ kLiveOff, 0, -1, juce::Time::getHighResolutionTicks() });
             return;
         }
         if (address == "/fuzzy/proto/off")             // fin de note (son, note, groupe)

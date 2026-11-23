@@ -8,64 +8,65 @@
   "F": 12,
   "G": 13,
   "H": 15,
-  "A2": 1,
-  "B2": 2,
-  "C2": 5,
-  "D2": 6,
-  "E2": 9,
-  "F2": 12,
-  "G2": 13,
-  "H2": 15
+  "A2": 15,
+  "B2": 13,
+  "C2": 12,
+  "D2": 9,
+  "E2": 6,
+  "F2": 5,
+  "G2": 2,
+  "H2": 1
  },
+ "hues_v": 2,
  "pad_hue": {
   "A:15": 1
  },
  "keys": {
   "A": {
-   "root": 2,
-   "octave": 3,
+   "root": 0,
+   "octave": 2,
    "bank_idx": 0,
    "type_idx": 3
   },
   "B": {
-   "root": 2,
-   "octave": 3,
+   "root": 0,
+   "octave": 2,
    "bank_idx": 0,
    "type_idx": 3
   },
   "C": {
-   "root": 2,
-   "octave": 3,
+   "root": 0,
+   "octave": 2,
    "bank_idx": 0,
    "type_idx": 3
   },
   "D": {
-   "root": 2,
-   "octave": 3,
+   "root": 0,
+   "octave": 2,
    "bank_idx": 0,
    "type_idx": 3
   },
   "E": {
-   "root": 2,
-   "octave": 3,
+   "root": 0,
+   "octave": 2,
    "bank_idx": 0,
    "type_idx": 3
   },
   "F": {
-   "root": 2,
-   "octave": 3,
+   "root": 0,
+   "octave": 2,
    "bank_idx": 0,
    "type_idx": 3
   },
   "G": {
-   "root": 2,
-   "octave": 3,
+   "root": 0,
+   "octave": 2,
    "bank_idx": 0,
    "type_idx": 3
   },
   "H": {
-   "root": 2,
-   "octave": 3,
+   "root": 0,
+   "octave": 2,
    "bank_idx": 0,
    "type_idx": 3
   },
@@ -161,11 +162,12 @@
    "H2": 0
   }
  },
- "project": "SONG01",
+ "project": "DRUMS01",
  "pc": {
   "keys": false,
   "layout": "AZERTY",
   "space": true,
   "length": 300
- }
+ },
+ "metro_vol": 90
 }

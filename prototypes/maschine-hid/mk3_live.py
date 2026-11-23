@@ -397,7 +397,9 @@ def load_user_chords() -> list:
 def load_settings(st) -> None:
     try:
         data = json.loads(SETTINGS_FILE.read_text())
-        st.group_hue.update({g: int(h) for g, h in data.get('group_hue', {}).items() if g in GROUPS})
+        old = data.get('hues_v', 1) < 2                # anciens reglages : A2 = A (on garde le nouvel ordre)
+        st.group_hue.update({g: int(h) for g, h in data.get('group_hue', {}).items()
+                             if g in GROUPS and not (old and g.endswith('2'))})
         for g, k in data.get('keys', {}).items():
             if g in GROUPS:
                 st.keys[g].update({n: int(v) for n, v in k.items() if n in st.keys[g]})
@@ -411,6 +413,7 @@ def load_settings(st) -> None:
         st.midi.update({k: v for k, v in midi.items() if k in DEFAULT_MIDI})
         st.midi['out_ch'].update({g: int(c) for g, c in midi.get('out_ch', {}).items() if g in GROUPS})
         st.pc.update({k: v for k, v in data.get('pc', {}).items() if k in DEFAULT_PC})
+        st.metro_vol = int(data.get('metro_vol', st.metro_vol))
     except (OSError, ValueError, KeyError, TypeError, AttributeError):
         pass
 
@@ -428,10 +431,11 @@ def write_text(path: Path, text: str) -> None:
 def save_settings(st) -> None:
     try:
         write_text(SETTINGS_FILE, json.dumps({
-            'group_hue': st.group_hue,
+            'group_hue': st.group_hue, 'hues_v': 2,
             'pad_hue': {f'{g}:{p}': h for (g, p), h in st.pad_hue.items() if h is not None},
             'keys': st.keys, 'linked': sorted(st.linked),
-            'audio': st.audio, 'midi': st.midi, 'project': st.project_name, 'pc': st.pc},
+            'audio': st.audio, 'midi': st.midi, 'project': st.project_name, 'pc': st.pc,
+            'metro_vol': st.metro_vol},
             indent=1))
     except OSError as e:
         print('Sauvegarde des reglages impossible :', e)
@@ -526,7 +530,7 @@ class State:
         self.scene_names = [''] * PAT_SLOTS
         self.name_edit = None                    # nom en cours d'edition : ('pattern', g, i) / ('scene', i)
         self.name_pos = 0
-        self.name_knobs = {4: Knob(40), 5: Knob(25), 6: Knob(40)}   # sous l'ecran droit
+        self.name_knobs = {4: Knob(40), 5: Knob(25), 6: Knob(40), 7: Knob(40)}   # sous l'ecran droit
         self.group_names = {g: '' for g in GROUPS}       # noms courts des groupes
         self.trk_left = False                    # Keyboard / Chords : tracker sur l'ecran gauche
         self.trk_page = 0                        # 0 = pistes 1-8, 1 = pistes 9-16
@@ -583,7 +587,8 @@ class State:
         self.sound_vol = {(g, s): 100 for g in GROUPS for s in range(1, 17)}
         self.mix_knobs = [Knob(4) for _ in range(8)]
         # Settings (Shift + MIDI) : couleurs des groupes et des pads
-        self.group_hue = dict(zip(GROUPS, GROUP_HUES * 2))     # A2 = couleur de A, etc.
+        # 2e banque : couleurs de la 1re dans l'ordre inverse (A2 = couleur de H ... H2 = A)
+        self.group_hue = dict(zip(GROUPS, GROUP_HUES + GROUP_HUES[::-1]))
         self.pad_hue: dict[tuple[str, int], int | None] = {}
         self.settings = False
         self.set_target = 'GROUP'                    # GROUP ou PADS (encodeur 1)
@@ -629,7 +634,7 @@ class State:
         self.audio_action = 0.0                      # dernier changement automatique de sortie
         self.keep_output = False                     # --output impose
         self.known_cards: tuple = ()
-        self.held_play: dict[int, tuple[float, int, list]] = {}   # pad -> (frappe, velo, notes)
+        self.held_play: dict = {}                    # pad -> (frappe, velo, notes, groupe)
         self.nr_next = 0.0
         self.arp_index = 0
         self.tracker16 = False                         # vue 16 pistes (bouton 6)
@@ -641,6 +646,15 @@ class State:
         self.cursor, self.bpm = 0, 120
         self.playing = self.recording = False
         self.playhead, self.next_row_time = 0, 0.0
+        self.pending: list = []                        # notes decalees a jouer (heure, groupe, piste, case)
+        self.midi_held: set = set()                    # notes MIDI IN tenues (groupe, note)
+        self.metro = False                             # TAP : metronome (lecture et enregistrement)
+        self.metro_vol = 90                            # TAP tenu + molette 4D : volume du metronome
+        self.tap_turned = False
+        self.pad_shift = 0                             # Pad mode en lecture : Shift + 13-16 = transposer
+        self.countin = None                            # REC tenu + PLAY : (debut, temps deja battus)
+        self.pan_knobs = [Knob(10) for _ in range(8)]  # MIXER > PAN : plus doux, cran au centre
+        self.pan_hold = [0] * 8
         self.down: set[int] = set()
         self.right_view = 'tracker'                  # ou 'keyboard' (bouton Keyboard)
         # Tonalite PAR GROUPE (root, octave, gamme) ; des groupes peuvent etre lies (LINK)
@@ -788,6 +802,13 @@ class State:
             for n, v in held:
                 notes[n] = max(v, notes.get(n, 0))
         return notes
+
+    def melodic_sound(self) -> int:
+        """Son joue au clavier : le son choisi ; un son 1-4 de synthese de batterie -> 5."""
+        if self.sound <= 4 and (self.group, self.sound) not in self.samples \
+                and self.synth.get((self.group, self.sound), self.sound) <= 4:
+            return 5
+        return self.sound
 
     def sound_name(self, s: int, group: str | None = None) -> str:
         path = self.samples.get((group or self.group, s))
@@ -1629,7 +1650,7 @@ def pc_key(st: State, ch: str) -> None:
     now = time.monotonic()
     if c in lay['oct']:                               # octave - / +
         st.pc_oct = max(-st.octave, min(8 - st.octave, st.pc_oct + (1 if c == lay['oct'][1] else -1)))
-        st.toast = (f'Keys: octave {st.octave + st.pc_oct}', now + 2)
+        st.toast = (f'Keys: octave {st.octave + st.pc_oct}', now + 0.8)
     elif c in lay['vel']:                             # velocite - / +
         st.pc_vel = max(1, min(127, st.pc_vel + (16 if c == lay['vel'][1] else -16)))
         st.toast = (f'Keys: velocity {st.pc_vel}', now + 2)
@@ -1688,7 +1709,7 @@ def engine_sync(st: State, keep_output: bool) -> None:
 def play_note(st: State, group: str, snd: int, vel: int, note: int, gate: float = 0.0) -> None:
     """Joue une note : moteur interne, ou MIDI OUT si le groupe est envoye dehors (gate en s ;
     0 = note-off envoye au relachement)."""
-    if not st.sound_audible(group, snd):             # MUTE / SOLO du son dans son groupe
+    if not st.sound_audible(group, snd) or not st.audible(group):   # MUTE / SOLO (son ou groupe)
         return
     ch = st.midi['out_ch'].get(group, 0) if st.midi['out'] else 0
     if ch:
@@ -1702,12 +1723,14 @@ def play_note(st: State, group: str, snd: int, vel: int, note: int, gate: float 
 
 
 def release_notes(st: State, group: str, notes: list) -> None:
-    """Pad relache : fin des notes (MIDI OUT, et sons internes en ADSR)."""
+    """Pad relache : fin des notes (MIDI OUT, et sons internes). La fin de note est envoyee
+    meme en ONE-SHOT : sans effet sur un son ONE-SHOT, elle evite qu'une note reste tenue si
+    le mode a change entre la frappe et le relachement."""
     ch = st.midi['out_ch'].get(group, 0) if st.midi['out'] else 0
     for snd, n in notes:
         if ch:
             SOUND.send('/fuzzy/proto/midi/off', ch, n)
-        elif st.env[(group, snd)]['mode'] == 'ADSR':
+        else:
             SOUND.send('/fuzzy/proto/off', snd, n, GROUPS.index(group))
 
 
@@ -1783,13 +1806,14 @@ def engine_listener(st: State, events: queue.Queue, running: threading.Event) ->
                 group = GROUPS[ch - 1]
             else:
                 continue
+            (st.midi_held.add if vel > 0 else st.midi_held.discard)((group, note))
             if vel > 0:                                # jouer tout de suite (comme un pad)
-                snd = st.sound if st.sound > 4 else 5
+                snd = st.melodic_sound()
                 v = out_vel(st, group, snd, vel)
                 if v and st.audible(group):
                     play_note(st, group, snd, v, note)
             else:
-                release_notes(st, group, [(st.sound if st.sound > 4 else 5, note)])
+                release_notes(st, group, [(st.melodic_sound(), note)])
             events.put(('midi_note', group, note, vel))
         elif addr == '/fuzzy/proto/clock/in' and args:
             if st.midi['clock'] == 2:
@@ -1883,6 +1907,7 @@ def draw_left(st: State) -> Image.Image:
     d.text((10, 222), f'Sound : {st.sound:02d} {st.sound_name(st.sound)}', font=font(15), fill=acc)
     state = ('REC ' if st.recording else '') + ('PLAY' if st.playing else 'STOP')
     d.text((10, 248), f'{state}   {info}Shift+pad = clear', font=font(12), fill=(140, 140, 140))
+    toast_box(st, d, acc)                            # courts messages (octave, Shift + pad...)
     tempo_overlay(st, d)
     return img
 
@@ -2063,7 +2088,15 @@ def toast_box(st: State, d: ImageDraw.ImageDraw, acc) -> None:
 
 
 def tempo_overlay(st: State, d: ImageDraw.ImageDraw) -> None:
-    """TEMPO (ou VOLUME) tenu : grand affichage du tempo (ou du volume master)."""
+    """TEMPO (ou VOLUME, ou TAP) tenu : grand affichage du tempo (ou d'un volume)."""
+    if 'tap' in st.held:
+        acc = group_rgb(st)
+        d.rectangle((90, 70, 390, 200), fill=(15, 15, 20), outline=acc, width=3)
+        d.text((110, 80), 'METRONOME VOLUME', font=font(16), fill=acc)
+        txt = f'{st.metro_vol}'
+        d.text((240 - d.textlength(txt, font=font(40)) / 2, 108), txt, font=font(40), fill='white')
+        d.text((110, 172), 'hold TAP + 4D.  TAP alone: on / off', font=font(12), fill=(170, 170, 170))
+        return
     if 'volume' in st.held:
         acc = group_rgb(st)
         d.rectangle((90, 70, 390, 200), fill=(15, 15, 20), outline=acc, width=3)
@@ -2136,7 +2169,7 @@ def draw_tracker(st: State) -> Image.Image:
     img = Image.new('RGB', (W, H), (12, 12, 16))
     d = ImageDraw.Draw(img)
     softkey_header(d, st, step_label(st) + ('REC ' if st.recording else '')
-                   + f'Trk {st.sound:02d} {st.group}')
+                   + (f'Pads {shift_label(st.pad_shift)}  ' if st.pad_shift else '') + f'Trk {st.sound:02d} {st.group}')
     f = font(14)
     t = st.sound - 1
     if 'select' in st.held:                          # SELECT tenu : le son choisi en blanc
@@ -2157,6 +2190,9 @@ def draw_tracker(st: State) -> Image.Image:
         cell = st.grid[r][t]
         txt = f'{r:02X}   {cell_label(cell[0])}  {cell[1]:02X}' if cell else f'{r:02X}   ---  --'
         d.text((8, y), txt, font=f, fill='white' if cell else (110, 110, 110))
+        if cell and cell_off(cell):                  # timing fin : < en avance, > en retard
+            d.text((8 + d.textlength(txt, font=f) + 6, y), '<' if cell_off(cell) < 0 else '>',
+                   font=f, fill=(150, 150, 150))
         others = sum(1 for i, c in enumerate(st.grid[r]) if c and i != t)
         if others:
             d.text((200, y), f'+{others} other track' + ('s' if others > 1 else ''),
@@ -2242,6 +2278,9 @@ def draw_tracks(st: State, first: int, left: bool | None = None) -> Image.Image:
             silent = not st.sound_audible(st.group, tr + 1)
             d.text((x + 3, y), f'{cell_label(cell[0])} {cell[1]:02X}' if cell else '--- --',
                    font=f, fill=((95, 95, 95) if silent else 'white') if cell else (80, 80, 80))
+            if cell and cell_off(cell):              # timing fin : petit trait a gauche / a droite
+                mx = x + 1 if cell_off(cell) < 0 else x + TRK_W - 5
+                d.rectangle((mx, y + 3, mx + 1, y + 11), fill=(170, 170, 170))
     if not left and not st.playing:
         length_label(st, d)
     if left and not st.playing:
@@ -2283,7 +2322,7 @@ def draw_keyboard(st: State) -> Image.Image:
         if st.chord_mode != 'HARM':
             scale = ()                             # points de gamme seulement en Harmonizer
     else:
-        softkey_header(d, st, step_label(st) + f'{KEY_NAMES[st.root]}{st.octave} {scale_name}'[:24])
+        softkey_header(d, st, step_label(st) + f'Oct {st.octave}  {KEY_NAMES[st.root]} {scale_name}'[:24])
         softkey(d, st, 1, 'PC KEYS', st.pc['keys'])     # bouton 6 : clavier de l'ordinateur
         d.text((10, 30), link_label(st), font=font(11), fill=(150, 150, 150))
     low = 12 * (st.octave + 1)                     # 3 octaves a partir du C de l'octave
@@ -2345,6 +2384,14 @@ def draw_keyboard(st: State) -> Image.Image:
 
 def draw_right(st: State) -> Image.Image:
     img = _draw_right(st)
+    if st.countin is not None:                         # decompte : 4 3 2 1
+        d = ImageDraw.Draw(img)
+        acc = group_rgb(st)
+        n = str(max(1, 5 - st.countin[1]))
+        d.rectangle((140, 50, 340, 230), fill=(15, 15, 20), outline=acc, width=3)
+        d.text((240 - d.textlength(n, font=font(110)) / 2, 62), n, font=font(110), fill='white')
+        d.text((240 - d.textlength('REC', font=font(14)) / 2, 206), 'REC', font=font(14), fill=(230, 60, 60))
+        return img
     if st.nr_active and not st.settings:             # Note Repeat / Arp : vitesses sur 5-8
         d = ImageDraw.Draw(img)
         title = (f'ARP {NR_RATES[st.nr_rate][0]}' if st.arp else f'REPEAT {NR_RATES[st.nr_rate][0]}') \
@@ -2544,7 +2591,19 @@ def sound_for(st: State, pad: int) -> list:
         return [(st.sound, n) for n in st.chord_notes(pad)]
     if st.right_view == 'keyboard':
         return [(st.sound, st.pad_note(pad))]
-    return [(pad, default_note(pad))]
+    return [(pad, pad_mode_note(st, pad))]
+
+
+def shift_label(n: int) -> str:
+    """Transposition lisible : 12 -> 'Oct +1', 14 -> 'Oct +1 +2', -3 -> '-3'."""
+    octs = int(n / 12)
+    rest = n - 12 * octs
+    return ' '.join(([f'Oct {octs:+d}'] if octs else []) + ([f'{rest:+d}'] if rest else [])) or '0'
+
+
+def pad_mode_note(st: State, pad: int) -> int:
+    """Note d'un pad en Pad mode, avec la transposition en direct (Shift + 13-16 en lecture)."""
+    return max(0, min(127, default_note(pad) + st.pad_shift))
 
 
 def snapshot(st: State, coalesce: bool = False) -> None:
@@ -2574,14 +2633,37 @@ def undo(st: State, redo: bool = False) -> None:
         st.grids[group] = grid
 
 
+def quantize(grid, rows, tracks, amount: float) -> int:
+    """Rapproche les notes de leur ligne : 1.0 = pile sur la ligne, 0.5 = a mi-chemin.
+    Renvoie le nombre de notes deplacees."""
+    moved = 0
+    for r in rows:
+        for t in tracks:
+            cell = grid[r][t]
+            if cell and cell_off(cell):
+                off = 0 if amount >= 1 else int(cell_off(cell) * (1 - amount))
+                grid[r][t] = with_off(cell, off)
+                moved += 1
+    return moved
+
+
 def track_function(st: State, pad: int) -> None:
     """Vue TRACKER, a l'arret : Shift + pad = fonction ecrite sous le pad (MK3).
     1er appui : la note du curseur ; 2e appui rapide (moins d'1 s) : toute la piste."""
     t, rows = st.sound - 1, st.length
     name = f'Track {st.sound:02d}'
     now = time.monotonic()
-    if pad in (5, 6):                                # Quantize : les notes sont deja sur la grille
-        st.toast = ('Quantize: notes are already on the grid', now + 2)
+    if pad in (5, 6):                                # Quantize 100 % / 50 % : vers la ligne
+        last = st.last_fn
+        whole = bool(last and last[0] == pad and now - last[1] < 1.0 and last[3] == t)
+        rows_q = range(rows) if whole else [st.cursor]
+        if not whole:
+            snapshot(st)                             # Shift + pad 1 : annuler
+        moved = quantize(st.grid, rows_q, [t], 1.0 if pad == 5 else 0.5)
+        what = name if whole else f'Note line {st.cursor:02X}'
+        st.toast = (f"{what} quantized {'100' if pad == 5 else '50'}%"
+                    + ('' if moved else ' (already on the grid)'), now + 2)
+        st.last_fn = None if whole else (pad, now, None, t, None)
         return
     if pad in (7, 8):                                # Nudge < / > : d'une ligne
         d = -1 if pad == 7 else 1
@@ -2736,13 +2818,32 @@ def drag_release(st: State) -> None:
         st.toast = ('Nothing to paste (double press on a note = cut)', now + 2)
 
 
+TIMING = 24                                      # decalage fin : 24 crans par ligne
+
+
 def cell_len(cell) -> int:
-    """Duree d'une note en lignes (case : (note, velocite) ou (note, velocite, duree))."""
+    """Duree d'une note en lignes (case : (note, velocite[, duree[, decalage]]))."""
     return cell[2] if cell and len(cell) > 2 else 1
 
 
+def cell_off(cell) -> int:
+    """Decalage fin de la note par rapport a sa ligne, en 1/24 de ligne (-12 a +12)."""
+    return cell[3] if cell and len(cell) > 3 else 0
+
+
+def make_cell(note, vel: int, length: int = 1, off: int = 0):
+    """Case la plus courte possible : (note, vel), + duree si > 1, + decalage s'il existe."""
+    if off:
+        return (note, vel, max(1, length), off)
+    return (note, vel) if length <= 1 else (note, vel, length)
+
+
 def with_len(cell, length: int):
-    return (cell[0], cell[1]) if length <= 1 else (cell[0], cell[1], length)
+    return make_cell(cell[0], cell[1], length, cell_off(cell))
+
+
+def with_off(cell, off: int):
+    return make_cell(cell[0], cell[1], cell_len(cell), max(-TIMING // 2, min(TIMING // 2, off)))
 
 
 def record(st: State, track: int, note, vel: int, pad: int | None = None) -> None:
@@ -2751,7 +2852,12 @@ def record(st: State, track: int, note, vel: int, pad: int | None = None) -> Non
     snapshot(st, coalesce=st.playing)
     if st.playing:
         row = play_row(st)
-        st.grid[row][track - 1] = (note, vel)
+        dur = 60 / st.bpm / 4
+        frac = (time.monotonic() - (st.next_row_time - dur)) / dur   # position dans la ligne (0-1)
+        off = round(max(0.0, min(1.0, frac)) * TIMING)
+        if off > TIMING // 2:                        # 2e moitie de la ligne : ligne suivante, en avance
+            row, off = (row + 1) % st.length, off - TIMING
+        st.grid[row][track - 1] = make_cell(note, vel, 1, off)
         if pad is not None:
             st.rec_open[pad] = (row, track - 1, st.playhead, st.grid)
     else:
@@ -2842,8 +2948,14 @@ def handle(st: State, ev: tuple) -> None:
             snapshot(st)
             st.grid[r][t] = None if st.grid[r][t] else (step_note(st), vel)
             return
+        if ('shift' in st.held and st.playing and pad >= 13 and not keyboard and not st.step_mode
+                and not st.events_mode):             # Pad mode en lecture : transposer les pads
+            st.pad_shift = max(-24, min(24, st.pad_shift + {13: -1, 14: 1, 15: -12, 16: 12}[pad]))
+            st.toast = (f'Pads {shift_label(st.pad_shift)}' if st.pad_shift else 'Pads: original pitch',
+                        time.monotonic() + 0.8)
+            return
         if ('shift' in st.held and not st.playing and pad in (5, 6, 7, 8, 9, 11, 12, 13, 14, 15, 16)
-                and (st.tracker16 or kb_tracker(st) or st.events_mode)):
+                and (st.tracker16 or kb_tracker(st) or st.events_mode or not keyboard)):
             track_function(st, pad)                  # serigraphie MK3, sur la piste choisie
             return
         if keyboard and 'shift' in st.held and pad >= 13:   # comme serigraphie sur la MK3
@@ -2855,6 +2967,8 @@ def handle(st: State, ev: tuple) -> None:
                 st.octave = max(0, st.octave - 1)        # Shift + pad 15 : octave -
             else:
                 st.octave = min(7, st.octave + 1)        # Shift + pad 16 : octave +
+            if pad >= 15:
+                st.toast = (f'Octave {st.octave}', time.monotonic() + 0.8)
             return
         if 'shift' in st.held:                       # effacer la case
             snapshot(st)
@@ -2878,7 +2992,7 @@ def handle(st: State, ev: tuple) -> None:
             return
         st.sound = pad                               # pads = sons du groupe
         if st.recording:
-            record(st, pad, default_note(pad), vel, pad)
+            record(st, pad, pad_mode_note(st, pad), vel, pad)
     elif kind == 'pad_off':
         st.down.discard(ev[1])
         st.held_notes.pop(ev[1], None)
@@ -2905,6 +3019,9 @@ def handle(st: State, ev: tuple) -> None:
             st.arr_sel = max(0, min(len(st.arrangement) - 1, st.arr_sel + ev[1]))
         elif st.mixer or 'volume' in st.held:          # MIXER, ou VOLUME tenu : volume master
             st.master = max(0, min(127, st.master + 2 * ev[1]))
+        elif 'tap' in st.held:                       # TAP tenu + molette : volume du metronome
+            st.metro_vol = max(0, min(127, st.metro_vol + 3 * ev[1]))
+            st.tap_turned = True
         elif 'tempo' in st.held:                     # TEMPO tenu + molette : tempo au BPM pres
             st.bpm = max(40, min(240, st.bpm + ev[1]))
             st.taps.clear()
@@ -2919,7 +3036,7 @@ def handle(st: State, ev: tuple) -> None:
         if vel and group == st.group:
             st.note_flash[note] = (time.monotonic() + 0.15, vel)
             if st.recording:
-                record(st, st.sound if st.sound > 4 else 5, note, vel)
+                record(st, st.melodic_sound(), note, vel)
     elif kind == 'clock_bpm':                        # horloge MIDI recue : tempo
         st.bpm = max(40, min(240, round(ev[1])))
     elif kind == 'transport':                        # Start / Stop recus en MIDI
@@ -2944,6 +3061,9 @@ def handle(st: State, ev: tuple) -> None:
     elif kind == 'button':
         name, pressed = ev[1], ev[2]
         (st.held.add if pressed else st.held.discard)(name)
+        if name == 'tap' and not pressed and not st.tap_turned:   # TAP relache : metronome
+            st.metro = not st.metro
+            st.toast = ('Metronome ON' if st.metro else 'Metronome OFF', time.monotonic() + 1.5)
         if name == 'nav_click' and not pressed:      # molette 4D relachee
             drag_release(st)
         if not pressed:
@@ -3103,10 +3223,17 @@ def handle(st: State, ev: tuple) -> None:
         elif name == 'mute' and 'shift' in st.held:  # Shift + MUTE : panique, tout se tait
             SOUND.panic()
             st.note_flash.clear()
+        elif name == 'play' and 'rec' in st.held and not st.playing:   # REC tenu + PLAY : decompte
+            st.recording = True
+            st.countin = (time.monotonic(), 0)
+        elif name == 'play' and st.countin is not None:   # PLAY pendant le decompte : annuler
+            st.countin = None
         elif name == 'play':
             st.playing = not st.playing
             st.step_manual = None                    # en lecture, les pages suivent a nouveau
             st.next_row_time = time.monotonic()
+        elif name == 'tap':                          # TAP : marche / arret au relachement
+            st.tap_turned = False                    # (TAP tenu + molette : volume)
         elif name == 'restart':                      # RESTART : retour au debut, et lecture
             reset_playback(st)
             st.playing = True
@@ -3114,21 +3241,20 @@ def handle(st: State, ev: tuple) -> None:
             st.next_row_time = time.monotonic()
         elif name == 'stop':
             st.playing = False
+            st.countin = None
             reset_playback(st)
         elif name == 'rec':
             st.recording = not st.recording
         elif name == 'keyboard':
             st.mixer = False
-            if st.sound <= 4:                        # sons 1-4 = batterie : prendre un son melodique
-                st.sound = 5
+            st.sound = st.melodic_sound()            # batterie de synthese : un son melodique
             st.right_view, st.tracker16, st.step_mode = 'keyboard', False, False
             st.held_notes.clear()
         elif name == 'chords' and 'shift' in st.held:   # Shift + CHORDS : clavier des accords
             st.chord_keyboard = not st.chord_keyboard
         elif name == 'chords':
             st.mixer = False
-            if st.sound <= 4:                        # sons 1-4 = batterie : prendre un son melodique
-                st.sound = 5
+            st.sound = st.melodic_sound()            # batterie de synthese : un son melodique
             st.right_view, st.step_mode = 'chords', False
             st.held_notes.clear()
         elif name == 'pad_mode' and st.link_edit:
@@ -3200,6 +3326,7 @@ def handle(st: State, ev: tuple) -> None:
             st.held_notes.clear()
         elif name in ('nav_up', 'nav_down') and st.melodic() and not st.tracker16 and not kb_tracker(st):
             st.octave = max(0, min(7, st.octave + (1 if name == 'nav_up' else -1)))  # octave
+            st.toast = (f'Octave {st.octave}', time.monotonic() + 0.8)
         elif name in ('nav_up', 'nav_down'):          # 4D pousse haut / bas : ligne
             st.cursor = max(0, min(st.length - 1, st.cursor + (1 if name == 'nav_down' else -1)))
         elif name in ('nav_left', 'nav_right'):       # 4D pousse gauche / droite : piste
@@ -3280,10 +3407,21 @@ def handle(st: State, ev: tuple) -> None:
                 st.arp_oct = max(-3, min(3, st.arp_oct + n))
             return
         if st.mixer:                                 # MIXER : un encodeur par voie
-            n = st.mix_knobs[i].steps(ev[2])
+            n = (st.pan_knobs if st.mix_pan else st.mix_knobs)[i].steps(ev[2])
             if n:
                 key = mixer_channels(st)[i][1]
-                mix_set(st, key, mix_get(st, key) + n)
+                old = mix_get(st, key)
+                new = old + n
+                if st.mix_pan and old == 64:         # PAN au centre : un cran a franchir
+                    st.pan_hold[i] += n
+                    if abs(st.pan_hold[i]) < 3:
+                        return
+                    new = 64 + (1 if st.pan_hold[i] > 0 else -1)
+                elif st.mix_pan and (old - 64) * (new - 64) <= 0:
+                    new = 64                         # PAN : on s'arrete au centre en le traversant
+                    st.pan_knobs[i].acc = 0
+                st.pan_hold[i] = 0
+                mix_set(st, key, new)
             return
         if st.right_view == 'chords' and not st.tracker16 and i in st.ch_knobs:
             n = st.ch_knobs[i].steps(ev[2])
@@ -3317,6 +3455,7 @@ def handle(st: State, ev: tuple) -> None:
             return
         if i == 7 and st.melodic() and not st.tracker16:   # Keyboard / Chords : octave
             st.octave = max(0, min(7, st.octave + n))
+            st.toast = (f'Octave {st.octave}', time.monotonic() + 0.8)
         elif i == 7:                                 # encodeur 8 : longueur du pattern
             st.length = max(1, min(ROWS, st.length + n))
             st.cursor = min(st.cursor, st.length - 1)
@@ -3395,7 +3534,10 @@ def repeat_tick(st: State) -> None:
     if now < st.nr_next:
         return
     st.nr_next = now + nr_interval(st)
-    held = list(st.held_play.values())
+    try:
+        held = [(h[0], h[1], h[2]) for h in list(st.held_play.values())]
+    except RuntimeError:                             # pad frappe pendant la lecture : au prochain tour
+        return
     if st.arp:
         base = sorted({(n, s, v) for _, v, lst in held for s, n in lst})
         if not base:
@@ -3502,6 +3644,7 @@ def set_off(st: State, g: str) -> None:
 def reset_playback(st: State) -> None:
     """Retour au debut : tous les patterns repartent de leur premiere ligne."""
     st.playhead = 0
+    st.pending = []                                   # notes decalees en attente : oubliees
     st.arr_pos = st.arr_rows = 0                      # SONG : depuis le debut
     for g, idx in list(st.pat_queue.items()):
         if idx == OFF:
@@ -3551,8 +3694,11 @@ def pattern_function(st: State, pad: int) -> None:
     if pad in (1, 2, 3, 4):
         undo(st, redo=pad in (2, 4))
         return
-    if pad in (5, 6):
-        st.toast = ('Quantize: notes are already on the grid', now + 2)
+    if pad in (5, 6):                                # Quantize 100 % / 50 % : tout le pattern
+        snapshot(st)
+        moved = quantize(pat['grid'], range(pat['length']), range(16), 1.0 if pad == 5 else 0.5)
+        st.toast = (f"{label} quantized {'100' if pad == 5 else '50'}%"
+                    + ('' if moved else ' (already on the grid)'), now + 2)
         return
     if pad == 11:
         st.clip_pattern = {'grid': [row[:] for row in pat['grid']], 'length': pat['length'],
@@ -3653,6 +3799,7 @@ def project_data(st: State) -> dict:
                 continue
             cells = [[r, t, list(c[0]) if isinstance(c[0], tuple) else c[0], c[1]]
                      + ([c[2]] if len(c) > 2 else [])          # duree (lignes) si > 1
+                     + ([c[3]] if len(c) > 3 else [])          # decalage fin (1/24 de ligne)
                      for r in range(ROWS) for t, c in enumerate(pat['grid'][r]) if c]
             pats.append({'index': idx, 'name': pat.get('name', ''), 'length': pat['length'],
                          'cells': cells})
@@ -3751,8 +3898,9 @@ def load_project(st: State, name: str) -> None:
             for cell in pd.get('cells', []):
                 r, t, note, vel = cell[:4]
                 if 0 <= r < ROWS and 0 <= t < 16:
-                    grid[r][t] = with_len((tuple(note) if isinstance(note, list) else note, vel),
-                                          int(cell[4]) if len(cell) > 4 else 1)
+                    grid[r][t] = make_cell(tuple(note) if isinstance(note, list) else note, vel,
+                                           int(cell[4]) if len(cell) > 4 else 1,
+                                           int(cell[5]) if len(cell) > 5 else 0)
             st.patterns[g][pd['index']] = {'grid': grid, 'length': pd.get('length', 16),
                                            'name': pd.get('name', '')}
         cur = gd.get('current', 0)
@@ -4352,6 +4500,11 @@ def events_knob(st: State, i: int, delta: int) -> None:
     elif i == 3:
         st.sound = max(1, min(16, st.sound + n))
         pr_follow_pitch(st)
+    elif i == 4 and 'shift' in st.held:              # Shift : decalage fin (1/24 de ligne)
+        cell = st.grid[st.cursor][t]
+        if cell:
+            snapshot(st, coalesce=True)
+            st.grid[st.cursor][t] = with_off(cell, cell_off(cell) + n)
     elif i == 4:                                     # deplacer la note dans le temps
         cell = st.grid[st.cursor][t]
         to = st.cursor + n
@@ -4409,10 +4562,11 @@ def draw_events(st: State, half: int) -> Image.Image:
             if not c:
                 continue
             length = cell_len(c)
-            if r + length <= start or r >= start + cols:
+            off = cell_off(c) / TIMING                   # decalage fin : la barre glisse
+            if r + off + length <= start or r + off >= start + cols:
                 continue
-            a = max(r, start) - start
-            b = min(r + length, start + cols) - start
+            a = max(r + off, start) - start
+            b = min(r + off + length, start + cols) - start
             for n in cell_notes(c[0]):
                 if not st.pr_low <= n <= top:
                     continue
@@ -4431,6 +4585,9 @@ def draw_events(st: State, half: int) -> Image.Image:
         param_box(d, 2, 'Velocity', f'{cell[1]}', acc, y=40)
         n = cell_len(cell)
         param_box(d, 3, 'Length', f'{n} line' + ('s' if n > 1 else ''), acc, y=40)
+        o = cell_off(cell)
+        d.text((W - 180, 128), 'Timing: ' + ('on the line' if not o else f'{o:+d}/24 line'),
+               font=font(12), fill=acc if o else (150, 150, 150))
     else:
         d.text((12, 60), 'No note on this line.', font=font(16), fill='white')
         d.text((12, 86), 'Turn encoder 1 (Line) or the 4D wheel.', font=font(13), fill=(170, 170, 170))
@@ -4438,8 +4595,8 @@ def draw_events(st: State, half: int) -> Image.Image:
     lines = [f'Sound {st.sound:02d} envelope: {env} (PLUG-IN to change).',
              'Pads: play, REC: record (held = length).',
              'FIXED VEL + 4D wheel: velocity.  ERASE: delete.',
-             'Stopped: Shift + pads',
-             '= Clear / Copy / Paste / transpose.', 'EVENTS again: back.']
+             'Shift + encoder 5: fine timing. Stopped:',
+             'Shift + pads = Quantize / Clear / Copy...', 'EVENTS again: back.']
     for k, line in enumerate(lines):
         d.text((12, 140 + k * 20), line, font=font(12), fill=(180, 180, 180))
     toast_box(st, d, acc)
@@ -4523,6 +4680,9 @@ def name_knob(st: State, i: int, delta: int) -> None:
         return
     text, save = target
     chars = list(text.ljust(NAME_LEN))
+    names_knob = 7 if st.name_edit[0] == 'project' else 6     # projet : noms sur l'encodeur 8
+    if i in (6, 7) and i != names_knob:
+        return
     if i == 4:
         st.name_pos = max(0, min(NAME_LEN - 1, st.name_pos + n))
     elif i == 5:
@@ -4555,12 +4715,80 @@ def name_overlay(st: State, d: ImageDraw.ImageDraw) -> None:
     d.text((40, 160), 'Encoders below: position / letter / ready names', font=font(13), fill=(180, 180, 180))
     d.text((40, 184), 'Press the same button again: done', font=font(13), fill=acc)
     d.rectangle((0, 248, W, H), fill=(15, 15, 20))
-    for k, label in enumerate(('Position', 'Letter', 'Names')):     # sous les encodeurs 5-7
+    labels = (('Position', 'Letter', '', 'Names') if st.name_edit[0] == 'project'
+              else ('Position', 'Letter', 'Names'))
+    for k, label in enumerate(labels):                  # sous les encodeurs 5-7 (projet : 5, 6, 8)
         d.text((k * 120 + 60 - d.textlength(label, font=font(12)) / 2, 252), label, font=font(12), fill=acc)
+
+
+def schedule_cell(st: State, g: str, t: int, cell, when: float, now: float) -> None:
+    """Joue une case maintenant, ou plus tard si elle est decalee (timing fin)."""
+    if when <= now + 0.0005:
+        play_cell(st, g, t, cell, now)
+    else:
+        st.pending.append((when, g, t, cell))
+
+
+def play_cell(st: State, g: str, t: int, cell, now: float) -> None:
+    note, vol = cell[0], cell[1]
+    current = g == st.group
+    if current:
+        st.flash[t + 1] = now + 0.08
+    v = out_vel(st, g, t + 1, vol)
+    gate = 60 / st.bpm / 4 * (cell_len(cell) - 0.1)    # duree de la note (lignes)
+    for n in cell_notes(note):                         # une note ou un accord
+        if v:
+            play_note(st, g, t + 1, v, n, gate)
+        if current and t + 1 == st.sound:              # le clavier montre le son choisi
+            st.note_flash[n] = (now + 0.15, vol)
+
+
+def pending_tick(st: State) -> None:
+    """Joue les notes decalees dont l'heure est venue."""
+    if not st.pending:
+        return
+    if not st.playing:
+        st.pending.clear()
+        return
+    now = time.monotonic()
+    due = [p for p in st.pending if p[0] <= now]
+    if due:
+        st.pending = [p for p in st.pending if p[0] > now]
+        for _, g, t, cell in due:
+            play_cell(st, g, t, cell, now)
+
+
+def click(st: State, accent: bool) -> None:
+    """Un coup de metronome (synthe Click du moteur ; ni Mute ni Solo ne le coupent)."""
+    vel = round((127 if accent else 95) * st.metro_vol / 127 * st.master / 127)
+    if vel < 1:
+        return
+    SOUND.hit(1, vel, 96 if accent else 84, -1, 0, 50, 0, 6, 64)
+
+
+def countin_tick(st: State) -> bool:
+    """Decompte avant l'enregistrement : 4 temps (4 3 2 1), puis la lecture demarre."""
+    start, done = st.countin
+    beat = 60 / st.bpm
+    now = time.monotonic()
+    if done < 4 and now >= start + done * beat:
+        click(st, done == 0)
+        st.countin = (start, done + 1)
+        return True
+    if done >= 4 and now >= start + 4 * beat:          # fin du decompte : on enregistre
+        st.countin = None
+        st.recording = st.playing = True
+        st.step_manual = None
+        st.next_row_time = start + 4 * beat
+        return True
+    return False
 
 
 def tick(st: State) -> bool:
     """Fait avancer la lecture : 4 lignes par temps. Renvoie True si une ligne a joue."""
+    pending_tick(st)
+    if st.countin is not None:
+        return countin_tick(st)
     if not st.playing:
         return False
     now = time.monotonic()
@@ -4582,20 +4810,18 @@ def tick(st: State) -> bool:
                 row = 0
             if not st.audible(g) or g in st.pat_off:    # groupe sans pattern : silence
                 continue
-            current = g == st.group
-            for t, cell in enumerate(st.grids[g][row]):     # toutes les pistes
-                if not cell:
-                    continue
-                note, vol = cell[0], cell[1]
-                if current:
-                    st.flash[t + 1] = now + 0.08
-                v = out_vel(st, g, t + 1, vol)
-                gate = 60 / st.bpm / 4 * (cell_len(cell) - 0.1)   # duree de la note (lignes)
-                for n in cell_notes(note):               # une note ou un accord
-                    if v:
-                        play_note(st, g, t + 1, v, n, gate)
-                    if current and t + 1 == st.sound:   # le clavier montre le son choisi
-                        st.note_flash[n] = (now + 0.15, vol)
+            dur = 60 / st.bpm / 4
+            at = st.next_row_time                           # heure prevue de cette ligne
+            nxt = (row + 1) % pattern_length(st, g)
+            for t in range(16):                             # toutes les pistes
+                cell = st.grids[g][row][t]
+                if cell and cell_off(cell) >= 0:            # a l'heure ou en retard
+                    schedule_cell(st, g, t, cell, at + cell_off(cell) / TIMING * dur, now)
+                early = st.grids[g][nxt][t]                 # ligne suivante, en avance
+                if early and cell_off(early) < 0:
+                    schedule_cell(st, g, t, early, at + (1 + cell_off(early) / TIMING) * dur, now)
+        if st.metro and st.playhead % 4 == 0:              # TAP : un coup par temps, accent sur la mesure
+            click(st, st.playhead % 16 == 0)
         st.playhead += 1
         if st.arr_on and st.arrangement:
             arr_after_row(st)
@@ -4612,7 +4838,7 @@ BUTTON_SLOTS = {'fixed_vel': 45, 'plug_in': 1, 'events': 52, 'arranger': 2, 'fil
                 'mute': 57, 'solo': 56,
                 'mixer': 3, 'volume': 20,  # MIXER / VOLUME : emplacements supposes (21 = SWING)
                 'screen_3': 14, 'screen_5': 16, 'screen_6': 17, 'screen_7': 18, 'screen_8': 19,
-                'midi_channel': 0, 'settings': 9, 'screen_1': 12, 'screen_2': 13, 'screen_4': 15, 'follow': 40, 'note_repeat': 22, 'lock': 24}
+                'midi_channel': 0, 'settings': 9, 'tap': 39, 'screen_1': 12, 'screen_2': 13, 'screen_4': 15, 'follow': 40, 'note_repeat': 22, 'lock': 24}
                 # LOCK : emplacement suppose (apres TEMPO 23) ; verifier avec --led-scan
                 # FOLLOW et NOTE REPEAT : emplacements de lumiere supposes, a confirmer   # SOLO : emplacement suppose (a cote de MUTE), a confirmer   # STEP : emplacement suppose (apres CHORDS 48), a confirmer
 SCREEN_IDLE, SCREEN_ACTIVE = 12, 50     # niveaux des boutons d'ecran (pilote r22yb3m)
@@ -4647,6 +4873,7 @@ def available_buttons(st: State) -> set:
     on = {'play', 'rec', 'stop', 'shift', 'pad_mode', 'keyboard', 'chords', 'step', 'mixer',
           'volume', 'tempo', 'mute', 'solo', 'follow', 'note_repeat'}
     on.add('restart')                                  # RESTART : toujours possible
+    on.add('tap')                                      # TAP : metronome
     on.add('file')                                     # FILE : projets ; Shift + FILE : enregistrer
     on.add('arranger')                                 # ARRANGER : l'ordre des scenes
     on.add('plug_in')                                  # PLUG-IN : enveloppe des sons
@@ -4721,6 +4948,7 @@ def button_frame(st: State) -> bytes:
               'screen_2': st.settings and st.set_tab == SET_TABS[1],
               'screen_4': (st.set_tab == SET_TABS[3]) if st.settings else (st.mixer and st.mix_pan),
               'note_repeat': st.nr_active, 'lock': st.nr_lock,
+              'tap': st.metro or st.countin is not None,
               'screen_5': st.arranger_mode and st.arr_on,
               'screen_6': st.right_view == 'keyboard' and st.pc['keys'] and not st.settings}
     if st.arranger_mode:
@@ -4740,8 +4968,8 @@ def button_frame(st: State) -> bytes:
             continue
         if not st.audible(g):
             f[1 + GROUP_SLOT + i] = 0                  # groupe coupe (Mute, ou hors Solo) : eteint
-        else:
-            f[1 + GROUP_SLOT + i] = bright if g == st.group else dim
+        else:                                          # choisi ou en Solo : vif
+            f[1 + GROUP_SLOT + i] = bright if (g == st.group or g in st.solo) else dim
     return bytes(f)
 
 
@@ -5055,7 +5283,11 @@ def main() -> int:
                 if ev[0] == 'pad_on':
                     # Lecture simple de l'etat, sans attendre le verrou (pris pendant le dessin)
                     notes = sound_for(st, ev[1])
-                    st.held_play[ev[1]] = (time.monotonic(), ev[2], notes)
+                    old = st.held_play.get(ev[1])
+                    if old and not st.arp:           # frappe sans relachement recu : on libere d'abord
+                        release_notes(st, old[3], old[2])
+                    # le groupe est garde : la fin de note ira au bon groupe meme s'il a change
+                    st.held_play[ev[1]] = (time.monotonic(), ev[2], notes, st.group)
                     if st.arp and notes:                 # Arp : c'est l'arpegiateur qui joue
                         if len(st.held_play) == 1:
                             st.arp_index = 0
@@ -5071,7 +5303,11 @@ def main() -> int:
                 elif ev[0] == 'pad_off':
                     held = st.held_play.pop(ev[1], None)
                     if held and not st.arp:
-                        release_notes(st, st.group, held[2])
+                        release_notes(st, held[3], held[2])
+                    if not dec.down and not st.held_play and not st.midi_held:
+                        # plus aucun pad tenu : filet de securite, aucune note jouee en
+                        # direct ne doit rester tenue (fins de note perdues quand on joue vite)
+                        SOUND.send('/fuzzy/proto/off_live')
                 events.put(ev)
 
     def player():
