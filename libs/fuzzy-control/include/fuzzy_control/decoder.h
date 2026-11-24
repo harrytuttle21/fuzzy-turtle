@@ -6,6 +6,7 @@
 #include "events.h"
 
 #include <array>
+#include <chrono>
 #include <bitset>
 #include <cstddef>
 #include <cstdint>
@@ -47,6 +48,16 @@ public:
     void setVelocityExponent (double e) { exponent = e; }
     bool padDown (int pad) const { return pads[(size_t) pad]; }
 
+    // Pad tenu dont la Maschine ne parle plus depuis `timeout` : son relachement s'est perdu
+    // (jeu tres rapide). On le relache (PadOff, nom "missed"). Tant qu'un pad est vraiment
+    // tenu, la Maschine renvoie sa pression en continu.
+    void expirePads (std::chrono::steady_clock::time_point now, std::chrono::milliseconds timeout,
+                     std::vector<Event>& out);
+    int missedReleases() const { return missed; }
+    // Plus grand ecart observe entre deux pressions d'un pad tenu (ms) : la garde doit etre
+    // nettement plus longue, sinon elle couperait des notes vraiment tenues.
+    int maxPadGapMs() const { return maxGapMs; }
+
 private:
     void buttons (std::span<const uint8_t> r, std::vector<Event>& out);
     void knobs (std::span<const uint8_t> r, std::vector<Event>& out);
@@ -59,6 +70,8 @@ private:
     std::array<std::optional<int>, 8> knobValue {};
     std::optional<int> jogValue;
     std::array<bool, 17> pads {};                  // pad tenu (index 1-16)
+    std::array<std::chrono::steady_clock::time_point, 17> padSeen {};   // derniere pression recue
+    int missed = 0, maxGapMs = 0;
 };
 
 } // namespace fuzzy::control

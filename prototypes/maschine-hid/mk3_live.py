@@ -132,7 +132,7 @@ quittant (la Maschine revient au logiciel NI sans debrancher).
 Necessite mk3_probe.py et mk3_screens.py dans le meme dossier ; pip install hidapi pillow.
 """
 from __future__ import annotations
-import argparse, atexit, json, os, queue, random, signal, socket, struct, subprocess, sys, threading, time
+import argparse, errno, atexit, json, os, queue, random, signal, socket, struct, subprocess, sys, threading, time
 from pathlib import Path
 
 from PIL import Image, ImageChops, ImageDraw
@@ -169,6 +169,25 @@ class Sound:
     def __init__(self, port: int = OSC_PORT):
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.addr = ('127.0.0.1', port)
+        self.lost = 0
+        try:   # macOS : tampon d'envoi UDP de 9 Ko par defaut, trop petit pour les rafales
+            self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 1 << 20)
+        except OSError:
+            pass
+
+    def _sendto(self, data: bytes) -> None:
+        """Envoi fiable en local : si macOS refuse un instant (tampon plein, ENOBUFS), on
+        reessaie au lieu de perdre le message (une fin de note perdue = note bloquee)."""
+        for _ in range(40):
+            try:
+                self.sock.sendto(data, self.addr)
+                return
+            except OSError as e:
+                if e.errno not in (errno.ENOBUFS, errno.EAGAIN, errno.EWOULDBLOCK):
+                    return                     # moteur absent... : rien a faire
+                time.sleep(0.0002)
+        self.lost += 1
+        print(f'[moteur] message perdu ({self.lost} en tout) : envois trop nombreux')
 
     @staticmethod
     def _pad4(b: bytes) -> bytes:
@@ -180,10 +199,7 @@ class Sound:
         ou jusqu'a /off si 0, puis relache en release_ms)."""
         msg = (self._pad4(b'/fuzzy/proto/hit') + self._pad4(b',iiiiiiiii')
                + struct.pack('>iiiiiiiii', sound, velocity, note, tag, mode, release_ms, gate_ms, synth, pan))
-        try:
-            self.sock.sendto(msg, self.addr)
-        except OSError:
-            pass
+        self._sendto(msg)
 
 
     def send(self, address: str, *args) -> None:
@@ -196,17 +212,11 @@ class Sound:
                 tags, body = tags + 'f', body + struct.pack('>f', a)
             else:
                 tags, body = tags + 's', body + self._pad4(str(a).encode())
-        try:
-            self.sock.sendto(self._pad4(address.encode()) + self._pad4(tags.encode()) + body, self.addr)
-        except OSError:
-            pass
+        self._sendto(self._pad4(address.encode()) + self._pad4(tags.encode()) + body)
 
     def panic(self) -> None:
         """Coupe tous les sons du moteur (Shift + MUTE)."""
-        try:
-            self.sock.sendto(self._pad4(b'/fuzzy/proto/panic') + self._pad4(b','), self.addr)
-        except OSError:
-            pass
+        self._sendto(self._pad4(b'/fuzzy/proto/panic') + self._pad4(b','))
 
 
 SOUND = Sound()
@@ -1268,14 +1278,32 @@ def draw_set_maschine(st: State, d, half: int, acc) -> None:
     softkey(d, st, 0, 'REFRESH', False)
     softkey(d, st, 3, 'TO NI', 'shift' in st.held)
     lines = ['Button 5 : check again.',
-             'Shift + button 8 : quit and give the',
-             'Maschine back to the NI software',
-             '(no unplugging needed).',
-             '',
-             'Sound, pads and screens are shared:',
-             'nothing is detached, no sudo.']
+             'Shift + button 8 : give the Maschine',
+             'back to NI (no unplugging needed).']
     for k, line in enumerate(lines):
-        d.text((12, 40 + k * 22), line, font=font(14), fill=(190, 190, 190))
+        d.text((12, 36 + k * 20), line, font=font(13), fill=(190, 190, 190))
+    # Ordinateur : processeur, memoire, charge audio
+    c, a = getattr(st, 'computer', {}), st.audio_state
+    d.text((12, 104), 'COMPUTER', font=font(14), fill=acc)
+    rows = []
+    if 'cpu' in c:
+        rows.append(('CPU', f"{c['cpu']:.0f} %", c['cpu'] < 70 or (None if c['cpu'] < 90 else False)))
+    if 'mem_used' in c:
+        free = c['mem_total'] - c['mem_used']
+        rows.append(('Memory', f"{c['mem_used']:.1f} / {c['mem_total']:.0f} GB",
+                     True if free > 2 else (None if free > 0.5 else False)))
+    if a.get('cpu') is not None:
+        rows.append(('Audio engine', f"{a['cpu']:.0f} % (sound calculation)",
+                     a['cpu'] < 50 or (None if a['cpu'] < 80 else False)))
+    if 'rss_mb' in c:
+        rows.append(('This program', f"{c['rss_mb']:.0f} MB", True))
+    if not rows:
+        rows.append(('CPU / memory', 'not available', None))
+    for k, (label, value, ok) in enumerate(rows):
+        y = 128 + k * 22
+        dot(d, 12, y + 3, ok)
+        d.text((32, y), label, font=font(13), fill=(170, 170, 170))
+        d.text((150, y), value, font=font(13), fill='white')
     d.text((12, 250), 'Green = OK   Orange = info   Red = problem', font=font(11), fill=(140, 140, 140))
 
 
@@ -1490,7 +1518,41 @@ def maschine_status(st: State) -> None:
         except (OSError, subprocess.SubprocessError):
             pass
         items.append(('Other apps on it', ', '.join(sorted(others)) or 'none', None if others else True))
+    st.computer = computer_stats()
     st.status, st.status_time = items, time.time()
+
+
+def computer_stats() -> dict:
+    """CPU et memoire de l'ordinateur (macOS : ps, vm_stat, sysctl ; Linux : /proc)."""
+    out = {}
+    try:
+        import resource
+        rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+        out['rss_mb'] = rss / (1024 * 1024) if sys.platform == 'darwin' else rss / 1024
+    except (ImportError, OSError):
+        pass
+    try:
+        if sys.platform == 'darwin':
+            ps = subprocess.run(['ps', '-A', '-o', '%cpu='], capture_output=True, text=True, timeout=2).stdout
+            out['cpu'] = sum(float(v) for v in ps.split() if v.replace('.', '', 1).isdigit()) / (os.cpu_count() or 1)
+            total = int(subprocess.run(['sysctl', '-n', 'hw.memsize'], capture_output=True, text=True,
+                                       timeout=2).stdout.strip())
+            vm = subprocess.run(['vm_stat'], capture_output=True, text=True, timeout=2).stdout
+            page = int(vm.split('page size of ')[1].split()[0]) if 'page size of ' in vm else 4096
+            pages = {l.split(':')[0].strip(): int(l.split(':')[1].strip().rstrip('.'))
+                     for l in vm.splitlines()[1:] if ':' in l and l.split(':')[1].strip().rstrip('.').isdigit()}
+            used = sum(pages.get(k, 0) for k in ('Pages active', 'Pages wired down',
+                                                  'Pages occupied by compressor')) * page
+            out['mem_used'], out['mem_total'] = used / 2**30, total / 2**30
+        else:
+            load = os.getloadavg()[0]
+            out['cpu'] = 100 * load / (os.cpu_count() or 1)
+            info = {l.split(':')[0]: int(l.split()[1]) for l in Path('/proc/meminfo').read_text().splitlines()}
+            out['mem_total'] = info['MemTotal'] / 2**20
+            out['mem_used'] = (info['MemTotal'] - info.get('MemAvailable', 0)) / 2**20
+    except (OSError, ValueError, IndexError, KeyError, subprocess.SubprocessError):
+        pass
+    return out
 
 
 def refresh_status(st: State) -> None:
@@ -1796,7 +1858,8 @@ def engine_listener(st: State, events: queue.Queue, running: threading.Event) ->
                 'xruns': args[4], 'outputs': [o for o in args[5].split('\n') if o],
                 'rates': [int(r) for r in args[6].split(',') if r],
                 'buffers': [int(b) for b in args[7].split(',') if b],
-                'inputs': [x for x in args[8].split('\n') if x]}
+                'inputs': [x for x in args[8].split('\n') if x],
+                'cpu': args[9] if len(args) > 9 else None}
             events.put(('engine', 'first' if first else 'state'))
         elif addr == '/fuzzy/proto/midi/state' and len(args) >= 7:
             old = st.midi_state
@@ -5307,9 +5370,12 @@ def main() -> int:
     def reader():
         while running.is_set():
             data = dev.read(50)
-            if not data:
-                continue
-            for ev in dec.parse(data):
+            evs = dec.parse(data) if data else []
+            for ev in dec.expire():                  # relachements perdus (jeu tres rapide)
+                print(f'[maschine] pad {ev[1]} : relachement perdu, note arretee '
+                      f'(plus grand ecart normal entre deux pressions : {dec.max_gap * 1000:.0f} ms)')
+                evs.append(ev)
+            for ev in evs:
                 if ev[0] == 'pad_on':
                     # Lecture simple de l'etat, sans attendre le verrou (pris pendant le dessin)
                     notes = sound_for(st, ev[1])

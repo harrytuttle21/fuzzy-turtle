@@ -184,13 +184,13 @@ void MaschineMk3::readLoop()
         if (hid != nullptr)
         {
             // Lecture bloquante avec delai de 100 ms (a travers le pilote HID du systeme)
-            const int got = hid_read_timeout (hid, buf, sizeof buf, 100);
+            const int got = hid_read_timeout (hid, buf, sizeof buf, 50);
             if (got < 0)                             // Maschine debranchee
                 break;
-            if (got == 0)
-                continue;
             events.clear();
-            dec.parse ({ buf, (size_t) got }, events);
+            if (got > 0)
+                dec.parse ({ buf, (size_t) got }, events);
+            dec.expirePads (std::chrono::steady_clock::now(), kPadTimeout, events);   // relachements perdus
             for (const auto& e : events)
                 if (onEvent)
                     onEvent (e);
@@ -198,17 +198,13 @@ void MaschineMk3::readLoop()
         }
         int n = 0;
         // Lecture bloquante avec delai de 100 ms : pas d'attente active, arret rapide
-        const int rc = libusb_interrupt_transfer (handle, endpointIn, buf, sizeof buf, &n, 100);
-        if (rc == LIBUSB_ERROR_TIMEOUT || n <= 0)
-            continue;
-        if (rc != 0)
-        {
-            if (rc == LIBUSB_ERROR_NO_DEVICE)        // Maschine debranchee
-                break;
-            continue;
-        }
+        const int rc = libusb_interrupt_transfer (handle, endpointIn, buf, sizeof buf, &n, 50);
+        if (rc == LIBUSB_ERROR_NO_DEVICE)            // Maschine debranchee
+            break;
         events.clear();
-        dec.parse ({ buf, (size_t) n }, events);
+        if (rc == 0 && n > 0)
+            dec.parse ({ buf, (size_t) n }, events);
+        dec.expirePads (std::chrono::steady_clock::now(), kPadTimeout, events);   // relachements perdus
         for (const auto& e : events)
             if (onEvent)
                 onEvent (e);

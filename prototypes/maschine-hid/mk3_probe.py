@@ -65,6 +65,8 @@ class Decoder:
         self.unknown = 0
         self.jog = None
         self.down: set[int] = set()
+        self.seen: dict[int, float] = {}   # pad -> heure de la derniere pression recue
+        self.max_gap = 0.0                 # plus grand ecart entre deux pressions d'un pad tenu (s)
         self.knobs: dict[int, int] = {}
 
     def parse(self, r: bytes) -> list[tuple]:
@@ -127,6 +129,16 @@ class Decoder:
                 out.append(('knob', i + 1, d))
         return out
 
+    def expire(self, timeout=1.2):
+        """Pads tenus dont la Maschine ne parle plus depuis `timeout` s : leur relachement
+        s'est perdu (jeu tres rapide). On les relache : ('pad_off', pad, 'missed')."""
+        now, out = time.monotonic(), []
+        for num in list(self.down):
+            if now - self.seen.get(num, now) > timeout:
+                self.down.discard(num)
+                out.append(('pad_off', num, 'missed'))
+        return out
+
     def _pads(self, r):
         out = []
         for pos in range(1, len(r) - 2, 3):
@@ -138,6 +150,10 @@ class Decoder:
             if status in (0, 1) and raw > 0:
                 # Un pad tenu envoie sa pression en continu : on ne declenche
                 # qu'a la premiere frappe, pas a chaque mise a jour.
+                now = time.monotonic()
+                if num in self.down:       # pad deja tenu : ecart mesure (pour regler la garde)
+                    self.max_gap = max(self.max_gap, now - self.seen.get(num, now))
+                self.seen[num] = now
                 if num not in self.down:
                     self.down.add(num)
                     out.append(('pad_on', num, velocity(raw, self.exponent)))

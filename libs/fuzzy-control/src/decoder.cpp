@@ -156,6 +156,11 @@ void Mk3Decoder::padReport (std::span<const uint8_t> r, std::vector<Event>& out)
         const int pad = padNumberForId (id);
         if ((status == 0 || status == 1) && raw > 0)
         {
+            const auto now = std::chrono::steady_clock::now();
+            if (pads[(size_t) pad])                            // pad deja tenu : ecart mesure
+                maxGapMs = std::max (maxGapMs, (int) std::chrono::duration_cast<std::chrono::milliseconds> (
+                                                   now - padSeen[(size_t) pad]).count());
+            padSeen[(size_t) pad] = now;
             if (! pads[(size_t) pad])                          // pression continue : une seule frappe
             {
                 pads[(size_t) pad] = true;
@@ -168,6 +173,18 @@ void Mk3Decoder::padReport (std::span<const uint8_t> r, std::vector<Event>& out)
             out.push_back ({ Event::Type::PadOff, pad, 0, "" });
         }
     }
+}
+
+void Mk3Decoder::expirePads (std::chrono::steady_clock::time_point now, std::chrono::milliseconds timeout,
+                             std::vector<Event>& out)
+{
+    for (int pad = 1; pad <= 16; ++pad)
+        if (pads[(size_t) pad] && now - padSeen[(size_t) pad] > timeout)
+        {
+            pads[(size_t) pad] = false;
+            ++missed;
+            out.push_back ({ Event::Type::PadOff, pad, 0, "missed" });
+        }
 }
 
 } // namespace fuzzy::control

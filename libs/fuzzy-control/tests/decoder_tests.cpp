@@ -51,6 +51,24 @@ int main()
     Mk3Decoder dec;
     std::vector<Event> ev;
 
+    // --- Pads : relachement perdu (jeu tres rapide) ---
+    {
+        using namespace std::chrono;
+        Mk3Decoder dx;
+        std::vector<Event> ex;
+        dx.parse (padReport (12, 1, 2000), ex);                         // pad 1 frappe
+        ex.clear();
+        const auto t0 = steady_clock::now();
+        dx.expirePads (t0 + milliseconds (500), milliseconds (1200), ex);
+        check (ex.empty(), "pad tenu recemment : pas relache par la garde");
+        dx.expirePads (t0 + milliseconds (1500), milliseconds (1200), ex);
+        check (ex.size() == 1 && ex[0].type == Event::Type::PadOff && ex[0].id == 1
+               && std::string (ex[0].name) == "missed", "relachement perdu : pad relache apres le delai");
+        ex.clear();
+        dx.expirePads (t0 + milliseconds (3000), milliseconds (1200), ex);
+        check (ex.empty() && dx.missedReleases() == 1, "relachement perdu : une seule fois");
+    }
+
     // --- Pads ---
     check (padNumberForId (12) == 1 && padNumberForId (3) == 16, "numerotation des pads (1 en bas a gauche)");
     check (velocityFromRaw (4095, 0.5) == 127 && velocityFromRaw (1, 0.5) >= 1, "velocite bornee 1-127");

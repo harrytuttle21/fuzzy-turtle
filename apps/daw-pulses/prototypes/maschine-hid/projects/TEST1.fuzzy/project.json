@@ -1,0 +1,284 @@
+{
+    "bpm": 120,
+    "format": "fuzzy-proto",
+    "groups": {
+        "A": {
+            "current": 0,
+            "name": "",
+            "off": false,
+            "pan": 64,
+            "patterns": [
+                {
+                    "cells": [
+                        [
+                            0,
+                            0,
+                            60,
+                            78,
+                            1,
+                            -2
+                        ],
+                        [
+                            0,
+                            2,
+                            60,
+                            100
+                        ],
+                        [
+                            2,
+                            1,
+                            60,
+                            72,
+                            1,
+                            9
+                        ],
+                        [
+                            2,
+                            2,
+                            60,
+                            100
+                        ],
+                        [
+                            4,
+                            0,
+                            60,
+                            78,
+                            1,
+                            -10
+                        ],
+                        [
+                            4,
+                            2,
+                            60,
+                            100
+                        ],
+                        [
+                            6,
+                            1,
+                            60,
+                            100
+                        ],
+                        [
+                            6,
+                            2,
+                            60,
+                            70,
+                            1,
+                            9
+                        ],
+                        [
+                            7,
+                            3,
+                            60,
+                            70,
+                            1,
+                            10
+                        ],
+                        [
+                            8,
+                            0,
+                            60,
+                            78,
+                            1,
+                            -5
+                        ],
+                        [
+                            8,
+                            2,
+                            60,
+                            100
+                        ],
+                        [
+                            9,
+                            3,
+                            60,
+                            70,
+                            1,
+                            -9
+                        ],
+                        [
+                            10,
+                            2,
+                            60,
+                            70,
+                            1,
+                            -1
+                        ],
+                        [
+                            12,
+                            0,
+                            60,
+                            100
+                        ],
+                        [
+                            12,
+                            2,
+                            60,
+                            100
+                        ],
+                        [
+                            13,
+                            3,
+                            60,
+                            70
+                        ],
+                        [
+                            14,
+                            1,
+                            60,
+                            100
+                        ],
+                        [
+                            15,
+                            2,
+                            60,
+                            100
+                        ]
+                    ],
+                    "index": 0,
+                    "length": 16,
+                    "name": ""
+                }
+            ],
+            "volume": 100
+        },
+        "A2": {
+            "current": 0,
+            "name": "",
+            "off": false,
+            "pan": 64,
+            "patterns": [
+            ],
+            "volume": 100
+        },
+        "B": {
+            "current": 0,
+            "name": "",
+            "off": false,
+            "pan": 64,
+            "patterns": [
+            ],
+            "volume": 100
+        },
+        "B2": {
+            "current": 0,
+            "name": "",
+            "off": false,
+            "pan": 64,
+            "patterns": [
+            ],
+            "volume": 100
+        },
+        "C": {
+            "current": 0,
+            "name": "",
+            "off": false,
+            "pan": 64,
+            "patterns": [
+            ],
+            "volume": 100
+        },
+        "C2": {
+            "current": 0,
+            "name": "",
+            "off": false,
+            "pan": 64,
+            "patterns": [
+            ],
+            "volume": 100
+        },
+        "D": {
+            "current": 0,
+            "name": "",
+            "off": false,
+            "pan": 64,
+            "patterns": [
+            ],
+            "volume": 100
+        },
+        "D2": {
+            "current": 0,
+            "name": "",
+            "off": false,
+            "pan": 64,
+            "patterns": [
+            ],
+            "volume": 100
+        },
+        "E": {
+            "current": 0,
+            "name": "",
+            "off": false,
+            "pan": 64,
+            "patterns": [
+            ],
+            "volume": 100
+        },
+        "E2": {
+            "current": 0,
+            "name": "",
+            "off": false,
+            "pan": 64,
+            "patterns": [
+            ],
+            "volume": 100
+        },
+        "F": {
+            "current": 0,
+            "name": "",
+            "off": false,
+            "pan": 64,
+            "patterns": [
+            ],
+            "volume": 100
+        },
+        "F2": {
+            "current": 0,
+            "name": "",
+            "off": false,
+            "pan": 64,
+            "patterns": [
+            ],
+            "volume": 100
+        },
+        "G": {
+            "current": 0,
+            "name": "",
+            "off": false,
+            "pan": 64,
+            "patterns": [
+            ],
+            "volume": 100
+        },
+        "G2": {
+            "current": 0,
+            "name": "",
+            "off": false,
+            "pan": 64,
+            "patterns": [
+            ],
+            "volume": 100
+        },
+        "H": {
+            "current": 0,
+            "name": "",
+            "off": false,
+            "pan": 64,
+            "patterns": [
+            ],
+            "volume": 100
+        },
+        "H2": {
+            "current": 0,
+            "name": "",
+            "off": false,
+            "pan": 64,
+            "patterns": [
+            ],
+            "volume": 100
+        }
+    },
+    "master": 100,
+    "name": "TEST1",
+    "version": 1
+}

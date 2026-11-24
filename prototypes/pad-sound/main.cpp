@@ -340,22 +340,42 @@ public:
             lastWaitMs.store (waited);
             hits.fetch_add (1);
         }
+        std::array<float, 16> groupPeak {};
+        float masterPeak = 0;
         for (int i = 0; i < numSamples; ++i)
         {
             float left = 0, right = 0;
+            std::array<float, 16> group {};              // vumetres : somme par groupe
             for (auto& v : voices)
                 if (v.active)
                 {
                     const float s = v.render (sampleRate);
                     left += s * v.gainL;
                     right += s * v.gainR;
+                    if (v.tag >= 0 && v.tag < 16)
+                        group[(size_t) v.tag] += s;
                 }
+            for (size_t g = 0; g < 16; ++g)
+                groupPeak[g] = std::max (groupPeak[g], std::abs (group[g]));
             left = std::tanh (left);                     // securite si beaucoup de notes s'empilent
             right = std::tanh (right);
+            masterPeak = std::max (masterPeak, std::max (std::abs (left), std::abs (right)));
             for (int ch = 0; ch < numOut; ++ch)          // sorties paires = gauche, impaires = droite
                 if (out[ch] != nullptr)
                     out[ch][i] = (ch < kMaxOut && playOn[ch]) ? (ch % 2 == 0 ? left : right) : 0.0f;
         }
+        // Crete du bloc : gardee jusqu'a ce que le fil principal l'envoie a l'interface
+        for (size_t g = 0; g < 16; ++g)
+            raiseMeter (meters[g], groupPeak[g]);
+        raiseMeter (meters[16], masterPeak);
+    }
+
+    // Vumetres : groupes A-H, A2-H2 puis master. Lus (et remis a zero) par le fil principal.
+    std::array<std::atomic<float>, 17> meters {};
+    static void raiseMeter (std::atomic<float>& m, float v)
+    {
+        float old = m.load (std::memory_order_relaxed);
+        while (v > old && ! m.compare_exchange_weak (old, v, std::memory_order_relaxed)) {}
     }
 
     double sampleRate = 48000;
@@ -612,7 +632,7 @@ int main (int argc, char* argv[])
     EventQueue queue;
     SampleBank bank;
     juce::AudioFormatManager formats;
-    formats.registerBasicFormats();                  // WAV, AIFF, FLAC, Ogg (+ formats du Mac)
+    formats.registerBasicFormats();                  // WAV, AIFF, FLAC, Ogg, MP3 (+ formats du Mac : M4A, AAC)
     Engine engine (queue, bank);
     juce::AudioDeviceManager audio;
     const auto err = audio.initialiseWithDefaultDevices (0, 2);
@@ -683,6 +703,7 @@ int main (int argc, char* argv[])
     else
         reader = std::thread (readPads, dev, std::ref (queue));
     int seen = 0, loops = 0, rescans = 0;
+    bool metersWereOn = false;
     while (gRunning.load())
     {
         std::this_thread::sleep_for (std::chrono::milliseconds (50));
@@ -729,6 +750,22 @@ int main (int argc, char* argv[])
             loops = 9;
         }
 
+        // Vumetres, 20 fois par seconde (seulement quand il y a du son, ou pour revenir a zero)
+        if (uiConnected)
+        {
+            juce::OSCMessage mt ("/fuzzy/proto/meters");
+            bool any = false;
+            for (auto& m : engine.meters)
+            {
+                const float v = m.exchange (0.0f);
+                any |= v > 0.0005f;
+                mt.addFloat32 (v);
+            }
+            if (any || metersWereOn)
+                sendUi (mt);
+            metersWereOn = any;
+        }
+
         // Etat pour l'interface, deux fois par seconde
         if (++loops >= 10 && uiConnected)
         {
@@ -756,6 +793,7 @@ int main (int argc, char* argv[])
             a.addString (joinInts (rates));
             a.addString (d ? joinInts (d->getAvailableBufferSizes()) : juce::String());
             a.addString (inputs.joinIntoString ("\n"));
+            a.addFloat32 ((float) (audio.getCpuUsage() * 100.0));    // charge du calcul audio (%)
             sendUi (a);
 
             juce::OSCMessage m ("/fuzzy/proto/midi/state");

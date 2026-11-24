@@ -9,6 +9,7 @@
 #include "decoder.h"
 
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <functional>
 #include <string>
@@ -32,6 +33,8 @@ public:
     static constexpr int kDisplayInterfacePlus = 6;
 
     enum class Access { Shared, Exclusive };
+    // Pad sans nouvelles depuis ce delai : considere comme relache (relachement perdu)
+    static constexpr std::chrono::milliseconds kPadTimeout { 1200 };
     using Callback = std::function<void (const Event&)>;
 
     MaschineMk3();

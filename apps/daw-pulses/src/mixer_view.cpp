@@ -1,0 +1,197 @@
+// Fuzzy John DAW Pulses — mixeur. Licence : GPLv3.
+#include "mixer_view.h"
+
+#include <QMouseEvent>
+#include <QPainter>
+#include <QWheelEvent>
+
+#include <cmath>
+
+using namespace session;
+
+namespace {
+// Niveau (0-1) -> hauteur (0-1) en decibels : -48 dB en bas, +3 dB en haut
+double meterPos (float level)
+{
+    if (level <= 0.0001f)
+        return 0;
+    const double db = 20.0 * std::log10 (level);
+    return std::clamp ((db + 48.0) / 51.0, 0.0, 1.0);
+}
+} // namespace
+
+MixerView::MixerView (session::State& state, QWidget* parent) : QWidget (parent), st (state)
+{
+    setMinimumHeight (150);
+    setMouseTracking (false);
+    fall.setInterval (33);                                  // les barres retombent en douceur
+    connect (&fall, &QTimer::timeout, this, [this]
+    {
+        bool moving = false;
+        for (auto& v : shown)
+        {
+            v *= 0.82f;
+            if (v < 0.0005f) v = 0;
+            moving |= v > 0;
+        }
+        update();
+        if (! moving)
+            fall.stop();
+    });
+}
+
+void MixerView::setLevels (const std::array<float, 17>& peaks)
+{
+    for (size_t i = 0; i < 17; ++i)
+        shown[i] = std::max (shown[i], peaks[i]);
+    if (! fall.isActive())
+        fall.start();
+    update();
+}
+
+int MixerView::groupOf (int strip) const
+{
+    return strip >= 8 ? -1 : (st.group >= 8 ? 8 : 0) + strip;
+}
+
+std::atomic<int>& MixerView::volumeOf (int strip)
+{
+    const int g = groupOf (strip);
+    return g < 0 ? st.masterVolume : st.groupVolume[(size_t) g];
+}
+
+QRectF MixerView::meterRect (int strip) const
+{
+    const double w = width() / 9.4;                         // 8 voies + master un peu a part
+    const double x = strip < 8 ? strip * w : 8.4 * w;
+    return { x + w * 0.28, 22.0, w * 0.44, height() - 72.0 };
+}
+
+QRectF MixerView::buttonRect (int strip, bool solo) const
+{
+    const QRectF m = meterRect (strip);
+    const double bw = std::min (22.0, m.width() * 0.9 + 4), y = m.bottom() + 6;
+    return { m.center().x() + (solo ? 1.0 : -1.0 - bw), y, bw, 18.0 };
+}
+
+int MixerView::stripAt (double x) const
+{
+    for (int s = 0; s < 9; ++s)
+    {
+        const QRectF r = meterRect (s).adjusted (-width() / 30.0, 0, width() / 30.0, 0);
+        if (x >= r.left() && x <= r.right())
+            return s;
+    }
+    return -1;
+}
+
+void MixerView::setVolumeFromY (int strip, double y)
+{
+    const QRectF r = meterRect (strip);
+    const int v = (int) std::lround ((r.bottom() - y) / r.height() * 127.0);
+    volumeOf (strip) = std::clamp (v, 0, 127);
+    emit volumeChanged();
+    update();
+}
+
+void MixerView::paintEvent (QPaintEvent*)
+{
+    QPainter g (this);
+    g.setRenderHint (QPainter::Antialiasing);
+    QFont f = font();
+    f.setPixelSize (11);
+    g.setFont (f);
+    for (int s = 0; s < 9; ++s)
+    {
+        const int grp = groupOf (s);
+        const bool silent = grp >= 0 && ! st.groupAudible (grp);       // coupe / hors solo
+        const QColor color = grp < 0 ? kAccent : silent ? QColor (90, 90, 98) : groupColor (grp);
+        const QRectF r = meterRect (s);
+        // Nom au-dessus, centre
+        g.setPen (grp == st.group ? QColor (Qt::white) : color);
+        g.drawText (QRectF (r.center().x() - 30, 2, 60, 16), Qt::AlignCenter, grp < 0 ? "MASTER" : groupName (grp));
+        // Fond du vumetre
+        g.setPen (QColor (40, 40, 48));
+        g.setBrush (QColor (14, 14, 18));
+        g.drawRoundedRect (r, 3, 3);
+        // Niveau (couleur du groupe ; orange puis rouge pres du maximum)
+        const double pos = meterPos (shown[(size_t) (grp < 0 ? 16 : grp)]);
+        if (pos > 0)
+        {
+            QRectF bar (r.left() + 2, r.bottom() - 2 - (r.height() - 4) * pos, r.width() - 4, (r.height() - 4) * pos);
+            QLinearGradient grad (r.bottomLeft(), r.topLeft());
+            grad.setColorAt (0.0, color.darker (130));
+            grad.setColorAt (0.78, color);
+            grad.setColorAt (0.9, QColor (250, 150, 30));
+            grad.setColorAt (1.0, QColor (240, 40, 40));
+            g.setPen (Qt::NoPen);
+            g.setBrush (grad);
+            g.drawRect (bar);
+        }
+        // Volume : le petit trait blanc
+        const int vol = volumeOf (s);
+        const double vy = r.bottom() - r.height() * vol / 127.0;
+        g.setPen (QPen (Qt::white, 2));
+        g.drawLine (QPointF (r.left() - 5, vy), QPointF (r.right() + 5, vy));
+        // Valeur sous la voie, centree
+        g.setPen (QColor (180, 180, 186));
+        g.drawText (QRectF (r.center().x() - 30, height() - 20, 60, 16), Qt::AlignCenter, QString::number (vol));
+        // Boutons M (mute) et S (solo) des groupes
+        if (grp >= 0)
+            for (const bool solo : { false, true })
+            {
+                const QRectF b = buttonRect (s, solo);
+                const bool on = solo ? st.groupSolo[(size_t) grp].load() : st.groupMute[(size_t) grp].load();
+                g.setPen (QColor (60, 60, 70));
+                g.setBrush (on ? (solo ? QColor (232, 192, 64) : QColor (208, 72, 72)) : QColor (22, 22, 27));
+                g.drawRoundedRect (b, 3, 3);
+                g.setPen (on ? QColor (15, 15, 15) : QColor (150, 150, 158));
+                g.drawText (b, Qt::AlignCenter, solo ? "S" : "M");
+            }
+    }
+}
+
+void MixerView::mousePressEvent (QMouseEvent* e)
+{
+    for (int strip = 0; strip < 8; ++strip)              // M / S : couper, solo
+        for (const bool solo : { false, true })
+            if (buttonRect (strip, solo).contains (e->position()))
+            {
+                auto& flag = solo ? st.groupSolo[(size_t) groupOf (strip)] : st.groupMute[(size_t) groupOf (strip)];
+                flag = ! flag;
+                emit muteSoloChanged();
+                update();
+                return;
+            }
+    dragging = stripAt (e->position().x());
+    if (dragging >= 0)
+        setVolumeFromY (dragging, e->position().y());
+}
+
+void MixerView::mouseMoveEvent (QMouseEvent* e)
+{
+    if (dragging >= 0)
+        setVolumeFromY (dragging, e->position().y());
+}
+
+void MixerView::mouseDoubleClickEvent (QMouseEvent* e)
+{
+    const int s = stripAt (e->position().x());
+    if (s >= 0)
+    {
+        volumeOf (s) = 100;                                 // niveau normal
+        emit volumeChanged();
+        update();
+    }
+}
+
+void MixerView::wheelEvent (QWheelEvent* e)
+{
+    const int s = stripAt (e->position().x());
+    if (s < 0)
+        return;
+    const int step = e->angleDelta().y() > 0 ? 2 : -2;
+    volumeOf (s) = std::clamp (volumeOf (s) + step, 0, 127);
+    emit volumeChanged();
+    update();
+}
