@@ -810,11 +810,29 @@ class State:
             return 5
         return self.sound
 
+    def eff_synth(self, g: str, s: int) -> int:
+        """Synthe d'un son : choisi, sinon celui du pad (banque A-H) ; 0 = aucun instrument
+        (banque A2-H2 vide au depart, ou 'None' choisi dans SYNTH)."""
+        syn = self.synth.get((g, s))
+        if syn is not None:
+            return syn
+        return 0 if g.endswith('2') else default_synth(s)
+
+    def instrument(self, g: str, s: int) -> bool:
+        """Le son a un instrument (sample, kit ou synthe) ? Sinon : muet, pad eteint."""
+        return (g, s) in self.samples or self.eff_synth(g, s) != 0
+
+    def group_filled(self, g: str) -> bool:
+        return any(self.instrument(g, s) for s in range(1, 17))
+
     def sound_name(self, s: int, group: str | None = None) -> str:
-        path = self.samples.get((group or self.group, s))
+        g = group or self.group
+        path = self.samples.get((g, s))
         if path:                                     # sample d'un kit
             return sample_label(path)
-        synth = self.synth.get((group or self.group, s), default_synth(s))
+        synth = self.eff_synth(g, s)
+        if synth == 0:
+            return 'Empty'
         return SYNTHS[synth - 1] if synth <= 4 else f'Note {note_name(default_note(s))}'
 
 
@@ -1715,7 +1733,7 @@ def play_note(st: State, group: str, snd: int, vel: int, note: int, gate: float 
     if ch:
         SOUND.send('/fuzzy/proto/midi/note', ch, note, vel, int(gate * 1000))
         st.midi_out_flash = time.monotonic()
-    else:
+    elif st.instrument(group, snd):                  # sans instrument : rien a jouer
         env = st.env[(group, snd)]
         SOUND.hit(snd, vel, note, GROUPS.index(group), ENV_MODES.index(env['mode']),
                   int(env['release']), int(gate * 1000), st.synth.get((group, snd), 0),
@@ -1892,7 +1910,7 @@ def draw_left(st: State) -> Image.Image:
         chosen = pad == st.sound and 'select' in st.held   # SELECT tenu : le son choisi en blanc
         d.rectangle((x, y, x + 110, y + 28), fill='white' if chosen else shade(acc, 0.36) if lit else None,
                     outline=acc if pad == st.sound else (70, 70, 70), width=2)
-        silent = not st.sound_audible(st.group, pad)
+        silent = not st.sound_audible(st.group, pad) or not st.instrument(st.group, pad)
         tag = ' M' if (st.group, pad) in st.sound_muted else ' S' if (st.group, pad) in st.sound_solo else ''
         label = f'{pad:02d} {st.sound_name(pad)[:10 - len(tag)]}{tag}'
         d.text((x + 55 - d.textlength(label, font=f) / 2, y + 7), label, font=f,   # centre dans la case
@@ -3810,7 +3828,8 @@ def project_data(st: State) -> dict:
                      'sounds': {str(s): {'volume': st.sound_vol[(g, s)], 'params': st.params[(g, s)],
                                          'envelope': st.env[(g, s)],
                                          **({'sample': st.samples[(g, s)]} if (g, s) in st.samples else {}),
-                                         **({'synth': SYNTHS[st.synth[(g, s)] - 1]} if (g, s) in st.synth else {})}
+                                         **({'synth': SYNTHS[st.synth[(g, s)] - 1] if st.synth[(g, s)] else 'None'}
+                                            if (g, s) in st.synth else {})}
                                 for s in range(1, 17)}}
     scenes = [{'index': i, 'name': st.scene_names[i], 'groups': sc}
               for i, sc in enumerate(st.scenes) if sc]
@@ -3928,6 +3947,8 @@ def load_project(st: State, name: str) -> None:
                 st.samples[(g, int(s))] = sd['sample']
             if sd.get('synth') in SYNTHS:
                 st.synth[(g, int(s))] = SYNTHS.index(sd['synth']) + 1
+            elif sd.get('synth') == 'None':
+                st.synth[(g, int(s))] = 0
     st.scenes = [None] * PAT_SLOTS
     st.scene_names = [''] * PAT_SLOTS
     for sd in data.get('scenes', []):
@@ -4309,7 +4330,7 @@ def browse_move(st: State, n: int) -> None:
     if st.browse == 'kit':
         st.kit_sel = max(0, min(len(list_kits()) - 1, st.kit_sel + n))
     elif st.browse == 'synth':
-        st.synth_sel = max(0, min(len(SYNTHS) - 1, st.synth_sel + n))
+        st.synth_sel = max(0, min(len(SYNTHS), st.synth_sel + n))      # + None
 
 
 def plugin_button(st: State, name: str) -> None:
@@ -4334,22 +4355,24 @@ def plugin_button(st: State, name: str) -> None:
             load_kit(st, kits[min(st.kit_sel, len(kits) - 1)][1])
         st.browse = None
     elif name == 'screen_8' and st.browse is None:   # ouvrir la liste des synthes
-        st.synth_sel = st.synth.get((st.group, targets[0]), default_synth(targets[0])) - 1
+        eff = st.eff_synth(st.group, targets[0])
+        st.synth_sel = eff - 1 if eff else len(SYNTHS)     # dernier de la liste : None
         st.browse = 'synth'
     elif name == 'screen_8' and st.browse == 'synth':   # LOAD : ce synthe sur les sons choisis
-        synth = st.synth_sel + 1
+        synth = st.synth_sel + 1 if st.synth_sel < len(SYNTHS) else 0     # 0 = None (aucun)
         for snd in targets:
             st.samples.pop((st.group, snd), None)
-            if synth == default_synth(snd):
+            if synth == default_synth(snd) and not st.group.endswith('2'):
                 st.synth.pop((st.group, snd), None)
             else:
                 st.synth[(st.group, snd)] = synth
-            st.env[(st.group, snd)]['mode'] = 'ONE-SHOT' if synth <= 4 else 'ADSR'
+            if synth:
+                st.env[(st.group, snd)]['mode'] = 'ONE-SHOT' if synth <= 4 else 'ADSR'
         if not any((st.group, snd) in st.samples for snd in range(1, 17)):
             st.kit_names[st.group] = ''
         sync_samples(st)
         st.browse = None
-        st.toast = (f"{SYNTHS[synth - 1]} on sound{'s' if len(targets) > 1 else ''} "
+        st.toast = (f"{SYNTHS[synth - 1] if synth else 'No instrument'} on sound{'s' if len(targets) > 1 else ''} "
                     + ', '.join(f'{snd:02d}' for snd in targets), now + 2)
 
 
@@ -4392,7 +4415,7 @@ def draw_plugin(st: State, half: int) -> Image.Image:
             chosen = pad in targets
             rounded(d, (x, y, x + 110, y + 46), fill=acc if chosen else (24, 24, 32),
                     outline=shade(acc, 0.6))
-            silent = not st.sound_audible(st.group, pad)
+            silent = not st.sound_audible(st.group, pad) or not st.instrument(st.group, pad)
             tag = st.sound_tag(pad)
             ink = 'black' if chosen else (110, 110, 110) if silent else 'white'
             name = f'{pad:02d} {st.sound_name(pad)}'
@@ -4417,7 +4440,8 @@ def draw_plugin(st: State, half: int) -> Image.Image:
             sel, labels = st.kit_sel, ['', 'LOAD', 'CANCEL', '']
             hint = '4D wheel / encoder 5: choose.  Own kits: ~/Music/Fuzzy Kits'
         else:
-            items = [(name, 'drum' if k < 4 else 'notes') for k, name in enumerate(SYNTHS)]
+            items = ([(name, 'drum' if k < 4 else 'notes') for k, name in enumerate(SYNTHS)]
+                     + [('None', 'empty')])
             sel, labels = st.synth_sel, ['', '', 'CANCEL', 'LOAD']
             hint = '4D wheel / encoder 5: choose.  LOAD: on the chosen sounds'
         keys(labels, 'KIT' if st.browse == 'kit' else 'SYNTH')
@@ -4443,7 +4467,8 @@ def draw_plugin(st: State, half: int) -> Image.Image:
     param_box(d, 1, 'Release', f'{rels.pop()} ms' if len(rels) == 1 else 'mixed', acc, y=60,
               dim=all(st.env[(st.group, s)]['mode'] == 'ONE-SHOT' for s in targets))
     src = st.samples.get((st.group, targets[0]))
-    synth = SYNTHS[st.synth.get((st.group, targets[0]), default_synth(targets[0])) - 1]
+    eff = st.eff_synth(st.group, targets[0])
+    synth = SYNTHS[eff - 1] if eff else 'none (empty sound)'
     d.text((12, 150), short(('Sample: ' + Path(src).name) if src else f'Synth: {synth}', 52),
            font=font(13), fill='white')
     if st.kit_names[st.group]:
@@ -4966,7 +4991,9 @@ def button_frame(st: State) -> bytes:
         if st.link_edit:                               # LINK : groupes lies vifs, autres doux
             f[1 + GROUP_SLOT + i] = bright if (g in st.linked or g == st.group) else dim
             continue
-        if not st.audible(g):
+        if not st.group_filled(g):                     # groupe sans instrument : eteint
+            f[1 + GROUP_SLOT + i] = dim if g == st.group else 0      # (doux s'il est choisi)
+        elif not st.audible(g):
             f[1 + GROUP_SLOT + i] = 0                  # groupe coupe (Mute, ou hors Solo) : eteint
         else:                                          # choisi ou en Solo : vif
             f[1 + GROUP_SLOT + i] = bright if (g == st.group or g in st.solo) else dim
@@ -4991,13 +5018,13 @@ def led_frame(st: State) -> bytes:
     if ({'mute', 'solo'} & st.held) and not (st.pattern_mode or st.scene_mode or st.arranger_mode
                                               or st.settings):
         # MUTE / SOLO tenu : coupe = eteint, en solo = vif, les autres = doux
-        return pad_led_frame({p: 0 if (st.group, p) in st.sound_muted
+        return pad_led_frame({p: 0 if (st.group, p) in st.sound_muted or not st.instrument(st.group, p)
                               else pad_pair(st, p)[1] if (st.group, p) in st.sound_solo
                               else pad_pair(st, p)[0] for p in range(1, 17)})
     if st.plugin_mode:                                 # PLUG-IN : sons choisis vifs, coupes eteints
         targets = plugin_targets(st)
         return pad_led_frame({p: pad_pair(st, p)[1] if (p in targets or p in st.down)
-                              else 0 if not st.sound_audible(st.group, p)
+                              else 0 if not (st.sound_audible(st.group, p) and st.instrument(st.group, p))
                               else pad_pair(st, p)[0] for p in range(1, 17)})
     if st.arranger_mode:                               # ARRANGER : scenes pleines douces,
         colors = {}                                    # celle de l'entree choisie vive
@@ -5045,7 +5072,8 @@ def led_frame(st: State) -> bytes:
                 colors[p] = 0                          # SET / USER : pads 1-12 (accords definis)
             else:
                 colors[p] = bright if (p in st.down or st.flash.get(p, 0) > now) else dim
-            if not st.sound_audible(st.group, st.sound) and p not in st.down and not shift:
+            if (not st.sound_audible(st.group, st.sound) or not st.instrument(st.group, st.melodic_sound())) \
+                    and p not in st.down and not shift:
                 colors[p] = 0                          # son joue coupe (MUTE / SOLO) : eteint
         return pad_led_frame(colors)
     if 'select' in st.held and not (st.pattern_mode or st.scene_mode or st.file_mode
@@ -5068,9 +5096,11 @@ def led_frame(st: State) -> bytes:
             else:
                 colors[p] = 0
         return pad_led_frame(colors)
-    return pad_led_frame({p: pad_pair(st, p)[1] if (p in st.down or st.flash.get(p, 0) > now
+    return pad_led_frame({p: (pad_pair(st, p)[0] if p == st.sound else 0)     # son vide : eteint
+                          if not st.instrument(st.group, p) and p not in st.down
+                          else pad_pair(st, p)[1] if (p in st.down or st.flash.get(p, 0) > now
                                                    or p == st.sound or (st.group, p) in st.sound_solo)
-                          else 0 if not st.sound_audible(st.group, p)    # son coupe : eteint
+                          else 0 if not (st.sound_audible(st.group, p) and st.instrument(st.group, p))
                           else pad_pair(st, p)[0]
                           for p in range(1, 17)})
 
