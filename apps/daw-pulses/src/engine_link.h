@@ -52,6 +52,9 @@ public:
     void panic() const;
     // Sample d'un son (WAV, AIFF, FLAC, Ogg, MP3... lu directement) ; "" = retour au son de synthese
     void setSample (int group, int sound, const QString& path, int rootNote) const;
+    // Boucle d'un son (debut et fin en fractions du fichier) ; forme d'onde pour l'editeur
+    void setLoop (int group, int sound, bool on, float start, float end) const;
+    void requestPeaks (int group, int sound) const;
     void setOutput (const QString& output) const;
     // Reglages audio complets (vide / 0 = garder la valeur actuelle)
     void setAudio (const QString& output, const QString& input, int rate, int buffer) const;
@@ -61,6 +64,7 @@ signals:
     void meters (const std::array<float, 17>& peaks);   // vumetres : groupes 0-15 + master
     void stopped (const QString& why);
     void sampleError (const QString& path);       // fichier illisible
+    void samplePeaks (int group, int sound, double seconds, const QList<float>& peaks);   // 0-1
 
 private:
     void send (const QByteArray& packet) const;

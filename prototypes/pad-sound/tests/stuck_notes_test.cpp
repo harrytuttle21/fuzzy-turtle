@@ -69,6 +69,49 @@ int main (int argc, char** argv)
         fails += ! ok;
         std::printf ("%s  vumetres : groupe 3 = %.3f, groupe A = %.3f, master = %.3f\n", ok ? "OK    " : "ECHEC ", g3, g0, master);
     }
+    {   // Boucle : un sample de 0,1 s tenu 1 s sonne jusqu'au bout, sans saut au raccord,
+        // puis s'eteint au relachement ; sans boucle, il s'arrete a la fin du fichier
+        auto makeSine = []
+        {
+            auto smp = std::make_unique<Sample>();
+            smp->rate = 48000; smp->root = 60;
+            smp->data.setSize (1, 4800 + 1);
+            for (int i = 0; i <= 4800; ++i)
+                smp->data.setSample (0, i, (float) std::sin (2 * juce::MathConstants<double>::pi * 440 * i / 48000.0));
+            return smp;
+        };
+        for (const bool loopOn : { true, false })
+        {
+            EventQueue q; SampleBank bank; Engine eng (q, bank);
+            std::vector<float> L (128), R (128); float* outs[2] { L.data(), R.data() };
+            juce::AudioIODeviceCallbackContext ctx {};
+            bank.set (0, 1, makeSine());
+            bank.setLoop (0, 1, { loopOn, 0.23f, 0.87f });       // points au hasard (pas sur un zero)
+            PadEvent e { 1, 120, 60, 0 }; e.tag = 0; e.mode = 1; q.push (e);
+            float late = 0, jump = 0, prev = 0;
+            for (int b = 0; b < 375; ++b)                         // 1 s a 48 kHz
+            {
+                eng.audioDeviceIOCallbackWithContext (nullptr, 0, outs, 2, 128, ctx);
+                for (float v : L)
+                {
+                    if (b > 10) jump = std::max (jump, std::abs (v - prev));
+                    prev = v;
+                    if (b >= 337) late = std::max (late, std::abs (v));   // derniers 100 ms
+                }
+            }
+            PadEvent off { 1, 0, 60, 0 }; off.tag = 0; off.off = true; q.push (off);
+            float tail = 0;
+            for (int b = 0; b < 200; ++b)
+            {
+                eng.audioDeviceIOCallbackWithContext (nullptr, 0, outs, 2, 128, ctx);
+                if (b > 150) for (float v : L) tail = std::max (tail, std::abs (v));
+            }
+            const bool ok = loopOn ? late > 0.1f && jump < 0.1f && tail < 0.0005f : late < 0.0005f;
+            fails += ! ok;
+            std::printf ("%s  %s : fin du maintien %.3f, plus grand saut %.3f, apres relachement %.6f\n",
+                         ok ? "OK    " : "ECHEC ", loopOn ? "boucle tenue    " : "sans boucle     ", late, jump, tail);
+        }
+    }
     // Samples donnes en argument (WAV, MP3...) : lus directement depuis le fichier, puis joues
     juce::AudioFormatManager formats;
     formats.registerBasicFormats();

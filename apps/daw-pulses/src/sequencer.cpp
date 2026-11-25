@@ -38,7 +38,7 @@ std::vector<Hit> Sequencer::hitsForRow (int row, double rowMs) const
     return out;
 }
 
-Sequencer::Written Sequencer::record (int group, int track, int note, int velocity, double rowPos)
+Sequencer::Written Sequencer::record (int group, int track, int note, int velocity, double rowPos, bool merge)
 {
     std::lock_guard<std::mutex> g (lock);
     Pattern& p = patterns[(size_t) group];
@@ -51,7 +51,24 @@ Sequencer::Written Sequencer::record (int group, int track, int note, int veloci
         offset -= kTiming;
     }
     row = ((row % p.length) + p.length) % p.length;
-    p.rows[(size_t) row][(size_t) track] = { note, velocity, 1, offset };
+    Cell& c = p.rows[(size_t) row][(size_t) track];
+    if (merge && ! c.empty())                        // accord joue : les notes vont dans la meme case
+    {
+        if (c.note == note)
+            return { group, row, track };
+        for (int& e : c.extra)
+        {
+            if (e == note)
+                break;
+            if (e < 0)
+            {
+                e = note;
+                break;
+            }
+        }
+        return { group, row, track };
+    }
+    c = { note, velocity, 1, offset };
     return { group, row, track };
 }
 

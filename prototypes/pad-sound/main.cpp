@@ -106,9 +106,26 @@ struct Sample
     int root = 60;         // note a laquelle le fichier joue a sa hauteur d'origine
 };
 
+// Boucle d'un son : entre start et end (fractions du fichier), tant que la note est tenue
+struct LoopInfo { bool on = false; float start = 0, end = 1; };
+
 class SampleBank
 {
 public:
+    LoopInfo loop (int tag, int pad) const
+    {
+        if (tag < 0 || tag > 15 || pad < 1 || pad > 16) return {};
+        const auto& l = loops[(size_t) (tag * 16 + pad - 1)];
+        return { l.on.load(), l.start.load(), l.end.load() };
+    }
+    void setLoop (int tag, int pad, LoopInfo info)
+    {
+        if (tag < 0 || tag > 15 || pad < 1 || pad > 16) return;
+        auto& l = loops[(size_t) (tag * 16 + pad - 1)];
+        l.start = juce::jlimit (0.0f, 1.0f, info.start);
+        l.end = juce::jlimit (0.0f, 1.0f, info.end);
+        l.on = info.on;
+    }
     const Sample* get (int tag, int pad) const
     {
         if (tag < 0 || tag > 15 || pad < 1 || pad > 16) return nullptr;
@@ -126,7 +143,26 @@ public:
 private:
     std::array<std::atomic<const Sample*>, 256> slots {};
     std::vector<std::unique_ptr<Sample>> keep;
+    struct AtomicLoop { std::atomic<bool> on { false }; std::atomic<float> start { 0 }, end { 1 }; };
+    std::array<AtomicLoop, 256> loops {};
 };
+
+// Crêtes du fichier en n morceaux (0-1), pour dessiner sa forme d'onde
+std::vector<float> samplePeaks (const Sample& smp, int n)
+{
+    std::vector<float> out ((size_t) n, 0.0f);
+    const int len = smp.data.getNumSamples();
+    for (int ch = 0; ch < smp.data.getNumChannels(); ++ch)
+    {
+        const float* d = smp.data.getReadPointer (ch);
+        for (int i = 0; i < len; ++i)
+        {
+            auto& p = out[(size_t) std::min (n - 1, (int) ((juce::int64) i * n / len))];
+            p = std::max (p, std::abs (d[i]));
+        }
+    }
+    return out;
+}
 
 std::unique_ptr<Sample> loadSample (juce::AudioFormatManager& formats, const juce::String& path, int root)
 {
@@ -160,8 +196,10 @@ struct Voice
     float gainL = 1, gainR = 1;              // stereo (au centre : 1 et 1)
     const Sample* sample = nullptr;          // fichier joue (nullptr = son de synthese)
     double pos = 0, step = 1;                // lecture du fichier
+    bool looping = false;                    // boucle : de loopStart a loopEnd tant que la note tient
+    double loopStart = 0, loopEnd = 0, xfade = 0;   // en echantillons du fichier
 
-    void start (const PadEvent& e, const Sample* smp = nullptr, double sr = 48000)
+    void start (const PadEvent& e, const Sample* smp = nullptr, double sr = 48000, LoopInfo loop = {})
     {
         note = e.note >= 0 ? e.note : defaultNote (e.pad);
         pad = e.pad; tag = e.tag; active = true; phase = 0; time = 0; fade = 1; fadeStep = 0;
@@ -178,6 +216,20 @@ struct Voice
         held = adsr;
         gate = adsr && e.gateMs > 0 ? e.gateMs / 1000.0 : 0;
         releaseTime = juce::jlimit (0.005, 5.0, e.releaseMs / 1000.0);
+        // Boucle : seulement pour un sample tenu (mode ADSR), et assez longue (>= 5 ms)
+        looping = false;
+        if (smp && adsr && loop.on)
+        {
+            const double last = smp->data.getNumSamples() - 2;
+            loopStart = juce::jlimit (0.0, last, (double) loop.start * last);
+            loopEnd = juce::jlimit (0.0, last, (double) loop.end * last);
+            if (loopEnd - loopStart >= 0.005 * smp->rate)
+            {
+                looping = true;
+                // fondu enchaine au raccord : 10 ms, au plus un quart de la boucle
+                xfade = std::min (0.010 * smp->rate, (loopEnd - loopStart) / 4);
+            }
+        }
     }
 
     void release (double sr)          // s'eteindre en 10 ms, sans clic
@@ -201,25 +253,46 @@ struct Voice
         if (sample != nullptr)
         {   // sample : lecture avec interpolation, la voix s'arrete a la fin du fichier
             const auto& data = sample->data;
-            const int i0 = (int) pos;
-            if (i0 + 1 >= data.getNumSamples())
+            auto readAt = [&data] (double p)
             {
-                active = false;
-                return 0;
-            }
-            const float frac = (float) (pos - i0);
-            float v = 0;
-            for (int ch = 0; ch < data.getNumChannels(); ++ch)
+                const int i0 = (int) p;
+                const float frac = (float) (p - i0);
+                float v = 0;
+                for (int ch = 0; ch < data.getNumChannels(); ++ch)
+                {
+                    const float* d = data.getReadPointer (ch);
+                    v += d[i0] + (d[i0 + 1] - d[i0]) * frac;
+                }
+                return v / (float) data.getNumChannels();
+            };
+            if (looping)
             {
-                const float* d = data.getReadPointer (ch);
-                v += d[i0] + (d[i0 + 1] - d[i0]) * frac;
+                // Boucle : a la fin, on repart juste apres le debut ; les derniers xfade
+                // echantillons se melangent avec le debut de la boucle (pas de clic au raccord)
+                if (pos >= loopEnd)
+                    pos = loopStart + xfade + (pos - loopEnd);
+                s = readAt (pos);
+                if (xfade > 0 && pos > loopEnd - xfade)
+                {
+                    const double a = (loopEnd - pos) / xfade;
+                    s = (float) (s * a + readAt (loopStart + (pos - (loopEnd - xfade))) * (1 - a));
+                }
+                pos += step;
             }
-            s = v / (float) data.getNumChannels();
-            // fin du fichier : fondu de 5 ms (un fichier coupe net fait un petit clic)
-            const double left = (data.getNumSamples() - 1 - pos) / sample->rate / step;
-            if (left < 0.005)
-                s *= (float) std::max (0.0, left / 0.005);
-            pos += step;
+            else
+            {
+                if ((int) pos + 1 >= data.getNumSamples())
+                {
+                    active = false;
+                    return 0;
+                }
+                s = readAt (pos);
+                // fin du fichier : fondu de 5 ms (un fichier coupe net fait un petit clic)
+                const double left = (data.getNumSamples() - 1 - pos) / sample->rate / step;
+                if (left < 0.005)
+                    s *= (float) std::max (0.0, left / 0.005);
+                pos += step;
+            }
         }
         else switch (kind)
         {
@@ -404,7 +477,7 @@ private:
         if (chosen == nullptr)                       // toutes occupees : la plus ancienne
             for (auto& v : voices)
                 if (chosen == nullptr || v.time > chosen->time) chosen = &v;
-        chosen->start (e, bank.get (e.tag, e.pad), sampleRate);
+        chosen->start (e, bank.get (e.tag, e.pad), sampleRate, bank.loop (e.tag, e.pad));
     }
 };
 
@@ -461,6 +534,7 @@ struct AudioRequest { juce::String output, input; int sampleRate = 0, buffer = 0
 struct MidiRequest { juce::String input, output; int clock = 0; bool transport = false, thru = false; };
 
 struct SampleRequest { int tag = 0, pad = 1, root = 60; juce::String path; };
+struct LoopRequest { int tag = 0, pad = 1; LoopInfo loop; };
 
 struct Requests
 {
@@ -468,6 +542,8 @@ struct Requests
     std::optional<AudioRequest> audio;
     std::optional<MidiRequest> midi;
     std::vector<SampleRequest> samples;
+    std::vector<LoopRequest> loops;
+    std::vector<std::pair<int, int>> peaks;              // forme d'onde demandee (groupe, son)
 };
 
 // ----------------------------------------------------------------------------
@@ -504,6 +580,19 @@ private:
         {
             std::lock_guard<std::mutex> g (requests.lock);
             requests.midi = MidiRequest { str (0), str (1), num (2), num (3) != 0, num (4) != 0 };
+            return;
+        }
+        if (address == "/fuzzy/proto/sample/loop")    // groupe, son, boucle (0/1), debut, fin (0-1)
+        {
+            const auto flt = [&m] (int i, float d) { return i < m.size() && m[i].isFloat32() ? m[i].getFloat32() : d; };
+            std::lock_guard<std::mutex> g (requests.lock);
+            requests.loops.push_back ({ num (0), num (1), { num (2) != 0, flt (3, 0), flt (4, 1) } });
+            return;
+        }
+        if (address == "/fuzzy/proto/sample/peaks")   // groupe, son : forme d'onde pour l'editeur
+        {
+            std::lock_guard<std::mutex> g (requests.lock);
+            requests.peaks.push_back ({ num (0), num (1) });
             return;
         }
         if (address == "/fuzzy/proto/sample")         // groupe, son, fichier ("" = synthese), note d'origine
@@ -712,8 +801,12 @@ int main (int argc, char* argv[])
         std::optional<AudioRequest> audioReq;
         std::optional<MidiRequest> midiReq;
         std::vector<SampleRequest> sampleReqs;
+        std::vector<LoopRequest> loopReqs;
+        std::vector<std::pair<int, int>> peakReqs;
         {
             std::lock_guard<std::mutex> g (requests.lock);
+            loopReqs.swap (requests.loops);
+            peakReqs.swap (requests.peaks);
             audioReq.swap (requests.audio);
             midiReq.swap (requests.midi);
             sampleReqs.swap (requests.samples);
@@ -735,6 +828,25 @@ int main (int argc, char* argv[])
                 continue;
             }
             bank.set (r.tag, r.pad, std::move (sample));
+        }
+        for (const auto& r : loopReqs)
+            bank.setLoop (r.tag, r.pad, r.loop);
+        for (const auto& [tag, pad] : peakReqs)          // forme d'onde : duree (s) + 256 crêtes
+        {
+            juce::OSCMessage reply ("/fuzzy/proto/sample/peaks");
+            reply.addInt32 (tag);
+            reply.addInt32 (pad);
+            const Sample* smp = bank.get (tag, pad);
+            if (smp == nullptr)
+            {
+                reply.addFloat32 (0);
+                sendUi (reply);
+                continue;
+            }
+            reply.addFloat32 ((float) (smp->data.getNumSamples() / smp->rate));
+            for (const float p : samplePeaks (*smp, 256))
+                reply.addFloat32 (p);
+            sendUi (reply);
         }
         if (audioReq)
         {

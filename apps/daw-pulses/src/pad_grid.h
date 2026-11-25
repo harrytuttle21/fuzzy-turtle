@@ -23,6 +23,7 @@ public:
     QSize sizeHint() const override { return { 420, 420 }; }
     QSize minimumSizeHint() const override { return { 220, 220 }; }   // texte encore lisible
     void setTags (const std::array<char, 16>& t) { tags = t; update(); }   // M / S par pad
+    void setEmpty (const std::array<bool, 16>& e) { empty = e; update(); }  // sons sans instrument
     bool hasHeightForWidth() const override { return true; }
     int heightForWidth (int w) const override { return w; }
 
@@ -31,12 +32,14 @@ signals:
     void released (int pad);
     void menuRequested (int pad, const QPoint& globalPos);
     void filesDropped (int pad, const QStringList& paths);   // fichiers audio deposes (Finder)
+    void midiDropped (const QString& path, int sound);       // fichier .mid depose sur un pad
 
 protected:
     void paintEvent (QPaintEvent*) override;
     void mousePressEvent (QMouseEvent*) override;
     void mouseReleaseEvent (QMouseEvent*) override;
     void mouseMoveEvent (QMouseEvent*) override;      // glisser un pad vers le pattern
+    void contextMenuEvent (QContextMenuEvent*) override;   // clic droit, deux doigts, Ctrl + clic
     void dragEnterEvent (QDragEnterEvent*) override;  // fichiers audio depuis le Finder
     void dragMoveEvent (QDragMoveEvent*) override;
     void dragLeaveEvent (QDragLeaveEvent*) override;
@@ -53,4 +56,5 @@ private:
     std::array<QString, 16> labels;
     std::array<bool, 16> down {};
     std::array<char, 16> tags {};
+    std::array<bool, 16> empty {};
 };

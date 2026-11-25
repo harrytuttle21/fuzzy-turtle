@@ -8,7 +8,7 @@ Modes, comme sur Maschine :
                 sur les deux ecrans ; un 2e appui revient a la vue precedente
   TEMPO         taper plusieurs fois en rythme = tap tempo ; TEMPO tenu + molette 4D = +/- 1 BPM
   Molette 4D    tourner : ligne du curseur ; pousser haut/bas : ligne ; gauche/droite : piste
-  Encodeur 8    longueur du pattern (1 a 64 lignes), dans tous les modes
+  Encodeur 8    longueur du pattern (1 a 256 lignes), dans tous les modes
   CHORDS        encodeur 5 gamme (liste), 6 mode HARM / SET / USER, 7 choix du mode
                 (HARM : 1-3 ... 1-3-5-7-9, Oct +1/+2/-1/-2 ; SET : Maj 1-8, Min 1-8 ;
                 USER : User 1-4), 8 position (renversement) ; Shift + pads 13-16 : root / octave.
@@ -64,7 +64,7 @@ Modes, comme sur Maschine :
   EVENTS        piano roll de la piste choisie : notes en barres (duree), velocite = luminosite.
                 Encodeurs 1 ligne, 2 zoom (16 / 32 / 64), 3 hauteur de la vue, 4 piste ;
                 5 deplacer la note, 6 hauteur, 7 velocite, 8 duree ; FIXED VEL + molette =
-                velocite ; ERASE = effacer la note. Zoom 16 / 32 / 48 / 64 lignes.
+                velocite ; ERASE = effacer la note. Zoom 16 / 32 / 48 / 64 / 128 / 256 lignes.
                 En REC pendant la lecture, la duree d'une note = le temps d'appui sur le pad.
   PLUG-IN       enveloppe des sons du groupe : ONE-SHOT (le son va au bout) ou ADSR (le son tient
                 la duree de la note puis relache). Pad = choisir le son, SELECT + pads = plusieurs ;
@@ -141,7 +141,7 @@ from mk3_probe import Decoder, CURVES, pad_led_frame, VID, PID_MK3, PID_PLUS
 from maschine_chord_sets import MACHINE_CHORD_SET_SOURCES   # 16 Chord Sets (pilote r22yb3m, MIT)
 from mk3_screens import Screens, Preview, MK3Error, W, H, font, header
 
-ROWS, VISIBLE = 64, 11          # ROWS = longueur maximale d'un pattern
+ROWS, VISIBLE = 256, 11         # ROWS = longueur maximale d'un pattern (16 mesures, comme le XM)
 PAT_SLOTS, PAT_BANKS = 64, 4    # 64 patterns par groupe : 4 banques de 16 (mode PATTERN)
 NAME_LEN = 8                    # noms courts des patterns et des scenes
 NAME_CHARS = ' ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-'
@@ -493,7 +493,7 @@ class State:
         self.sound = 1
         self.params = {(g, s): [100, 64, 64, 90] for g in GROUPS for s in range(1, 17)}
         # Pattern : 32 lignes x 16 pistes (une par son du groupe) ; case = (note, volume)
-        # Un pattern par groupe : 64 lignes x 16 pistes ; case = (note ou accord, volume)
+        # Un pattern par groupe : 256 lignes x 16 pistes ; case = (note ou accord, volume)
         self.grids = {g: [[None] * 16 for _ in range(ROWS)] for g in GROUPS}
         demo = self.grids['A']
         for r in (0, 8, 10):
@@ -517,6 +517,8 @@ class State:
         self.samples: dict = {}                # (groupe, son) -> fichier audio (sinon : synthese)
         self.kit_names = {g: '' for g in GROUPS}   # kit charge sur chaque groupe
         self.sent_samples: dict = {}           # ce que le moteur a deja recu
+        self.loops: dict = {}                  # (groupe, son) -> boucle {'on', 'start', 'end'} (reglee dans DAW Pulses)
+        self.sent_loops: dict = {}             # boucles deja envoyees au moteur
         self.browse = None                     # PLUG-IN : liste ouverte ('kit' / 'synth' / None)
         self.kit_sel = 0
         self.synth_sel = 0
@@ -1687,6 +1689,14 @@ def sync_samples(st: State) -> None:
                 st.sent_samples[key] = path
             else:
                 st.sent_samples.pop(key, None)
+    # Boucles (apres les samples : le moteur garde l'ordre des messages)
+    for key in set(st.loops) | set(st.sent_loops):
+        lp = st.loops.get(key, {'on': False, 'start': 0.0, 'end': 1.0})
+        val = (bool(lp['on']), float(lp['start']), float(lp['end']))
+        if st.sent_loops.get(key) != val:
+            g, snd = key
+            SOUND.send('/fuzzy/proto/sample/loop', GROUPS.index(g), snd, int(val[0]), val[1], val[2])
+            st.sent_loops[key] = val
 
 
 def load_kit(st: State, folder: Path) -> None:
@@ -1781,6 +1791,7 @@ def engine_sync(st: State, keep_output: bool) -> None:
         st.audio_action = time.monotonic()
     send_midi(st)
     st.sent_samples = {}                               # moteur (re)demarre : tout renvoyer
+    st.sent_loops = {}
     sync_samples(st)
     st.engine_synced = True
     threading.Thread(target=scan_card_types, args=(st,), daemon=True).start()
@@ -3891,6 +3902,7 @@ def project_data(st: State) -> dict:
                      'sounds': {str(s): {'volume': st.sound_vol[(g, s)], 'params': st.params[(g, s)],
                                          'envelope': st.env[(g, s)],
                                          **({'sample': st.samples[(g, s)]} if (g, s) in st.samples else {}),
+                                         **({'loop': st.loops[(g, s)]} if (g, s) in st.loops else {}),
                                          **({'synth': SYNTHS[st.synth[(g, s)] - 1] if st.synth[(g, s)] else 'None'}
                                             if (g, s) in st.synth else {})}
                                 for s in range(1, 17)}}
@@ -3998,6 +4010,7 @@ def load_project(st: State, name: str) -> None:
         for snd in range(1, 17):
             st.samples.pop((g, snd), None)
             st.synth.pop((g, snd), None)
+            st.loops.pop((g, snd), None)
         if gd.get('key'):
             st.keys[g].update(gd['key'])
         for s, sd in gd.get('sounds', {}).items():
@@ -4008,6 +4021,10 @@ def load_project(st: State, name: str) -> None:
                                    'release': int(e.get('release', 150))}
             if sd.get('sample'):
                 st.samples[(g, int(s))] = sd['sample']
+            if isinstance(sd.get('loop'), dict):         # boucle reglee dans DAW Pulses
+                st.loops[(g, int(s))] = {'on': bool(sd['loop'].get('on')),
+                                         'start': float(sd['loop'].get('start', 0)),
+                                         'end': float(sd['loop'].get('end', 1))}
             if sd.get('synth') in SYNTHS:
                 st.synth[(g, int(s))] = SYNTHS.index(sd['synth']) + 1
             elif sd.get('synth') == 'None':
@@ -4547,7 +4564,7 @@ def draw_plugin(st: State, half: int) -> Image.Image:
 
 
 # --- EVENTS : vue piano roll de la piste choisie ---------------------------------------
-PR_ZOOMS = (16, 32, 48, 64)                           # lignes visibles
+PR_ZOOMS = (16, 32, 48, 64, 128, 256)                 # lignes visibles
 PR_ROWS = 18                                          # hauteurs visibles (demi-tons)
 
 

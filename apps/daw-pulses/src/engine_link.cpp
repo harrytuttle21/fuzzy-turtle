@@ -153,6 +153,16 @@ void EngineLink::setSample (int group, int sound, const QString& path, int rootN
     send (fuzzy::osc::message ("/fuzzy/proto/sample", { group, sound, path, rootNote }));
 }
 
+void EngineLink::setLoop (int group, int sound, bool on, float start, float end) const
+{
+    send (fuzzy::osc::message ("/fuzzy/proto/sample/loop", { group, sound, on ? 1 : 0, start, end }));
+}
+
+void EngineLink::requestPeaks (int group, int sound) const
+{
+    send (fuzzy::osc::message ("/fuzzy/proto/sample/peaks", { group, sound }));
+}
+
 void EngineLink::setOutput (const QString& output) const
 {
     send (fuzzy::osc::message ("/fuzzy/proto/audio/set", { output, QString(), 0, 0 }));
@@ -192,6 +202,13 @@ void EngineLink::readReplies()
             audio.buffers = a.size() > 7 ? ints (a[7]) : QList<int>();
             audio.inputs = a.size() > 8 ? a[8].toString().split ('\n', Qt::SkipEmptyParts) : QStringList();
             emit stateChanged();
+        }
+        else if (address == "/fuzzy/proto/sample/peaks" && a.size() >= 3)
+        {
+            QList<float> peaks;
+            for (int i = 3; i < a.size(); ++i)
+                peaks.append ((float) a[i].toDouble());
+            emit samplePeaks (a[0].toInt(), a[1].toInt(), a[2].toDouble(), peaks);
         }
         else if (address == "/fuzzy/proto/sample/error" && ! a.isEmpty())
             emit sampleError (a[0].toString());

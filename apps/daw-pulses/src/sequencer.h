@@ -15,7 +15,7 @@
 
 namespace seq {
 
-constexpr int kMaxRows = 64, kTracks = 16, kTiming = 24, kChordExtra = 7;
+constexpr int kMaxRows = 256, kTracks = 16, kTiming = 24, kChordExtra = 7;   // 256 lignes = 16 mesures
 
 struct Cell
 {
@@ -48,7 +48,7 @@ public:
     // Enregistrement : `rowPos` = position de lecture en lignes (avec la fraction).
     // Renvoie l'adresse de la case ecrite (pour lui donner sa duree au relachement).
     struct Written { int group = -1, row = -1, track = -1; };
-    Written record (int group, int track, int note, int velocity, double rowPos);
+    Written record (int group, int track, int note, int velocity, double rowPos, bool merge = false);   // merge : ajouter a l'accord
     void setLength (const Written& w, double rows);       // duree, au relachement
 
     Pattern pattern (int group) const;                    // copie, pour l'affichage

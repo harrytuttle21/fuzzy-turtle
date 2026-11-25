@@ -6,6 +6,7 @@
 #include <QMimeData>
 #include <QDragEnterEvent>
 #include <QDropEvent>
+#include <QContextMenuEvent>
 #include <QMouseEvent>
 
 #include <QMouseEvent>
@@ -152,6 +153,13 @@ void PatternView::paintEvent (QPaintEvent*)
             }
         }
     }
+    if (! frameRect.isNull() && ! (banding && moving))  // zone tracee : reste visible (remplissage)
+    {
+        const int r0 = frameRect.top() - first, r1 = frameRect.bottom() - first;
+        g.setPen (QPen (QColor (255, 255, 255, 110), 1, Qt::DotLine));
+        g.setBrush (QColor (255, 255, 255, 10));
+        g.drawRect (QRectF (kRowLabel + frameRect.left() * cw, kHeader + r0 * rh, frameRect.width() * cw, (r1 - r0 + 1) * rh));
+    }
     if (banding && moving && targetRow >= 0)             // cadre de selection
     {
         const int r0 = std::min (bandRow, targetRow) - first, r1 = std::max (bandRow, targetRow) - first;
@@ -221,6 +229,8 @@ bool PatternView::canShift (int rows, int tracks) const
 
 void PatternView::mousePressEvent (QMouseEvent* e)
 {
+    if (e->button() == Qt::RightButton || (e->modifiers() & Qt::MetaModifier))
+        return;                                      // clic secondaire : contextMenuEvent
     if (e->position().y() < kHeader && e->position().x() > kRowLabel)   // en-tete : mute / solo
     {
         const double cw = (width() - kRowLabel) / double (seq::kTracks);
@@ -236,6 +246,9 @@ void PatternView::mousePressEvent (QMouseEvent* e)
     selTrack = track;
     pressPos = e->position();
     moving = banding = false;
+    if (! (e->modifiers() & Qt::ShiftModifier))
+        frameRect = {};
+    emit cellClicked (track);
     dragRow = dragTrack = -1;
     const bool full = ! sequencer.pattern (state.group).rows[(size_t) row][(size_t) track].empty();
     const bool shift = e->modifiers() & Qt::ShiftModifier;
@@ -287,6 +300,8 @@ void PatternView::mouseMoveEvent (QMouseEvent* e)
                     selected.insert (key (r, t));
         targetRow = row;
         targetTrack = track;
+        frameRect = QRect (QPoint (std::min (track, bandTrack), std::min (row, bandRow)),
+                           QPoint (std::max (track, bandTrack), std::max (row, bandRow)));
     }
     else
     {
@@ -321,12 +336,22 @@ void PatternView::mouseReleaseEvent (QMouseEvent* e)
 
 void PatternView::dragEnterEvent (QDragEnterEvent* e)
 {
+    if (! session::midiFileIn (e->mimeData()->urls()).isEmpty())   // fichier MIDI
+    {
+        e->acceptProposedAction();
+        return;
+    }
     if (e->mimeData()->hasFormat (kPadMime))
         e->acceptProposedAction();
 }
 
 void PatternView::dragMoveEvent (QDragMoveEvent* e)
 {
+    if (! session::midiFileIn (e->mimeData()->urls()).isEmpty())
+    {
+        e->acceptProposedAction();
+        return;
+    }
     int row = 0, track = 0;
     if (! e->mimeData()->hasFormat (kPadMime) || ! cellAt (e->position(), row, track))
     {
@@ -349,6 +374,15 @@ void PatternView::dragLeaveEvent (QDragLeaveEvent*)
 
 void PatternView::dropEvent (QDropEvent* e)
 {
+    const QString midiPath = session::midiFileIn (e->mimeData()->urls());
+    if (! midiPath.isEmpty())                        // fichier MIDI : sur le son de la colonne visee
+    {
+        const double cw = (width() - kRowLabel) / double (seq::kTracks);
+        const int t = std::clamp ((int) ((e->position().x() - kRowLabel) / cw), 0, seq::kTracks - 1);
+        e->acceptProposedAction();
+        emit midiDropped (midiPath, t + 1);
+        return;
+    }
     int row = 0, track = 0;
     if (e->mimeData()->hasFormat (kPadMime) && cellAt (e->position(), row, track))
     {
@@ -369,4 +403,50 @@ void PatternView::wheelEvent (QWheelEvent* e)
         return;
     scroll = std::clamp (scroll + (e->angleDelta().y() < 0 ? visibleRows() : -visibleRows()), 0, length - visibleRows());
     update();
+}
+
+void PatternView::contextMenuEvent (QContextMenuEvent* e)
+{
+    int row = 0, track = 0;
+    if (e->pos().y() >= kHeader && cellAt (e->pos(), row, track))   // grille : menu de la case
+    {
+        if (! selected.contains (key (row, track)))
+        {
+            selRow = row;
+            selTrack = track;
+            update();
+        }
+        emit cellMenu (row, track, e->globalPos());
+        return;
+    }
+    // Clic droit sur le numero d'une piste : solo (jaune)
+    if (e->pos().y() >= kHeader || e->pos().x() <= kRowLabel)
+        return;
+    const double cw = (width() - kRowLabel) / double (seq::kTracks);
+    const int t = (int) ((e->pos().x() - kRowLabel) / cw);
+    if (t >= 0 && t < seq::kTracks)
+        emit trackClicked (t, true);
+}
+
+void PatternView::moveCursor (int rows, int tracks)
+{
+    const int length = sequencer.patternLength (state.group);
+    selRow = std::clamp (selRow + rows, 0, length - 1);
+    selTrack = std::clamp (selTrack + tracks, 0, seq::kTracks - 1);
+    if (length > visibleRows())                      // la page suit le curseur
+    {
+        const int first = firstRow (length);
+        if (selRow < first)
+            scroll = selRow;
+        else if (selRow >= first + visibleRows())
+            scroll = selRow - visibleRows() + 1;
+    }
+    update();
+}
+
+void PatternView::mouseDoubleClickEvent (QMouseEvent* e)
+{
+    int row = 0, track = 0;
+    if (e->button() == Qt::LeftButton && cellAt (e->position(), row, track))
+        emit cellDoubleClicked (row, track);
 }

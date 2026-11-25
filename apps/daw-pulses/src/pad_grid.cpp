@@ -1,5 +1,6 @@
 // Fuzzy John DAW Pulses — les 16 pads a l'ecran. Licence : GPLv3.
 #include "pad_grid.h"
+#include "session.h"
 
 #include <QApplication>
 #include <QFontMetricsF>
@@ -8,6 +9,7 @@
 #include <QMimeData>
 #include <QDragEnterEvent>
 #include <QDropEvent>
+#include <QContextMenuEvent>
 #include <QFileInfo>
 #include <QUrl>
 #include <QPixmap>
@@ -27,7 +29,7 @@ QRectF PadGrid::padRect (int pad) const
     const double side = std::min (width(), height());
     const double cell = side / 4.0, gap = 8;
     const int col = (pad - 1) % 4, row = 3 - (pad - 1) / 4;      // pad 1 en bas a gauche
-    const double x0 = width() - side, y0 = (height() - side) / 2;   // colles a droite
+    const double x0 = (width() - side) / 2, y0 = (height() - side) / 2;   // centres
     return { x0 + col * cell + gap / 2, y0 + row * cell + gap / 2, cell - gap, cell - gap };
 }
 
@@ -67,6 +69,8 @@ void PadGrid::paintEvent (QPaintEvent*)
         QColor fill = hit ? color : color.darker (pad == selected ? 260 : 420);
         if (silent && ! hit)
             fill = QColor (34, 34, 38);                   // son coupe : gris
+        if (empty[(size_t) pad - 1] && ! hit)
+            fill = QColor (22, 22, 26);                   // son vide : presque noir
         g.setPen (pad == dropPad ? QPen (Qt::white, 2, Qt::DashLine)
                   : pad == selected ? QPen (Qt::white, 2) : QPen (color.darker (200), 1));
         g.setBrush (fill);
@@ -79,8 +83,8 @@ void PadGrid::paintEvent (QPaintEvent*)
             g.drawText (r.adjusted (8, 6, -8, -6), Qt::AlignRight | Qt::AlignTop, QString (QChar (tag)));
             g.setPen (hit ? QColor (20, 20, 20) : QColor (230, 230, 230));
         }
-        if (silent && ! hit)
-            g.setPen (QColor (120, 120, 128));
+        if ((silent || empty[(size_t) pad - 1]) && ! hit)
+            g.setPen (QColor (110, 110, 118));
         // Nom au centre : sur deux lignes si besoin, sinon raccourci avec « ... »
         const QRectF nameBox = r.adjusted (5, fm.height() + 4, -5, -4);
         if (nameBox.width() > 16 && nameBox.height() > fm.height())
@@ -97,12 +101,10 @@ void PadGrid::paintEvent (QPaintEvent*)
 
 void PadGrid::mousePressEvent (QMouseEvent* e)
 {
-    if (e->button() == Qt::RightButton)              // clic droit : menu (mute, solo)
-    {
-        if (const int pad = padAt (e->position()))
-            emit menuRequested (pad, e->globalPosition().toPoint());
+    // Clic secondaire (bouton droit, ou Ctrl + clic sur Mac) : pas de son, le menu arrive
+    // par contextMenuEvent
+    if (e->button() == Qt::RightButton || (e->modifiers() & Qt::MetaModifier))
         return;
-    }
     mousePad = padAt (e->position());
     if (! mousePad)
         return;
@@ -157,7 +159,7 @@ QStringList audioFiles (const QMimeData* mime)
 
 void PadGrid::dragEnterEvent (QDragEnterEvent* e)
 {
-    if (! audioFiles (e->mimeData()).isEmpty())
+    if (! audioFiles (e->mimeData()).isEmpty() || ! session::midiFileIn (e->mimeData()->urls()).isEmpty())
         e->acceptProposedAction();
 }
 
@@ -177,6 +179,15 @@ void PadGrid::dragLeaveEvent (QDragLeaveEvent*)
 void PadGrid::dropEvent (QDropEvent* e)
 {
     const int pad = padAt (e->position());
+    const QString midiPath = session::midiFileIn (e->mimeData()->urls());
+    if (pad && ! midiPath.isEmpty())                 // fichier MIDI : les notes pour ce son
+    {
+        dropPad = 0;
+        update();
+        e->acceptProposedAction();
+        emit midiDropped (midiPath, pad);
+        return;
+    }
     const QStringList files = audioFiles (e->mimeData());
     dropPad = 0;
     update();
@@ -185,4 +196,10 @@ void PadGrid::dropEvent (QDropEvent* e)
         e->acceptProposedAction();
         emit filesDropped (pad, files);
     }
+}
+
+void PadGrid::contextMenuEvent (QContextMenuEvent* e)
+{
+    if (const int pad = padAt (e->pos()))
+        emit menuRequested (pad, e->globalPos());
 }

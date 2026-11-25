@@ -81,8 +81,14 @@ void Transport::run()
     {
         const int sound = h.track + 1;
         const int v = state.outVelocity (h.group, h.velocity);
-        if (v > 0 && state.audible (h.group, sound))   // mute / solo
-            engine.hit (sound, v, h.note, h.group, session::adsr (sound), 150, std::max (10, h.gateMs));
+        if (v > 0 && state.audible (h.group, sound)    // mute / solo ; son vide : rien
+            && state.hasInstrument[(size_t) state.index (h.group, sound)])
+        {
+            engine.hit (sound, v, h.note, h.group, state.held (h.group, sound),
+                        state.releaseMs[(size_t) state.index (h.group, sound)], std::max (10, h.gateMs),
+                        state.effSynth (h.group, sound));
+            emit played (h.group, sound, h.note, h.gateMs);
+        }
     };
     const auto playDue = [&] (Clock::time_point now)
     {

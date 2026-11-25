@@ -2,6 +2,8 @@
 // Disposition inspiree de la Maschine : deux "ecrans" en haut, groupes a gauche avec le
 // transport en dessous, pads a droite, clavier en bas. Licence : GPLv3.
 #pragma once
+#include "generate_dialog.h"
+#include "keyboard_view.h"
 #include "project.h"
 #include "sequencer.h"
 #include "session.h"
@@ -15,6 +17,7 @@
 #include <atomic>
 #include <chrono>
 #include <mutex>
+#include <optional>
 
 class EngineLink;
 class MaschineLink;
@@ -66,7 +69,7 @@ private:
     void openProject();
     bool openProjectFile (const QString& path, bool quiet = false);
     bool saveProject();
-    bool saveProjectAs();
+    bool saveProjectAs (bool withSamples = false);   // choix de l'emplacement ; avec ses samples copies
     bool maybeSave();                                // projet modifie : enregistrer ?
     void projectChanged();                           // l'app reprend le projet (patterns, volumes, tempo)
     void updateTitle();
@@ -118,13 +121,38 @@ private:
     PadGrid* pads = nullptr;
     PianoKeys* piano = nullptr;
     std::array<QPushButton*, 8> groupButtons {};     // 8 boutons, comme la Maschine (A-H ou A2-H2)
-    QPushButton* bankButton = nullptr;               // passe a A2-H2 (Shift + groupe sur la Maschine)
+    QPushButton* bankButton = nullptr;
+    QPushButton* mixBankButton = nullptr;            // la meme bascule, dans le Mixer               // passe a A2-H2 (Shift + groupe sur la Maschine)
     QPushButton* playButton = nullptr;               // lecture / pause
     QPushButton* recButton = nullptr;
     MixerView* mixer = nullptr;
     PatternView* patternView = nullptr;
     QDockWidget* patternDock = nullptr;
     QDockWidget* mixerDock = nullptr;
+    QDockWidget* rollDock = nullptr;
+    QDockWidget* keysTabDock = nullptr;              // onglet Keyboard (grand clavier, gammes, accords)
+    KeyboardView* keyboardView = nullptr;
+    QLabel* keyInfo = nullptr;                       // octave et velocite (onglet Keyboard)
+    music::KeySettings keySettings;
+    QHash<int, QList<int>> keyChords;                // touche -> notes jouees (accord compris)
+    bool chordMerge = false;                         // enregistrement : ajouter a l'accord de la case
+    int viewBefore = -1;                             // Maschine : 2e appui sur une vue = retour
+    int currentView() const;                         // 0 Mixer, 1 Pattern, 2 Piano Roll, 3 Keyboard
+    void toggleView (int index, const QString& name);
+    QWidget* buildKeyboardTab();
+    void playKey (int key, int velocity, bool down); // touche de clavier : note ou accord
+    std::atomic<bool> maschineShift { false };       // Shift tenu sur la Maschine (lu par la tache des pads)
+    void shiftPad (int pad);                         // Shift + pad : fonctions de la serigraphie
+    void switchBank();                               // A-H <-> A2-H2
+    void patternMenu (int row, int track, const QPoint& at);   // clic droit dans la grille
+    void noteOptions (int row, int track);           // vue avancee d'une note
+    void fillFrame (int every);                      // la zone tracee : la note du son choisi
+    void moveCells (const QList<QPoint>& cells, int dr, int dt, bool copy);
+    qint64 lastShiftPadMs = 0;
+    int lastShiftPad = 0;
+    class PianoRollView* pianoRoll = nullptr;
+    QLabel* rollTitle = nullptr;
+    QWidget* buildPianoRoll();
     bool patternShown() const;                       // le panneau Pattern est-il visible ?
     QSpinBox* lengthBox = nullptr;
     QPushButton* metroButton = nullptr;
@@ -181,6 +209,17 @@ private:
 
     // Samples des pads (envoyes au moteur ; ce qui a deja ete envoye, pour n'envoyer que les changements)
     std::array<QString, session::kGroups * 16> sentSamples;
+    std::array<QString, session::kGroups * 16> sentLoops;   // « mode;debut;fin » deja envoye
+    void editLoop (int pad);
+    void openGenerate();                             // remplissage aleatoire du son choisi
+    void importMidi (const QString& path, int sound);   // fichier .mid -> pattern du groupe
+    void addNoteAtCursor();                          // Entree / appui molette : la note du son choisi
+    void quickVariation();                           // VARIATION : nouveau tirage, derniers reglages
+    void cyclePlayMode();                            // SAMPLING : One-shot -> Gate -> Loop
+    void toast (const QString& text);                // message 2 s (ecran droit de la Maschine + barre d'etat)
+    QString toastText;
+    qint64 toastUntil = 0;
+    std::optional<GenerateSettings> lastGenerate;   // derniers reglages de Generate
     void setPadSample (int group, int sound, const QString& path);
     void syncSamples (bool all = false);
     void loadSampleDialog (int pad);

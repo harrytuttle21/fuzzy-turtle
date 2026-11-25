@@ -11,6 +11,7 @@
 #include <QStandardPaths>
 
 #include <algorithm>
+#include <cmath>
 
 namespace {
 
@@ -123,12 +124,36 @@ QJsonObject build (QJsonObject d, const QString& name, const seq::Sequencer& seq
         QJsonObject sounds = gd["sounds"].toObject();
         for (int s = 1; s <= 16; ++s)
         {
-            const QString path = state.samples[(size_t) (g * 16 + s - 1)];
+            const size_t i = (size_t) (g * 16 + s - 1);
+            const QString path = state.samples[i];
             QJsonObject sd = sounds[QString::number (s)].toObject();
             if (! path.isEmpty())
                 sd["sample"] = path;
             else
                 sd.remove ("sample");
+            // Lecture : enveloppe du prototype (ONE-SHOT / ADSR) + boucle (cle « loop »)
+            const int mode = state.playMode[i];
+            if (sd.contains ("envelope") || mode != session::State::defaultMode (s) || state.releaseMs[i] != 150)
+            {
+                QJsonObject env = sd["envelope"].toObject();
+                env["mode"] = mode == session::State::OneShot ? "ONE-SHOT" : "ADSR";
+                env["release"] = state.releaseMs[i].load();
+                sd["envelope"] = env;
+            }
+            // Synthe comme le pilote : nom, « None » = son vide, sans cle = celui du pad
+            static const QStringList synthNames { "Kick", "Snare", "Closed HH", "Open HH", "Tone" };
+            const int syn = state.synth[i];
+            if (syn < 0)
+                sd.remove ("synth");
+            else
+                sd["synth"] = syn == 0 ? QString ("None") : synthNames.value (syn - 1, "Tone");
+            if (mode == session::State::Loop || sd.contains ("loop"))
+            {
+                auto round4 = [] (float v) { return std::round (v * 10000.0) / 10000.0; };
+                sd["loop"] = QJsonObject { { "on", mode == session::State::Loop },
+                                           { "start", round4 (state.loopStart[i]) },
+                                           { "end", round4 (state.loopEnd[i]) } };
+            }
             if (! sd.isEmpty() || sounds.contains (QString::number (s)))
                 sounds[QString::number (s)] = sd;
         }
@@ -184,7 +209,22 @@ void Project::toApp (seq::Sequencer& sequencer, session::State& state, int& bpm)
         state.groupVolume[(size_t) g] = std::clamp (gd["volume"].toInt (100), 0, 127);
         const QJsonObject sounds = gd["sounds"].toObject();
         for (int s = 1; s <= 16; ++s)
-            state.samples[(size_t) (g * 16 + s - 1)] = sounds[QString::number (s)].toObject()["sample"].toString();
+        {
+            const size_t i = (size_t) (g * 16 + s - 1);
+            const QJsonObject sd = sounds[QString::number (s)].toObject();
+            state.samples[i] = sd["sample"].toString();
+            static const QStringList synthNames { "Kick", "Snare", "Closed HH", "Open HH", "Tone" };
+            const QString syn = sd["synth"].toString();
+            state.synth[i] = syn == "None" ? 0 : synthNames.contains (syn) ? (int) synthNames.indexOf (syn) + 1 : -1;
+            const QJsonObject env = sd["envelope"].toObject();
+            const QJsonObject loop = sd["loop"].toObject();
+            state.playMode[i] = ! env.contains ("mode") ? session::State::defaultMode (s)
+                              : env["mode"].toString() == "ONE-SHOT" ? session::State::OneShot
+                              : loop["on"].toBool() ? session::State::Loop : session::State::Gate;
+            state.releaseMs[i] = std::clamp (env["release"].toInt (150), 5, 5000);
+            state.loopStart[i] = (float) std::clamp (loop["start"].toDouble (0), 0.0, 1.0);
+            state.loopEnd[i] = (float) std::clamp (loop["end"].toDouble (1), 0.0, 1.0);
+        }
         sequencer.clear (g);
         sequencer.setPatternLength (g, 16);
         sequencer.setGroupOff (g, gd["off"].toBool (false));

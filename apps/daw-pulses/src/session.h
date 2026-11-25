@@ -4,6 +4,8 @@
 #pragma once
 #include <QColor>
 #include <QString>
+#include <QUrl>
+#include <QList>
 
 #include <algorithm>
 #include <array>
@@ -23,6 +25,16 @@ inline const QColor kAccent (252, 95, 0);                                    // 
 
 inline QString groupName (int g) { return QString (QChar ('A' + g % 8)) + (g >= 8 ? "2" : ""); }
 inline int groupHue (int g) { return g < 8 ? kGroupHues[(size_t) g] : kGroupHues[(size_t) (15 - g)]; }
+// Le premier fichier MIDI (.mid, .midi) parmi des URL glissees (vide sinon)
+inline QString midiFileIn (const QList<QUrl>& urls)
+{
+    for (const QUrl& u : urls)
+        if (u.isLocalFile() && (u.toLocalFile().endsWith (".mid", Qt::CaseInsensitive)
+                                || u.toLocalFile().endsWith (".midi", Qt::CaseInsensitive)))
+            return u.toLocalFile();
+    return {};
+}
+
 inline QColor groupColor (int g) { return g < 8 ? kGroupColors[(size_t) g] : kGroupColors[(size_t) (15 - g)]; }
 
 // Hauteur par defaut d'un son : 1-4 batterie (C4), 5-16 C mineur pentatonique des C3
@@ -95,7 +107,57 @@ struct State
     // Sample de chaque son (chemin du fichier ; vide = son de synthese). Interface seulement.
     std::array<QString, kGroups * 16> samples;
 
-    State() { for (auto& v : groupVolume) v = 100; }
+    // Comment joue chaque son : One-shot (va au bout), Gate (s'arrete au relachement),
+    // Loop (boucle de loopStart a loopEnd, fractions du fichier, tant que la note tient)
+    enum PlayMode { OneShot = 0, Gate = 1, Loop = 2 };
+    std::array<std::atomic<int>, kGroups * 16> playMode {};
+    std::array<std::atomic<float>, kGroups * 16> loopStart {}, loopEnd {};
+    std::array<std::atomic<int>, kGroups * 16> releaseMs {};
+
+    // Synthe de chaque son, comme le pilote : -1 = celui du pad (A-H : batterie 1-4, Tone 5-16 ;
+    // A2-H2 : aucun), 0 = aucun (« None » : son vide), 1-5 = Kick, Snare, Closed HH, Open HH, Tone
+    std::array<std::atomic<int>, kGroups * 16> synth {};
+    // Le son a un instrument (sample ou synthe) ? Sinon il ne joue pas et son pad est eteint.
+    // Tenu a jour par l'interface (lu aussi par la lecture du pattern).
+    std::array<std::atomic<bool>, kGroups * 16> hasInstrument {};
+    static int defaultSynth (int sound) { return sound <= 4 ? sound : 5; }
+    int effSynth (int g, int sound) const
+    {
+        const int v = synth[(size_t) index (g, sound)];
+        return v >= 0 ? v : g >= 8 ? 0 : defaultSynth (sound);
+    }
+
+    static int index (int g, int sound) { return g * 16 + sound - 1; }
+    int mode (int g, int sound) const { return playMode[(size_t) index (g, sound)]; }
+    bool held (int g, int sound) const { return mode (g, sound) != OneShot; }   // note tenue (ADSR)
+    static int defaultMode (int sound) { return sound <= 4 ? OneShot : Gate; }  // batterie / notes
+
+    void resetSounds()                               // nouveau projet : sons par defaut
+    {
+        for (int i = 0; i < kGroups * 16; ++i)
+        {
+            samples[(size_t) i].clear();
+            playMode[(size_t) i] = defaultMode (i % 16 + 1);
+            loopStart[(size_t) i] = 0.0f;
+            loopEnd[(size_t) i] = 1.0f;
+            releaseMs[(size_t) i] = 150;
+            synth[(size_t) i] = -1;
+            hasInstrument[(size_t) i] = i < 8 * 16;   // A-H : synthes du pad ; A2-H2 : vides
+        }
+    }
+
+    State()
+    {
+        for (auto& v : groupVolume) v = 100;
+        for (int i = 0; i < kGroups * 16; ++i)
+        {
+            playMode[(size_t) i] = defaultMode (i % 16 + 1);
+            loopEnd[(size_t) i] = 1.0f;
+            releaseMs[(size_t) i] = 150;
+            synth[(size_t) i] = -1;
+            hasInstrument[(size_t) i] = i < 8 * 16;
+        }
+    }
 
     // Velocite envoyee au moteur : velocite jouee x volume du groupe x master (0 = muet)
     int outVelocity (int g, int velocity) const

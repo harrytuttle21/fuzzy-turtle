@@ -43,6 +43,7 @@ signals:
     void beat (int beatInBar);                   // 0-3, dans la tache de l'interface
     void row (int row);                          // ligne jouee (tete de lecture)
     void playingChanged (bool playing);
+    void played (int group, int sound, int note, int gateMs);   // note du pattern (affichage clavier)
 
 private:
     void run();

@@ -23,9 +23,11 @@ public:
     int selectedRow() const { return selRow; }
     int selectedTrack() const { return selTrack; }
     QList<QPoint> selection() const;                 // notes choisies (x = piste, y = ligne)
-    void clearSelection() { selected.clear(); update(); }
+    void clearSelection() { selected.clear(); frameRect = {}; update(); }
+    QRect frame() const { return frameRect; }      // zone tracee a la souris (x = pistes, y = lignes)
     void setSelection (const QList<QPoint>& cells);  // x = piste, y = ligne
     void setCurrentCell (int row, int track) { selRow = row; selTrack = track; update(); }
+    void moveCursor (int rows, int tracks);          // fleches du clavier (la page suit)
 
     static QString copyKey();                        // « ⌥ » sur Mac, « Alt » ailleurs
 
@@ -35,6 +37,10 @@ signals:
     void cellsMoved (const QList<QPoint>& cells, int rows, int tracks, bool copy);   // decalage
     void padDropped (int pad, int row);               // la note va dans la piste du pad
     void trackClicked (int track, bool solo);         // en-tete : clic = mute, Shift + clic = solo
+    void midiDropped (const QString& path, int sound);   // fichier .mid depose sur une colonne
+    void cellClicked (int track);                     // clic dans une case : choisir son son
+    void cellMenu (int row, int track, const QPoint& globalPos);   // clic droit dans la grille
+    void cellDoubleClicked (int row, int track);      // double-clic : options de la note
 
 protected:
     void paintEvent (QPaintEvent*) override;
@@ -46,6 +52,8 @@ protected:
     void dragMoveEvent (QDragMoveEvent*) override;
     void dragLeaveEvent (QDragLeaveEvent*) override;
     void dropEvent (QDropEvent*) override;
+    void contextMenuEvent (QContextMenuEvent*) override;   // en-tete : clic droit = solo ; grille : menu
+    void mouseDoubleClickEvent (QMouseEvent*) override;
 
 private:
     static constexpr int kMaxVisible = 16;           // lignes visibles au plus
@@ -63,6 +71,7 @@ private:
     int bandRow = -1, bandTrack = -1;                // coin de depart du cadre
     bool moving = false, banding = false;
     QSet<int> bandBase;                              // selection avant le cadre (Shift)
+    QRect frameRect;                                 // derniere zone tracee (remplissage)
     QPointF pressPos;
 
     const seq::Sequencer& sequencer;
