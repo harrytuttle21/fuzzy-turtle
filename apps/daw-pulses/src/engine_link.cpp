@@ -158,6 +158,11 @@ void EngineLink::setLoop (int group, int sound, bool on, float start, float end)
     send (fuzzy::osc::message ("/fuzzy/proto/sample/loop", { group, sound, on ? 1 : 0, start, end }));
 }
 
+void EngineLink::setReverse (int group, int sound, bool on) const
+{
+    send (fuzzy::osc::message ("/fuzzy/proto/sample/reverse", { group, sound, on ? 1 : 0 }));
+}
+
 void EngineLink::requestPeaks (int group, int sound) const
 {
     send (fuzzy::osc::message ("/fuzzy/proto/sample/peaks", { group, sound }));

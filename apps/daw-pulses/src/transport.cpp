@@ -80,13 +80,13 @@ void Transport::run()
     const auto playHit = [this] (const seq::Hit& h)
     {
         const int sound = h.track + 1;
-        const int v = state.outVelocity (h.group, h.velocity);
+        const int v = state.outVelocity (h.group, sound, h.velocity);   // volume du son, du groupe, master
         if (v > 0 && state.audible (h.group, sound)    // mute / solo ; son vide : rien
             && state.hasInstrument[(size_t) state.index (h.group, sound)])
         {
-            engine.hit (sound, v, h.note, h.group, state.held (h.group, sound),
+            engine.hit (sound, v, state.pitched (h.group, sound, h.note), h.group, state.held (h.group, sound),
                         state.releaseMs[(size_t) state.index (h.group, sound)], std::max (10, h.gateMs),
-                        state.effSynth (h.group, sound));
+                        state.effSynth (h.group, sound), state.pan (h.group, sound));
             emit played (h.group, sound, h.note, h.gateMs);
         }
     };

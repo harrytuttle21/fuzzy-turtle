@@ -112,6 +112,31 @@ int main (int argc, char** argv)
                          ok ? "OK    " : "ECHEC ", loopOn ? "boucle tenue    " : "sans boucle     ", late, jump, tail);
         }
     }
+    {   // Reverse : un sample muet au debut et fort a la fin ; a l'envers, ca sonne tout de suite
+        for (const bool rev : { false, true })
+        {
+            EventQueue q; SampleBank bank; Engine eng (q, bank);
+            std::vector<float> L (128), R (128); float* outs[2] { L.data(), R.data() };
+            juce::AudioIODeviceCallbackContext ctx {};
+            auto smp = std::make_unique<Sample>();
+            smp->rate = 48000; smp->root = 60;
+            smp->data.setSize (1, 9601);
+            for (int i = 0; i <= 9600; ++i)            // 0,1 s muet puis 0,1 s de sinus
+                smp->data.setSample (0, i, i < 4800 ? 0.0f : (float) std::sin (i * 0.06));
+            bank.set (0, 1, std::move (smp));
+            bank.setReverse (0, 1, rev);
+            PadEvent e { 1, 120, 60, 0 }; e.tag = 0; q.push (e);
+            float start = 0;
+            for (int b = 0; b < 20; ++b)                // les 50 premieres ms
+            {
+                eng.audioDeviceIOCallbackWithContext (nullptr, 0, outs, 2, 128, ctx);
+                for (float v : L) start = std::max (start, std::abs (v));
+            }
+            const bool ok = rev ? start > 0.1f : start < 0.0005f;
+            fails += ! ok;
+            std::printf ("%s  %s : debut de la lecture %.3f\n", ok ? "OK    " : "ECHEC ", rev ? "reverse        " : "a l'endroit    ", start);
+        }
+    }
     // Samples donnes en argument (WAV, MP3...) : lus directement depuis le fichier, puis joues
     juce::AudioFormatManager formats;
     formats.registerBasicFormats();

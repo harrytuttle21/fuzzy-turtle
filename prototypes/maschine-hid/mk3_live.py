@@ -21,6 +21,8 @@ Modes, comme sur Maschine :
   Bouton 7      (Keyboard / Chords) LINK : chaque groupe a sa tonalite (root, octave, gamme) ;
                 bouton 7 puis boutons de groupe = lier des groupes (ils partagent la tonalite) ;
                 Shift + 7 = tous les groupes / aucun ; bouton 7 = termine
+  DUPLICATE     tenu + pad + pad = copier le son (sample, synthe, reglages) ; tenu + pad, groupe, pad =
+                vers un autre groupe ; tenu + groupe + groupe = copier le groupe (sons, patterns, volume).
   GROUPES       16 groupes : A-H et A2-H2 ; Shift + groupe = ce groupe dans l'autre banque (A <-> A2),
                 les 8 boutons suivent la banque ; MIXER page 2 = A2-H2 ; MIDI IN canaux 9-16 = A2-H2.
   PATTERN       pads = 16 patterns du groupe (64 : 4 banques, < > ou encodeur 2) ; vide eteint,
@@ -518,6 +520,8 @@ class State:
         self.kit_names = {g: '' for g in GROUPS}   # kit charge sur chaque groupe
         self.sent_samples: dict = {}           # ce que le moteur a deja recu
         self.loops: dict = {}                  # (groupe, son) -> boucle {'on', 'start', 'end'} (reglee dans DAW Pulses)
+        self.reverse: set = set()              # (groupe, son) joues a l'envers (regle dans DAW Pulses)
+        self.sent_reverse: dict = {}
         self.sent_loops: dict = {}             # boucles deja envoyees au moteur
         self.browse = None                     # PLUG-IN : liste ouverte ('kit' / 'synth' / None)
         self.kit_sel = 0
@@ -551,6 +555,7 @@ class State:
         self.drag = None                         # molette 4D : appui long + rotation (deplacer / copier)
         self.last_click = None                   # molette 4D : (heure, ligne, piste) du dernier clic court
         self.clip_pattern = None                 # Shift + pad 11 / 12 en mode PATTERN
+        self.dup_src = None                      # DUPLICATE tenu : ('sound', groupe, pad) ou ('group', groupe)
         self.clip_scene = None                   # Shift + pad 11 / 12 en mode SCENE
         self.file_mode = False                   # FILE : projets (enregistrer, ouvrir...)
         # ARRANGER : liste de scenes jouees dans l'ordre (mode SONG)
@@ -1689,6 +1694,12 @@ def sync_samples(st: State) -> None:
                 st.sent_samples[key] = path
             else:
                 st.sent_samples.pop(key, None)
+    # A l'envers (Reverse, regle dans DAW Pulses)
+    for key in set(st.reverse) | set(st.sent_reverse):
+        on = key in st.reverse
+        if st.sent_reverse.get(key) != on:
+            SOUND.send('/fuzzy/proto/sample/reverse', GROUPS.index(key[0]), key[1], int(on))
+            st.sent_reverse[key] = on
     # Boucles (apres les samples : le moteur garde l'ordre des messages)
     for key in set(st.loops) | set(st.sent_loops):
         lp = st.loops.get(key, {'on': False, 'start': 0.0, 'end': 1.0})
@@ -1792,6 +1803,7 @@ def engine_sync(st: State, keep_output: bool) -> None:
     send_midi(st)
     st.sent_samples = {}                               # moteur (re)demarre : tout renvoyer
     st.sent_loops = {}
+    st.sent_reverse = {}
     sync_samples(st)
     st.engine_synced = True
     threading.Thread(target=scan_card_types, args=(st,), daemon=True).start()
@@ -2988,6 +3000,10 @@ def handle(st: State, ev: tuple) -> None:
             if not shown:
                 st.toast = (msg, now + 2)
             return
+        if ('duplicate' in st.held and 'shift' not in st.held
+                and not (st.pattern_mode or st.scene_mode or st.arranger_mode or st.file_mode)):
+            duplicate_pad(st, pad)                   # DUPLICATE + pad (source) + pad (cible) : copier le son
+            return
         if st.file_mode:                             # FILE : les pads jouent, sans rien modifier
             if st.right_view == 'chords' and not st.step_mode:
                 notes = st.chord_notes(pad)
@@ -3158,6 +3174,8 @@ def handle(st: State, ev: tuple) -> None:
             st.toast = ('Metronome ON' if st.metro else 'Metronome OFF', time.monotonic() + 1.5)
         if name == 'nav_click' and not pressed:      # molette 4D relachee
             drag_release(st)
+        if name == 'duplicate':                      # DUPLICATE appuye / relache : nouvelle copie
+            st.dup_src = None
         if not pressed:
             return
         if st.settings and not st.set_confirm and settings_button(st, name):
@@ -3255,6 +3273,8 @@ def handle(st: State, ev: tuple) -> None:
                 scene_free_toggle(st, g)
             elif 'shift' in st.held and not ({'mute', 'solo'} & st.held) and not st.link_edit:
                 st.group = letter if g.endswith('2') else letter + '2'   # Shift + groupe : autre banque
+            elif 'duplicate' in st.held and not (st.pattern_mode or st.arranger_mode):
+                duplicate_group(st, g)               # DUPLICATE + groupe + groupe : copier le groupe
             elif 'mute' in st.held:                    # MUTE + groupe : couper / reactiver
                 st.muted ^= {g}
             elif 'solo' in st.held:                  # SOLO + groupe(s) : n'ecouter que ceux-la
@@ -3775,6 +3795,71 @@ def pattern_pad(st: State, pad: int, vel: int) -> None:
         select_pattern(st, g, idx)
 
 
+def copy_sound(st: State, src: tuple, dst: tuple) -> None:
+    """Copie un son (sample, boucle, sens, synthe, enveloppe, volume, reglages) ; comme DAW Pulses."""
+    if src == dst:
+        return
+    for table in (st.samples, st.loops):
+        if src in table:
+            table[dst] = json.loads(json.dumps(table[src]))
+        else:
+            table.pop(dst, None)
+    st.reverse.discard(dst)
+    if src in st.reverse:
+        st.reverse.add(dst)
+    eff = st.eff_synth(*src)                         # le synthe reel (celui du pad depend du pad)
+    st.synth.pop(dst, None)
+    if st.eff_synth(*dst) != eff:
+        st.synth[dst] = eff
+    st.env[dst] = dict(st.env[src])
+    st.sound_vol[dst] = st.sound_vol[src]
+    st.params[dst] = list(st.params[src])
+
+
+def duplicate_pad(st: State, pad: int) -> None:
+    """DUPLICATE tenu : 1er pad = la source, pad suivant = la cible (aussi dans un autre groupe :
+    DUPLICATE + pad, groupe, pad)."""
+    now = time.monotonic()
+    src = st.dup_src
+    if not src or src[0] != 'sound':
+        st.dup_src = ('sound', st.group, pad)
+        st.toast = (f'Copy {st.group} {pad:02d} {st.sound_name(pad)} to ? (pad)', now + 3)
+        return
+    if (src[1], src[2]) == (st.group, pad):
+        return
+    copy_sound(st, (src[1], src[2]), (st.group, pad))
+    sync_samples(st)
+    st.dup_src = None
+    st.toast = (f'Sound {src[1]} {src[2]:02d} copied to {st.group} {pad:02d}', now + 2)
+
+
+def duplicate_group(st: State, g: str) -> None:
+    """DUPLICATE tenu : 1er groupe = la source, groupe suivant = la cible (16 sons, patterns,
+    volume). Avec un son en attente (DUPLICATE + pad) : le groupe s'ouvre pour choisir le pad."""
+    now = time.monotonic()
+    src = st.dup_src
+    if src and src[0] == 'sound':                    # son en attente : on va dans ce groupe
+        st.group = g
+        st.toast = (f'Copy {src[1]} {src[2]:02d} to group {g}: pad ?', now + 3)
+        return
+    if not src:
+        st.dup_src = ('group', g)
+        st.toast = (f'Copy group {g} to ? (group)', now + 3)
+        return
+    if src[1] == g:
+        return
+    snapshot(st)
+    for s in range(1, 17):
+        copy_sound(st, (src[1], s), (g, s))
+    st.patterns[g] = [None if p is None else json.loads(json.dumps(p)) for p in st.patterns[src[1]]]
+    st.pat_index[g] = st.pat_index[src[1]]
+    st.group_vol[g] = st.group_vol[src[1]]
+    st.kit_names[g] = st.kit_names[src[1]]
+    sync_samples(st)
+    st.dup_src = None
+    st.toast = (f'Group {src[1]} copied to {g}', now + 2)
+
+
 def pattern_function(st: State, pad: int) -> None:
     """Mode PATTERN, Shift + pad (serigraphie MK3) sur le pattern choisi du groupe : 1 / 3
     annuler, 2 / 4 refaire, 9 Clear, 11 Copy, 12 Paste, 13 / 14 demi-ton, 15 / 16 octave
@@ -3903,6 +3988,7 @@ def project_data(st: State) -> dict:
                                          'envelope': st.env[(g, s)],
                                          **({'sample': st.samples[(g, s)]} if (g, s) in st.samples else {}),
                                          **({'loop': st.loops[(g, s)]} if (g, s) in st.loops else {}),
+                                         **({'reverse': True} if (g, s) in st.reverse else {}),
                                          **({'synth': SYNTHS[st.synth[(g, s)] - 1] if st.synth[(g, s)] else 'None'}
                                             if (g, s) in st.synth else {})}
                                 for s in range(1, 17)}}
@@ -4011,6 +4097,7 @@ def load_project(st: State, name: str) -> None:
             st.samples.pop((g, snd), None)
             st.synth.pop((g, snd), None)
             st.loops.pop((g, snd), None)
+            st.reverse.discard((g, snd))
         if gd.get('key'):
             st.keys[g].update(gd['key'])
         for s, sd in gd.get('sounds', {}).items():
@@ -4021,6 +4108,8 @@ def load_project(st: State, name: str) -> None:
                                    'release': int(e.get('release', 150))}
             if sd.get('sample'):
                 st.samples[(g, int(s))] = sd['sample']
+            if sd.get('reverse'):                         # a l'envers (DAW Pulses)
+                st.reverse.add((g, int(s)))
             if isinstance(sd.get('loop'), dict):         # boucle reglee dans DAW Pulses
                 st.loops[(g, int(s))] = {'on': bool(sd['loop'].get('on')),
                                          'start': float(sd['loop'].get('start', 0)),

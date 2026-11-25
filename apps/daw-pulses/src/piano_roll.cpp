@@ -138,14 +138,132 @@ void PianoRollView::removeNote (int row, int pitch)
     sequencer.setCell (state.group, row, track(), withNotes (c, notes));
 }
 
+QRectF PianoRollView::noteBox (int r, const seq::Cell& c, int pitch) const
+{
+    const double cw = colWidth();
+    return QRectF (xOfRow (r + c.offset / double (seq::kTiming)) + 1, yOfPitch (pitch) + 1,
+                   std::max (4.0, c.length * cw - c.offset / double (seq::kTiming) * cw - 2), rowPx - 2);
+}
+
+QList<QPoint> PianoRollView::selection() const
+{
+    QList<QPoint> out;
+    for (int k : sel)
+        out << QPoint (k / 128, k % 128);
+    return out;
+}
+
+void PianoRollView::selectAll()
+{
+    const seq::Pattern pat = sequencer.pattern (state.group);
+    sel.clear();
+    for (int r = 0; r < pat.length; ++r)
+        for (int p : notesOf (pat.rows[(size_t) r][(size_t) track()]))
+            sel.insert (key (r, p));
+    update();
+}
+
+int PianoRollView::deleteSelection()
+{
+    if (sel.isEmpty())
+        return 0;
+    emit aboutToEdit();
+    const int n = (int) sel.size();
+    for (int k : sel)
+        removeNote (k / 128, k % 128);
+    sel.clear();
+    emit edited();
+    update();
+    return n;
+}
+
+int PianoRollView::transpose (int step)
+{
+    QList<int> keys = sel.values();
+    if (keys.isEmpty() && lastNote >= 0)
+        keys << lastNote;
+    // la note doit encore exister
+    const seq::Pattern pat = sequencer.pattern (state.group);
+    keys.erase (std::remove_if (keys.begin(), keys.end(), [&] (int k)
+    {
+        return k / 128 >= pat.length || ! notesOf (pat.rows[(size_t) (k / 128)][(size_t) track()]).contains (k % 128);
+    }), keys.end());
+    if (keys.isEmpty())
+        return 0;
+    emit aboutToEdit();
+    const bool hadSel = ! sel.isEmpty();
+    if (! moveNotes (keys, 0, step, false))
+        return 0;
+    if (! hadSel)
+    {
+        lastNote = keys[0] + step;
+        sel.clear();
+    }
+    emit edited();
+    if (keys.size() == 1)
+        emit keyPressed (keys[0] % 128 + step), emit keyReleased (keys[0] % 128 + step);
+    return (int) keys.size();
+}
+
+bool PianoRollView::moveNotes (const QList<int>& keys, int dr, int dp, bool copy)
+{
+    // Toutes les notes bougent ensemble ; si une sortait du pattern ou du clavier : rien ne bouge
+    seq::Pattern pat = sequencer.pattern (state.group);
+    const int t = track();
+    struct N { int row, pitch; seq::Cell from; };
+    QList<N> list;
+    for (int k : keys)
+    {
+        const int r = k / 128, p = k % 128;
+        if (r + dr < 0 || r + dr >= pat.length || p + dp < 0 || p + dp > 127)
+            return false;
+        list << N { r, p, pat.rows[(size_t) r][(size_t) t] };
+    }
+    const seq::Pattern before = pat;
+    if (! copy)
+        for (const N& n : list)
+        {
+            seq::Cell& c = pat.rows[(size_t) n.row][(size_t) t];
+            QList<int> notes = notesOf (c);
+            notes.removeAll (n.pitch);
+            c = withNotes (c, notes);
+        }
+    QSet<int> placed;
+    for (const N& n : list)
+    {
+        seq::Cell& to = pat.rows[(size_t) (n.row + dr)][(size_t) t];
+        QList<int> notes = notesOf (to);
+        if (to.empty())
+            to = { n.pitch + dp, n.from.velocity, n.from.length, dr == 0 ? n.from.offset : 0 };
+        if (! notes.contains (n.pitch + dp) && notes.size() <= seq::kChordExtra)
+            notes << n.pitch + dp;
+        to = withNotes (to, notes);
+        placed.insert (key (n.row + dr, n.pitch + dp));
+    }
+    auto same = [] (const seq::Cell& a, const seq::Cell& b)
+    {
+        return a.note == b.note && a.extra == b.extra && a.velocity == b.velocity && a.length == b.length && a.offset == b.offset;
+    };
+    for (int r = 0; r < pat.length; ++r)
+        if (! same (pat.rows[(size_t) r][(size_t) t], before.rows[(size_t) r][(size_t) t]))
+            sequencer.setCell (state.group, r, t, pat.rows[(size_t) r][(size_t) t]);
+    if (! sel.isEmpty())
+        sel = placed;                                // la selection suit les notes
+    update();
+    return true;
+}
+
 void PianoRollView::paintEvent (QPaintEvent*)
 {
     QPainter g (this);
     const seq::Pattern pat = sequencer.pattern (state.group);
     const QColor color = session::groupColor (state.group);
-    if (shownSound != state.sound)                    // autre son : on se place sur ses notes
+    if (shownSound != state.sound || shownGroup != state.group)   // autre son : on se place sur ses notes
     {
         shownSound = state.sound;
+        shownGroup = state.group;
+        sel.clear();
+        lastNote = -1;
         int sum = 0, n = 0;
         for (int r = 0; r < pat.length; ++r)
             for (int p : notesOf (pat.rows[(size_t) r][(size_t) track()]))
@@ -218,7 +336,8 @@ void PianoRollView::paintEvent (QPaintEvent*)
             if (dragged && drag == Drag::Move)
                 fill.setAlphaF (0.25);                     // sa place d'origine pendant le deplacement
             g.fillRect (box, fill);
-            g.setPen (QColor (255, 255, 255, 90));
+            const bool chosen = sel.contains (key (r, pitch));
+            g.setPen (chosen ? QPen (Qt::white, 2) : QPen (QColor (255, 255, 255, 90)));
             g.drawRect (box);
             if (box.width() > 34)
             {
@@ -230,14 +349,24 @@ void PianoRollView::paintEvent (QPaintEvent*)
             }
         }
     }
-    // Note deplacee : sa nouvelle place
+    // Notes deplacees : leur nouvelle place
     if (drag == Drag::Move && moved)
     {
-        const seq::Cell& c = pat.rows[(size_t) dragRow][(size_t) track()];
-        QRectF box (xOfRow (targetRow) + 1, yOfPitch (targetPitch) + 1, std::max (4.0, c.length * cw - 2), rowPx - 2);
+        const int dr = targetRow - dragRow, dp = targetPitch - dragPitch;
         g.setPen (QPen (Qt::white, 1.5, Qt::DashLine));
         g.setBrush (QColor (255, 255, 255, 40));
-        g.drawRect (box);
+        const QSet<int> keys = sel.contains (key (dragRow, dragPitch)) ? sel : QSet<int> { key (dragRow, dragPitch) };
+        for (int k : keys)
+        {
+            const seq::Cell& c = pat.rows[(size_t) (k / 128)][(size_t) track()];
+            g.drawRect (QRectF (xOfRow (k / 128 + dr) + 1, yOfPitch (k % 128 + dp) + 1, std::max (4.0, c.length * cw - 2), rowPx - 2));
+        }
+    }
+    if (banding && ! bandRect.isNull())               // cadre de selection
+    {
+        g.setPen (QPen (QColor (255, 255, 255, 160), 1, Qt::DashLine));
+        g.setBrush (QColor (255, 255, 255, 18));
+        g.drawRect (bandRect);
     }
     // Tete de lecture
     if (playing && playRow >= 0)
@@ -265,8 +394,27 @@ void PianoRollView::mousePressEvent (QMouseEvent* e)
     moved = false;
     int row = 0, pitch = 0;
     bool edge = false;
+    const bool shift = e->modifiers() & Qt::ShiftModifier;
+    if (noteAt (p, row, pitch, edge) && shift)       // Shift + clic : ajouter / retirer de la selection
+    {
+        const int k = key (row, pitch);
+        sel.contains (k) ? (void) sel.remove (k) : (void) sel.insert (k);
+        lastNote = k;
+        update();
+        return;
+    }
+    if (shift)                                       // Shift + glisser dans le vide : cadre de selection
+    {
+        banding = true;
+        bandBase = sel;
+        bandRect = {};
+        return;
+    }
     if (noteAt (p, row, pitch, edge))
     {
+        if (! sel.contains (key (row, pitch)))
+            sel.clear();                             // autre note : la selection repart d'elle
+        lastNote = key (row, pitch);
         dragRow = targetRow = row;
         dragPitch = targetPitch = pitch;
         newLength = sequencer.pattern (state.group).rows[(size_t) row][(size_t) track()].length;
@@ -274,6 +422,7 @@ void PianoRollView::mousePressEvent (QMouseEvent* e)
         return;
     }
     // Case vide (ou accord a completer) : nouvelle note ; tirer = sa duree
+    sel.clear();
     const int r = std::clamp ((int) rowAt (p.x()), 0, sequencer.patternLength (state.group) - 1);
     const int y = pitchAt (p.y());
     seq::Cell c = sequencer.pattern (state.group).rows[(size_t) r][(size_t) track()];
@@ -285,6 +434,7 @@ void PianoRollView::mousePressEvent (QMouseEvent* e)
         c = { y, state.velocity.load(), 1, 0 };
     notes << y;
     sequencer.setCell (state.group, r, track(), withNotes (c, notes));
+    lastNote = key (r, y);
     emit keyPressed (y);                              // on entend la note posee
     keyDown = y;
     dragRow = r;
@@ -299,6 +449,21 @@ void PianoRollView::mousePressEvent (QMouseEvent* e)
 void PianoRollView::mouseMoveEvent (QMouseEvent* e)
 {
     const QPointF p = e->position();
+    if (banding)
+    {
+        bandRect = QRectF (pressPos, p).normalized();
+        const seq::Pattern pat = sequencer.pattern (state.group);
+        sel = bandBase;
+        for (int r = 0; r < pat.length; ++r)
+        {
+            const seq::Cell& c = pat.rows[(size_t) r][(size_t) track()];
+            for (int pitch : notesOf (c))
+                if (noteBox (r, c, pitch).intersects (bandRect))
+                    sel.insert (key (r, pitch));
+        }
+        update();
+        return;
+    }
     if (drag == Drag::None)
     {
         int row = 0, pitch = 0;
@@ -342,9 +507,19 @@ void PianoRollView::mouseReleaseEvent (QMouseEvent* e)
             emit edited();
         }
     }
+    else if (drag == Drag::Move && moved && (targetRow != dragRow || targetPitch != dragPitch)
+             && sel.size() > 1 && sel.contains (key (dragRow, dragPitch)))
+    {
+        emit aboutToEdit();                          // toute la selection bouge
+        moveNotes (sel.values(), targetRow - dragRow, targetPitch - dragPitch, e->modifiers() & Qt::AltModifier);
+        emit edited();
+    }
     else if (drag == Drag::Move && moved && (targetRow != dragRow || targetPitch != dragPitch))
     {
         const seq::Cell from = sequencer.pattern (state.group).rows[(size_t) dragRow][(size_t) track()];
+        lastNote = key (targetRow, targetPitch);
+        if (sel.size() == 1)
+            sel = { lastNote };
         emit aboutToEdit();
         if (! (e->modifiers() & Qt::AltModifier))     // Option / Alt : copie
             removeNote (dragRow, dragPitch);
@@ -359,6 +534,8 @@ void PianoRollView::mouseReleaseEvent (QMouseEvent* e)
     }
     drag = Drag::None;
     moved = false;
+    banding = false;
+    bandRect = {};
     unsetCursor();
     update();
 }

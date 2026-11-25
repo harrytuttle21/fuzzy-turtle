@@ -27,6 +27,7 @@ class QStackedWidget;
 class QDockWidget;
 class QToolBar;
 class QMenu;
+class QCheckBox;
 class PadGrid;
 class PianoKeys;
 class Transport;
@@ -34,6 +35,7 @@ class QComboBox;
 class QFrame;
 class QLabel;
 class QPushButton;
+class QMimeData;
 class QSlider;
 class QSpinBox;
 
@@ -132,7 +134,47 @@ private:
     QDockWidget* rollDock = nullptr;
     QDockWidget* keysTabDock = nullptr;              // onglet Keyboard (grand clavier, gammes, accords)
     KeyboardView* keyboardView = nullptr;
-    QLabel* keyInfo = nullptr;                       // octave et velocite (onglet Keyboard)
+    QLabel* keyInfo = nullptr;                       // (plus utilise : remplace par les cases ci-dessous)
+    QSpinBox* octaveSpin = nullptr;                  // onglet Keyboard : octave et velocite, comme le BPM
+    QSpinBox* velocitySpin = nullptr;
+    void showAbout();
+    void releaseAllKeys();                           // l'app perd la main : plus aucune note tenue
+    void transposePattern (int semitones);           // selection (ou case du curseur) : demi-tons / octaves
+    void transposeRoll (int semitones);              // piano roll : selection, sinon la derniere note
+    // Copier / deplacer un son (sample, synthe, mode, boucle, reglages) ou un groupe entier
+    struct SoundCopy
+    {
+        bool valid = false;
+        QString sample;
+        int mode = 0, release = 150, synth = -1, volume = 100, pan = 64, pitch = 64, cutoff = 90;
+        float loopStart = 0.0f, loopEnd = 1.0f;
+        bool reverse = false;
+    };
+    SoundCopy takeSound (int group, int pad) const;
+    void putSound (int group, int pad, const SoundCopy& s);
+    void emptySound (int group, int pad);            // pad vide (aucun instrument)
+    bool soundIsEmpty (int group, int pad) const;
+    enum class Transfer { Copy, Move, Swap };
+    void transferSound (int fromGroup, int fromPad, int toGroup, int toPad, Transfer how);
+    void transferGroup (int from, int to, Transfer how);
+    void soundDropMenu (int fromGroup, int fromPad, int toPad, const QPoint& at);   // pad lache sur un pad
+    void pickPadDialog (int fromGroup, int fromPad, int toGroup, bool cut = false);   // pad lache sur un groupe
+    bool confirmGroup (int from, int to, Transfer how);
+    void groupDropped (int buttonIndex, const QMimeData* mime);
+    SoundCopy soundClip;                             // « Copy Sound » : son en attente de collage
+    int soundClipGroup = -1, soundClipPad = 0;       // d'ou il vient (« Cut » : a vider au collage)
+    bool soundClipCut = false;
+    int groupClip = -1;                              // « Copy Group »
+    bool groupClipCut = false;
+    int dupGroup = -1, dupPad = 0;                   // Maschine : DUPLICATE + source + cible
+    std::atomic<bool> duplicateHeld { false };
+    QPushButton *groupUnmute = nullptr, *groupUnsolo = nullptr;
+    QPoint groupPress { -1, -1 };                    // glisser un bouton de groupe
+    int groupPressIndex = -1;
+    bool editMode = false;                           // Pattern : Entree / Suppr ajoutent, effacent
+    QPushButton* editButton = nullptr;
+    QCheckBox* reverseBox = nullptr;                 // onglet Sound : sample a l'envers
+    std::array<int, session::kGroups * 16> sentReverse {};   // deja envoye au moteur (-1 = jamais)
     music::KeySettings keySettings;
     QHash<int, QList<int>> keyChords;                // touche -> notes jouees (accord compris)
     bool chordMerge = false;                         // enregistrement : ajouter a l'accord de la case
@@ -140,6 +182,28 @@ private:
     int currentView() const;                         // 0 Mixer, 1 Pattern, 2 Piano Roll, 3 Keyboard
     void toggleView (int index, const QString& name);
     QWidget* buildKeyboardTab();
+    // Onglet Sound : reglages du son choisi (source, lecture, volume, pan, pitch, cutoff)
+    QDockWidget* soundDock = nullptr;
+    QWidget* buildSoundTab();
+    void refreshSoundPanel();
+    void soundKnob (int index, int delta);           // encodeurs de la Maschine (1-8, comme le pilote)
+    // Pads : PAD MODE (16 sons) ou KEYBOARD (le son choisi sur 16 notes, gamme et accords)
+    std::atomic<bool> padKeyboard { false };
+    std::array<std::atomic<int>, 17> padKey {};      // note jouee par chaque pad en mode KEYBOARD
+    int padNote (int pad) const;                     // note d'un pad en mode KEYBOARD
+    void setPadKeyboard (bool on);
+    struct SoundWidgets
+    {
+        QLabel* title = nullptr;
+        QComboBox* synth = nullptr;
+        QLabel* sample = nullptr;
+        QPushButton* removeSample = nullptr;
+        QComboBox* mode = nullptr;
+        QPushButton* editLoop = nullptr;
+        QSpinBox* release = nullptr;
+        std::array<QSlider*, 4> sliders {};          // Volume, Pan, Pitch, Cutoff
+        std::array<QLabel*, 4> values {};
+    } soundUi;
     void playKey (int key, int velocity, bool down); // touche de clavier : note ou accord
     std::atomic<bool> maschineShift { false };       // Shift tenu sur la Maschine (lu par la tache des pads)
     void shiftPad (int pad);                         // Shift + pad : fonctions de la serigraphie
@@ -154,6 +218,7 @@ private:
     QLabel* rollTitle = nullptr;
     QWidget* buildPianoRoll();
     bool patternShown() const;                       // le panneau Pattern est-il visible ?
+    bool rollShown() const;                          // et le Piano Roll ?
     QSpinBox* lengthBox = nullptr;
     QPushButton* metroButton = nullptr;
     QPushButton* keysButton = nullptr;               // jeu au clavier de l'ordinateur : marche / arret
@@ -170,6 +235,9 @@ private:
     QFrame* leftScreen = nullptr;
 
     std::array<std::atomic<int>, 17> padGroup {};    // groupe de la frappe : la fin de note y va
+    std::array<std::atomic<int>, 17> padSent {};     // note envoyee au moteur (pitch compris)
+    struct LiveNote { int sound, sent, group; };
+    QHash<int, LiveNote> liveNotes;                  // clavier : note jouee -> ce qui a ete envoye
     QHash<int, int> keyNotes;                        // touche tenue -> note (clavier de l'ordinateur)
     // Enregistrement en cours (REC + lecture) : la duree est donnee au relachement
     struct RecNote { seq::Sequencer::Written where; std::chrono::steady_clock::time_point start; bool active = false; };

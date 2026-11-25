@@ -65,6 +65,7 @@ private:
     int oldMode;
     float oldStart, oldEnd;
     double seconds = 0;
+    int previewNote = 60;
     WaveView* wave = nullptr;
     QLabel* info = nullptr;
     QButtonGroup* modes = nullptr;

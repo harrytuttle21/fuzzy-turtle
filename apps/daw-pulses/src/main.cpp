@@ -7,6 +7,7 @@
 #include "main_window.h"
 
 #include <QApplication>
+#include <QIcon>
 #include <QCommandLineParser>
 #include <QTimer>
 
@@ -15,7 +16,10 @@ int main (int argc, char** argv)
     QApplication app (argc, argv);
     QApplication::setOrganizationName ("Fuzzy Turtle Software");
     QApplication::setApplicationName ("DAW Pulses");
-    QApplication::setApplicationVersion ("0.1.0");
+    QApplication::setApplicationVersion (FUZZY_VERSION);
+#ifdef FUZZY_HAS_LOGO
+    QApplication::setWindowIcon (QIcon (":/logo_icon.png"));   // icone de l'app (resources/logo.png)
+#endif   // la version du projet (CMakeLists.txt)
 
     QCommandLineParser parser;
     parser.addHelpOption();

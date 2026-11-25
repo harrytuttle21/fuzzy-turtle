@@ -136,6 +136,7 @@ void PadGrid::mouseMoveEvent (QMouseEvent* e)
     render (&image, QPoint(), QRegion (r.toRect()));
     auto* mime = new QMimeData;
     mime->setData (kPadMime, QByteArray::number (pad));
+    mime->setData (kSoundMime, QString ("%1:%2").arg (group).arg (pad).toLatin1());
     auto* drag = new QDrag (this);
     drag->setMimeData (mime);
     drag->setPixmap (image.scaled (image.size() / 2, Qt::KeepAspectRatio, Qt::SmoothTransformation));
@@ -159,7 +160,8 @@ QStringList audioFiles (const QMimeData* mime)
 
 void PadGrid::dragEnterEvent (QDragEnterEvent* e)
 {
-    if (! audioFiles (e->mimeData()).isEmpty() || ! session::midiFileIn (e->mimeData()->urls()).isEmpty())
+    if (e->mimeData()->hasFormat (kSoundMime) || ! audioFiles (e->mimeData()).isEmpty()
+        || ! session::midiFileIn (e->mimeData()->urls()).isEmpty())
         e->acceptProposedAction();
 }
 
@@ -179,6 +181,21 @@ void PadGrid::dragLeaveEvent (QDragLeaveEvent*)
 void PadGrid::dropEvent (QDropEvent* e)
 {
     const int pad = padAt (e->position());
+    if (e->mimeData()->hasFormat (kSoundMime))       // un autre pad lache ici : copier / deplacer
+    {
+        const QStringList from = QString::fromLatin1 (e->mimeData()->data (kSoundMime)).split (':');
+        dropPad = 0;
+        update();
+        if (pad && from.size() == 2)
+        {
+            e->acceptProposedAction();
+            const int g = from[0].toInt(), p = from[1].toInt();
+            const QPoint at = mapToGlobal (e->position().toPoint());
+            if (! (g == group && p == pad))           // apres le glisser (pas pendant)
+                QMetaObject::invokeMethod (this, [this, g, p, pad, at] { emit soundDropped (g, p, pad, at); }, Qt::QueuedConnection);
+        }
+        return;
+    }
     const QString midiPath = session::midiFileIn (e->mimeData()->urls());
     if (pad && ! midiPath.isEmpty())                 // fichier MIDI : les notes pour ce son
     {

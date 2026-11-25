@@ -131,17 +131,43 @@ public:
         if (tag < 0 || tag > 15 || pad < 1 || pad > 16) return nullptr;
         return slots[(size_t) (tag * 16 + pad - 1)].load (std::memory_order_acquire);
     }
+    // Ce qui est joue : le sample, ou sa copie a l'envers si le son est en Reverse
+    const Sample* play (int tag, int pad) const
+    {
+        if (tag < 0 || tag > 15 || pad < 1 || pad > 16) return nullptr;
+        const size_t i = (size_t) (tag * 16 + pad - 1);
+        return (reverse[i] ? backwards[i] : slots[i]).load (std::memory_order_acquire);
+    }
+    bool reversed (int tag, int pad) const
+    {
+        return tag >= 0 && tag <= 15 && pad >= 1 && pad <= 16 && reverse[(size_t) (tag * 16 + pad - 1)];
+    }
+    void setReverse (int tag, int pad, bool on)
+    {
+        if (tag < 0 || tag > 15 || pad < 1 || pad > 16) return;
+        reverse[(size_t) (tag * 16 + pad - 1)] = on;
+    }
     // Fil principal seulement. Les anciens samples sont gardes en memoire : une voix qui
     // joue encore peut les lire sans risque.
     void set (int tag, int pad, std::unique_ptr<Sample> sample)
     {
         if (tag < 0 || tag > 15 || pad < 1 || pad > 16) return;
         const Sample* p = sample.get();
-        if (sample) keep.push_back (std::move (sample));
+        const Sample* r = nullptr;
+        if (sample)
+        {
+            auto back = std::make_unique<Sample> (*sample);   // copie a l'envers (Reverse)
+            back->data.reverse (0, back->data.getNumSamples());
+            r = back.get();
+            keep.push_back (std::move (sample));
+            keep.push_back (std::move (back));
+        }
+        backwards[(size_t) (tag * 16 + pad - 1)].store (r, std::memory_order_release);
         slots[(size_t) (tag * 16 + pad - 1)].store (p, std::memory_order_release);
     }
 private:
-    std::array<std::atomic<const Sample*>, 256> slots {};
+    std::array<std::atomic<const Sample*>, 256> slots {}, backwards {};
+    std::array<std::atomic<bool>, 256> reverse {};
     std::vector<std::unique_ptr<Sample>> keep;
     struct AtomicLoop { std::atomic<bool> on { false }; std::atomic<float> start { 0 }, end { 1 }; };
     std::array<AtomicLoop, 256> loops {};
@@ -197,6 +223,7 @@ struct Voice
     const Sample* sample = nullptr;          // fichier joue (nullptr = son de synthese)
     double pos = 0, step = 1;                // lecture du fichier
     bool looping = false;                    // boucle : de loopStart a loopEnd tant que la note tient
+    double drumRatio = 1;                    // batterie de synthese : 1 = do 4 (hauteur d'origine)
     double loopStart = 0, loopEnd = 0, xfade = 0;   // en echantillons du fichier
 
     void start (const PadEvent& e, const Sample* smp = nullptr, double sr = 48000, LoopInfo loop = {})
@@ -216,6 +243,7 @@ struct Voice
         held = adsr;
         gate = adsr && e.gateMs > 0 ? e.gateMs / 1000.0 : 0;
         releaseTime = juce::jlimit (0.005, 5.0, e.releaseMs / 1000.0);
+        drumRatio = std::pow (2.0, (e.note - 60) / 12.0);   // batterie de synthese : hauteur jouee
         // Boucle : seulement pour un sample tenu (mode ADSR), et assez longue (>= 5 ms)
         looping = false;
         if (smp && adsr && loop.on)
@@ -296,14 +324,14 @@ struct Voice
         }
         else switch (kind)
         {
-            case 1: { // grosse caisse : sinus qui descend de 150 a 45 Hz
-                const double f = 45 + 105 * std::exp (-time / 0.04);
+            case 1: { // grosse caisse : sinus qui descend de 150 a 45 Hz (do 4 ; suit la note jouee)
+                const double f = (45 + 105 * std::exp (-time / 0.04)) * drumRatio;
                 phase += 2 * juce::MathConstants<double>::pi * f * dt;
                 s = (float) (std::sin (phase) * env (0.35));
                 break;
             }
             case 2: { // caisse claire : bruit + corps a 180 Hz
-                phase += 2 * juce::MathConstants<double>::pi * 180 * dt;
+                phase += 2 * juce::MathConstants<double>::pi * 180 * drumRatio * dt;
                 s = (float) (std::sin (phase) * 0.5 * env (0.08)
                              + (noise.nextFloat() * 2 - 1) * 0.7 * env (0.15));
                 break;
@@ -477,7 +505,10 @@ private:
         if (chosen == nullptr)                       // toutes occupees : la plus ancienne
             for (auto& v : voices)
                 if (chosen == nullptr || v.time > chosen->time) chosen = &v;
-        chosen->start (e, bank.get (e.tag, e.pad), sampleRate, bank.loop (e.tag, e.pad));
+        LoopInfo loop = bank.loop (e.tag, e.pad);
+        if (bank.reversed (e.tag, e.pad))                 // a l'envers : la boucle aussi
+            loop = { loop.on, 1.0f - loop.end, 1.0f - loop.start };
+        chosen->start (e, bank.play (e.tag, e.pad), sampleRate, loop);
     }
 };
 
@@ -535,6 +566,7 @@ struct MidiRequest { juce::String input, output; int clock = 0; bool transport =
 
 struct SampleRequest { int tag = 0, pad = 1, root = 60; juce::String path; };
 struct LoopRequest { int tag = 0, pad = 1; LoopInfo loop; };
+struct ReverseRequest { int tag = 0, pad = 1; bool on = false; };
 
 struct Requests
 {
@@ -543,6 +575,7 @@ struct Requests
     std::optional<MidiRequest> midi;
     std::vector<SampleRequest> samples;
     std::vector<LoopRequest> loops;
+    std::vector<ReverseRequest> reverses;
     std::vector<std::pair<int, int>> peaks;              // forme d'onde demandee (groupe, son)
 };
 
@@ -587,6 +620,12 @@ private:
             const auto flt = [&m] (int i, float d) { return i < m.size() && m[i].isFloat32() ? m[i].getFloat32() : d; };
             std::lock_guard<std::mutex> g (requests.lock);
             requests.loops.push_back ({ num (0), num (1), { num (2) != 0, flt (3, 0), flt (4, 1) } });
+            return;
+        }
+        if (address == "/fuzzy/proto/sample/reverse") // groupe, son, a l'envers (0/1)
+        {
+            std::lock_guard<std::mutex> g (requests.lock);
+            requests.reverses.push_back ({ num (0), num (1), num (2) != 0 });
             return;
         }
         if (address == "/fuzzy/proto/sample/peaks")   // groupe, son : forme d'onde pour l'editeur
@@ -802,10 +841,12 @@ int main (int argc, char* argv[])
         std::optional<MidiRequest> midiReq;
         std::vector<SampleRequest> sampleReqs;
         std::vector<LoopRequest> loopReqs;
+        std::vector<ReverseRequest> reverseReqs;
         std::vector<std::pair<int, int>> peakReqs;
         {
             std::lock_guard<std::mutex> g (requests.lock);
             loopReqs.swap (requests.loops);
+            reverseReqs.swap (requests.reverses);
             peakReqs.swap (requests.peaks);
             audioReq.swap (requests.audio);
             midiReq.swap (requests.midi);
@@ -831,12 +872,14 @@ int main (int argc, char* argv[])
         }
         for (const auto& r : loopReqs)
             bank.setLoop (r.tag, r.pad, r.loop);
+        for (const auto& r : reverseReqs)
+            bank.setReverse (r.tag, r.pad, r.on);
         for (const auto& [tag, pad] : peakReqs)          // forme d'onde : duree (s) + 256 crêtes
         {
             juce::OSCMessage reply ("/fuzzy/proto/sample/peaks");
             reply.addInt32 (tag);
             reply.addInt32 (pad);
-            const Sample* smp = bank.get (tag, pad);
+            const Sample* smp = bank.play (tag, pad);
             if (smp == nullptr)
             {
                 reply.addFloat32 (0);

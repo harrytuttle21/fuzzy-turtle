@@ -9,6 +9,8 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
+#include <algorithm>
 #include <atomic>
 
 namespace session {
@@ -128,6 +130,29 @@ struct State
     }
 
     static int index (int g, int sound) { return g * 16 + sound - 1; }
+
+    // Reglages de chaque son, comme le pilote (« volume » et « params » : Volume, Pan, Pitch, Cutoff)
+    std::array<std::atomic<int>, kGroups * 16> soundVolume {};   // 0-127, 100 = tel quel
+    std::array<std::atomic<int>, kGroups * 16> soundPan {};      // 0-127, 64 = centre
+    std::array<std::atomic<int>, kGroups * 16> soundPitch {};    // 64 = hauteur d'origine, 1 pas = 1 demi-ton
+    std::array<std::atomic<int>, kGroups * 16> soundCutoff {};   // garde pour le filtre (pas encore dans le moteur)
+    std::array<std::atomic<bool>, kGroups * 16> soundReverse {}; // sample joue a l'envers
+    int pitchSemitones (int g, int sound) const { return std::clamp (soundPitch[(size_t) index (g, sound)].load() - 64, -24, 24); }
+    int pitched (int g, int sound, int note) const { return std::clamp (note + pitchSemitones (g, sound), 0, 127); }
+    int pan (int g, int sound) const { return soundPan[(size_t) index (g, sound)]; }
+    // Velocite envoyee au moteur pour un son : x volume du son, du groupe et master
+    int outVelocity (int g, int sound, int velocity) const
+    {
+        return outVelocity (g, (int) std::lround (velocity * soundVolume[(size_t) index (g, sound)].load() / 100.0));
+    }
+    void resetSoundSettings (size_t i)
+    {
+        soundVolume[i] = 100;
+        soundPan[i] = 64;
+        soundPitch[i] = 64;
+        soundCutoff[i] = 90;
+        soundReverse[i] = false;
+    }
     int mode (int g, int sound) const { return playMode[(size_t) index (g, sound)]; }
     bool held (int g, int sound) const { return mode (g, sound) != OneShot; }   // note tenue (ADSR)
     static int defaultMode (int sound) { return sound <= 4 ? OneShot : Gate; }  // batterie / notes
@@ -143,6 +168,7 @@ struct State
             releaseMs[(size_t) i] = 150;
             synth[(size_t) i] = -1;
             hasInstrument[(size_t) i] = i < 8 * 16;   // A-H : synthes du pad ; A2-H2 : vides
+            resetSoundSettings ((size_t) i);
         }
     }
 
@@ -156,6 +182,7 @@ struct State
             releaseMs[(size_t) i] = 150;
             synth[(size_t) i] = -1;
             hasInstrument[(size_t) i] = i < 8 * 16;
+            resetSoundSettings ((size_t) i);
         }
     }
 

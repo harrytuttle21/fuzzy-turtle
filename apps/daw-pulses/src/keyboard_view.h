@@ -16,16 +16,27 @@ namespace music {
 struct KeySettings
 {
     int root = 0;                                    // tonique : 0 = C ... 11 = B
-    int scale = 0;                                   // index dans music::scales() (0 = Chromatic)
-    int chordMode = 0;                               // 0 aucun, 1 Harmonizer, 2 Chord Set
+    int scale = 0;                                   // >= 0 : music::scales() (0 = Chromatic) ; < 0 : personnalisee (-1 = la 1re)
+    int chordMode = 0;                               // 0 aucun, 1 Harmonizer, 2 Chord Set, 3 accord personnalise
     int harmony = 2;                                 // index dans music::harmonies() (1-3-5)
     int chordSet = 0;                                // index dans music::chordSets()
+    int customChord = 0;                             // index dans customChords()
 };
+
+// Gammes et accords personnalises (enregistres dans les reglages de l'app)
+struct Custom { QString name; std::vector<int> notes; };   // gamme : degres 0-11 ; accord : intervalles
+std::vector<Custom>& customScales();
+std::vector<Custom>& customChords();
+void loadCustom();
+void saveCustom();
+const std::vector<int>& scaleSteps (int scale);        // gamme fournie (>= 0) ou personnalisee (< 0)
+int customScaleId (int index);                          // index personnalise -> valeur de « scale »
 
 bool inScale (int note, const KeySettings& k);
 QList<int> chordFor (int note, const KeySettings& k);   // notes jouees pour une touche (accord compris)
 QString chordName (QList<int> notes);                    // « Cm7 », sinon les notes
-QString scaleLabel (int index);                          // « Major : Lydian »
+QString scaleLabel (int index);                          // « Major : Lydian », « Custom : Ma gamme »
+QString chordLabel (const KeySettings& k);              // « Harmonizer 1-3-5 », « Custom : Jazz 9 »...
 
 } // namespace music
 
@@ -37,6 +48,7 @@ public:
     void setActive (int note, bool on);              // note tenue (clavier, souris, Maschine)
     void flash (int note, int ms);                   // note jouee par le pattern
     void setKeyLabels (const QMap<int, QString>& labels) { keyLabels = labels; update(); }   // lettres de l'ordinateur (note -> lettre)
+    void setColorScale (bool on) { colorScale = on; update(); }   // gamme en couleur, ou touches classiques
     QSize sizeHint() const override { return { 900, 260 }; }
     QSize minimumSizeHint() const override { return { 420, 140 }; }
 
@@ -62,5 +74,6 @@ private:
     QTimer tick;
     int mouseNote = -1;
     QMap<int, QString> keyLabels;
+    bool colorScale = true;
     static constexpr int kOctaves = 4, kTop = 46;
 };

@@ -140,6 +140,19 @@ QJsonObject build (QJsonObject d, const QString& name, const seq::Sequencer& seq
                 env["release"] = state.releaseMs[i].load();
                 sd["envelope"] = env;
             }
+            // Volume et reglages (Volume, Pan, Pitch, Cutoff), comme le pilote
+            const QJsonArray params { state.soundVolume[i].load(), state.soundPan[i].load(),
+                                      state.soundPitch[i].load(), state.soundCutoff[i].load() };
+            if (sd.contains ("params") || state.soundVolume[i] != 100 || state.soundPan[i] != 64
+                || state.soundPitch[i] != 64 || state.soundCutoff[i] != 90)
+            {
+                sd["volume"] = state.soundVolume[i].load();
+                sd["params"] = params;
+            }
+            if (state.soundReverse[i])                    // sample a l'envers
+                sd["reverse"] = true;
+            else
+                sd.remove ("reverse");
             // Synthe comme le pilote : nom, « None » = son vide, sans cle = celui du pad
             static const QStringList synthNames { "Kick", "Snare", "Closed HH", "Open HH", "Tone" };
             const int syn = state.synth[i];
@@ -216,6 +229,12 @@ void Project::toApp (seq::Sequencer& sequencer, session::State& state, int& bpm)
             static const QStringList synthNames { "Kick", "Snare", "Closed HH", "Open HH", "Tone" };
             const QString syn = sd["synth"].toString();
             state.synth[i] = syn == "None" ? 0 : synthNames.contains (syn) ? (int) synthNames.indexOf (syn) + 1 : -1;
+            state.soundReverse[i] = sd["reverse"].toBool (false);
+            const QJsonArray params = sd["params"].toArray();
+            state.soundVolume[i] = std::clamp (sd["volume"].toInt (params.size() > 0 ? params[0].toInt (100) : 100), 0, 127);
+            state.soundPan[i] = std::clamp (params.size() > 1 ? params[1].toInt (64) : 64, 0, 127);
+            state.soundPitch[i] = std::clamp (params.size() > 2 ? params[2].toInt (64) : 64, 0, 127);
+            state.soundCutoff[i] = std::clamp (params.size() > 3 ? params[3].toInt (90) : 90, 0, 127);
             const QJsonObject env = sd["envelope"].toObject();
             const QJsonObject loop = sd["loop"].toObject();
             state.playMode[i] = ! env.contains ("mode") ? session::State::defaultMode (s)

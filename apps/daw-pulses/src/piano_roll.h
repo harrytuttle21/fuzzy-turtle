@@ -11,6 +11,7 @@
 #include "session.h"
 
 #include <QColor>
+#include <QSet>
 #include <QTimer>
 #include <QWidget>
 
@@ -37,6 +38,12 @@ public:
     QSize minimumSizeHint() const override { return { 320, 160 }; }
 
     // Notes d'une case (note + accord) et case refaite a partir d'une liste de notes
+    // Selection (x = ligne, y = note) : Shift + clic, Shift + cadre, Cmd+A
+    QList<QPoint> selection() const;
+    void selectAll();
+    void clearSelection() { sel.clear(); update(); }
+    int deleteSelection();                           // renvoie le nombre de notes effacees
+    int transpose (int semitones);                   // selection, sinon la derniere note touchee
     static QList<int> notesOf (const seq::Cell& c);
     static seq::Cell withNotes (seq::Cell base, const QList<int>& notes);
 
@@ -74,6 +81,9 @@ private:
     double yOfPitch (int pitch) const;
     bool noteAt (const QPointF& p, int& row, int& pitch, bool& edge) const;   // note sous la souris
     void removeNote (int row, int pitch);
+    static int key (int row, int pitch) { return row * 128 + pitch; }
+    QRectF noteBox (int row, const seq::Cell& c, int pitch) const;
+    bool moveNotes (const QList<int>& keys, int dr, int dp, bool copy);   // deplace / copie des notes
 
     seq::Sequencer& sequencer;
     const session::State& state;
@@ -87,4 +97,10 @@ private:
     int dragRow = 0, dragPitch = 0, targetRow = 0, targetPitch = 0, newLength = 1, keyDown = -1;
     QPointF pressPos;
     bool moved = false;
+    // Selection
+    QSet<int> sel, bandBase;
+    bool banding = false;
+    QRectF bandRect;
+    int lastNote = -1;                               // derniere note touchee (transposition sans selection)
+    int shownGroup = -1;
 };

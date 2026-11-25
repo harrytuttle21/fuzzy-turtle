@@ -3,6 +3,7 @@
 #include "music_tables.h"
 
 #include <QDateTime>
+#include <QSettings>
 #include <QMouseEvent>
 #include <QPainter>
 
@@ -21,7 +22,7 @@ bool isBlack (int n)
 
 const std::vector<int>& steps (const KeySettings& k)
 {
-    return scales()[(size_t) std::clamp (k.scale, 0, (int) scales().size() - 1)].steps;
+    return scaleSteps (k.scale);
 }
 
 // k-ieme note de la gamme a partir de « base » (k peut depasser l'octave)
@@ -31,6 +32,75 @@ int degreeNote (int base, const std::vector<int>& s, int k)
     const int oct = (int) std::floor (k / (double) n);
     return base + s[(size_t) (((k % n) + n) % n)] + 12 * oct;
 }
+}
+
+std::vector<Custom>& customScales()
+{
+    static std::vector<Custom> list;
+    return list;
+}
+
+std::vector<Custom>& customChords()
+{
+    static std::vector<Custom> list;
+    return list;
+}
+
+namespace {
+// « Nom|0,2,4,5 » <-> Custom
+std::vector<Custom> readList (const QStringList& items)
+{
+    std::vector<Custom> out;
+    for (const QString& item : items)
+    {
+        const QString name = item.section ('|', 0, 0);
+        std::vector<int> notes;
+        for (const QString& n : item.section ('|', 1).split (',', Qt::SkipEmptyParts))
+            notes.push_back (n.toInt());
+        if (! name.isEmpty() && ! notes.empty())
+            out.push_back ({ name, notes });
+    }
+    return out;
+}
+
+QStringList writeList (const std::vector<Custom>& list)
+{
+    QStringList out;
+    for (const Custom& c : list)
+    {
+        QStringList notes;
+        for (int n : c.notes)
+            notes << QString::number (n);
+        out << c.name + "|" + notes.join (',');
+    }
+    return out;
+}
+}
+
+void loadCustom()
+{
+    QSettings s;
+    customScales() = readList (s.value ("custom/scales").toStringList());
+    customChords() = readList (s.value ("custom/chords").toStringList());
+}
+
+void saveCustom()
+{
+    QSettings s;
+    s.setValue ("custom/scales", writeList (customScales()));
+    s.setValue ("custom/chords", writeList (customChords()));
+}
+
+const std::vector<int>& scaleSteps (int scale)
+{
+    if (scale < 0 && -scale - 1 < (int) customScales().size())
+        return customScales()[(size_t) (-scale - 1)].notes;
+    return scales()[(size_t) std::clamp (scale, 0, (int) scales().size() - 1)].steps;
+}
+
+int customScaleId (int index)
+{
+    return -index - 1;
 }
 
 bool inScale (int note, const KeySettings& k)
@@ -59,6 +129,11 @@ QList<int> chordFor (int note, const KeySettings& k)
         else
             for (int d : h.degrees)
                 out << degreeNote (base, s, deg + d);
+    }
+    else if (k.chordMode == 3 && k.customChord < (int) customChords().size())   // accord personnalise
+    {
+        for (int i : customChords()[(size_t) k.customChord].notes)
+            out << note + i;
     }
     else if (k.chordMode == 2)                       // Chord Set : 12 accords sur les 12 notes de l'octave
     {
@@ -120,8 +195,23 @@ QString chordName (QList<int> notes)
 
 QString scaleLabel (int index)
 {
-    const Scale& s = scales()[(size_t) index];
+    if (index < 0)
+        return -index - 1 < (int) customScales().size() ? QString ("Custom : %1").arg (customScales()[(size_t) (-index - 1)].name)
+                                                          : QString ("Custom : ?");
+    const Scale& s = scales()[(size_t) std::clamp (index, 0, (int) scales().size() - 1)];
     return QString ("%1 : %2").arg (s.bank, s.name);
+}
+
+QString chordLabel (const KeySettings& k)
+{
+    switch (k.chordMode)
+    {
+        case 1: return QString ("Harmonizer %1").arg (harmonies()[(size_t) std::clamp (k.harmony, 0, (int) harmonies().size() - 1)].name);
+        case 2: return QString ("Chord Set %1").arg (chordSets()[(size_t) std::clamp (k.chordSet, 0, (int) chordSets().size() - 1)].name);
+        case 3: return k.customChord < (int) customChords().size() ? QString ("Custom : %1").arg (customChords()[(size_t) k.customChord].name)
+                                                                   : QString ("Custom : ?");
+        default: return QString ("Chords off");
+    }
 }
 
 } // namespace music
@@ -232,9 +322,7 @@ void KeyboardView::paintEvent (QPaintEvent*)
     g.setFont (small);
     g.setPen (QColor (150, 150, 160));
     static const char* roots[12] { "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B" };
-    const QString chordText = keys.chordMode == 1 ? QString ("Harmonizer %1").arg (music::harmonies()[(size_t) keys.harmony].name)
-                            : keys.chordMode == 2 ? QString ("Chord Set %1").arg (music::chordSets()[(size_t) keys.chordSet].name)
-                            : QString ("Chords off");
+    const QString chordText = music::chordLabel (keys);
     g.drawText (QRectF (width() * 0.45, 0, width() * 0.55 - 10, kTop - 4), Qt::AlignVCenter | Qt::AlignRight,
                 QString ("%1 %2   |   %3   |   Sound %4")
                     .arg (roots[keys.root]).arg (music::scaleLabel (keys.scale)).arg (chordText)
@@ -249,13 +337,21 @@ void KeyboardView::paintEvent (QPaintEvent*)
                 continue;
             const QRectF r = keyRect (n).adjusted (1, 0, -1, -1);
             QColor fill = black ? QColor (34, 34, 40) : QColor (232, 232, 236);
-            if (keys.scale != 0 && music::inScale (n, keys))
-                fill = black ? color.darker (220) : color.lighter (185);   // dans la gamme
+            const bool scaleNote = keys.scale != 0 && music::inScale (n, keys);
+            if (scaleNote && colorScale)
+                fill = black ? color.darker (220) : color.lighter (185);   // dans la gamme (Color)
             if (active.contains (n))
                 fill = color;                         // jouee
             g.setPen (QColor (10, 10, 12));
             g.setBrush (fill);
             g.drawRoundedRect (r, 3, 3);
+            if (scaleNote && ! colorScale && (n - keys.root) % 12 != 0 && ! active.contains (n))
+            {   // touches classiques : la gamme en petits points
+                g.setPen (Qt::NoPen);
+                g.setBrush (color.darker (black ? 100 : 130));
+                const double d = std::min (r.width() * 0.22, 6.0);
+                g.drawEllipse (QPointF (r.center().x(), r.bottom() - (black ? 10 : 24)), d / 2, d / 2);
+            }
             if ((n - keys.root) % 12 == 0)            // tonique : point
             {
                 g.setPen (Qt::NoPen);

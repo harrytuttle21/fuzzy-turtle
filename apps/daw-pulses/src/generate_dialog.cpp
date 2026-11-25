@@ -3,6 +3,8 @@
 #include "piano_roll.h"
 #include "keyboard_view.h"
 #include "music_tables.h"
+#include "scale_menu.h"
+#include <QMenu>
 
 #include <QCheckBox>
 #include <QComboBox>
@@ -48,7 +50,7 @@ seq::Pattern GenerateDialog::generate (const seq::Pattern& base, int track, int 
 
     // Notes possibles : la gamme sur l'etendue choisie
     std::vector<int> notes;
-    const auto& steps = music::scales()[(size_t) std::clamp (s.scale, 0, (int) music::scales().size() - 1)].steps;
+    const auto& steps = music::scaleSteps (s.scale);    // gamme du pilote ou personnalisee
     for (int o = 0; o < s.octaves; ++o)
         for (int st : steps)
             if (s.root + 12 * o + st <= 127)
@@ -158,10 +160,18 @@ GenerateDialog::GenerateDialog (seq::Sequencer& seqr, const session::State& stat
     fixedPitch = new QCheckBox (tr ("Always the pad note (drums)"));
     fixedPitch->setChecked (drums);
     form->addRow (tr ("Pitch"), fixedPitch);
-    scale = new QComboBox;
-    scale->addItems (scaleNames());
-    scale->setCurrentIndex (1);                      // Main : Major
-    scale->setMaxVisibleItems (20);
+    scale = new QPushButton (music::scaleLabel (scaleValue));   // Main : Major
+    auto* scaleMenu = new QMenu (scale);
+    scale->setMenu (scaleMenu);
+    connect (scaleMenu, &QMenu::aboutToShow, this, [this, scaleMenu]
+    {
+        music::fillScaleMenu (scaleMenu, scaleValue, [this] (int sc)
+        {
+            scaleValue = sc;
+            scale->setText (music::scaleLabel (sc));
+            roll (false);
+        }, this);
+    });
     root = new QComboBox;
     for (int n = 24; n <= 96; ++n)
         root->addItem (session::noteName (n), n);
@@ -219,7 +229,7 @@ GenerateDialog::GenerateDialog (seq::Sequencer& seqr, const session::State& stat
         connect (s, &QSlider::valueChanged, this, [this] { roll (false); });
     for (auto* b : { velMin, velMax, lenMin, lenMax, octaves })
         connect (b, &QSpinBox::valueChanged, this, [this] { roll (false); });
-    for (auto* c : { grid, scale, root, mode })
+    for (auto* c : { grid, root, mode })
         connect (c, &QComboBox::currentIndexChanged, this, [this] { roll (false); });
     for (auto* c : { accents, fixedPitch, walk })
         connect (c, &QCheckBox::toggled, this, [this] { roll (false); });
@@ -237,7 +247,7 @@ GenerateSettings GenerateDialog::read() const
     s.lenMin = lenMin->value();
     s.lenMax = lenMax->value();
     s.fixedPitch = fixedPitch->isChecked();
-    s.scale = scale->currentIndex();
+    s.scale = scaleValue;
     s.root = root->currentData().toInt();
     s.octaves = octaves->value();
     s.walk = walk->isChecked();

@@ -7,7 +7,9 @@
 
 #include <array>
 
-inline constexpr const char* kPadMime = "application/x-fuzzy-pad";   // pad glisse
+inline constexpr const char* kPadMime = "application/x-fuzzy-pad";   // pad glisse (numero, pour le pattern)
+inline constexpr const char* kSoundMime = "application/x-fuzzy-sound"; // "groupe:pad" (copier / deplacer le son)
+inline constexpr const char* kGroupMime = "application/x-fuzzy-group"; // groupe glisse (copier / deplacer)
 
 class PadGrid : public QWidget
 {
@@ -16,6 +18,7 @@ public:
     explicit PadGrid (QWidget* parent = nullptr);
 
     void setColor (const QColor& c) { color = c; update(); }
+    void setGroup (int g) { group = g; }             // groupe affiche (pour glisser un son)
     void setSelected (int pad) { selected = pad; update(); }
     void setLabel (int pad, const QString& text) { labels[(size_t) pad - 1] = text; update(); }
     void flash (int pad, bool down);                 // pad frappe (souris ou Maschine)
@@ -33,6 +36,7 @@ signals:
     void menuRequested (int pad, const QPoint& globalPos);
     void filesDropped (int pad, const QStringList& paths);   // fichiers audio deposes (Finder)
     void midiDropped (const QString& path, int sound);       // fichier .mid depose sur un pad
+    void soundDropped (int fromGroup, int fromPad, int toPad, const QPoint& globalPos);   // pad lache sur un pad
 
 protected:
     void paintEvent (QPaintEvent*) override;
@@ -52,7 +56,8 @@ private:
     QColor color { 252, 95, 0 };
     int selected = 1, mousePad = 0;
     QPointF pressPos;
-    int dropPad = 0;                                 // pad vise pendant un depot de fichiers
+    int dropPad = 0;
+    int group = 0;                                 // pad vise pendant un depot de fichiers
     std::array<QString, 16> labels;
     std::array<bool, 16> down {};
     std::array<char, 16> tags {};

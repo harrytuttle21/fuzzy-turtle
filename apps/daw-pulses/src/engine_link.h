@@ -55,6 +55,7 @@ public:
     // Boucle d'un son (debut et fin en fractions du fichier) ; forme d'onde pour l'editeur
     void setLoop (int group, int sound, bool on, float start, float end) const;
     void requestPeaks (int group, int sound) const;
+    void setReverse (int group, int sound, bool on) const;   // sample a l'envers
     void setOutput (const QString& output) const;
     // Reglages audio complets (vide / 0 = garder la valeur actuelle)
     void setAudio (const QString& output, const QString& input, int rate, int buffer) const;

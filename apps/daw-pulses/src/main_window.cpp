@@ -12,6 +12,7 @@
 #include "keyboard_view.h"
 #include "music_tables.h"
 #include "note_dialog.h"
+#include "scale_menu.h"
 #include "settings_dialog.h"
 #include "pad_grid.h"
 #include "piano_keys.h"
@@ -35,6 +36,11 @@
 #include <QDockWidget>
 #include <QToolBar>
 #include <QMenu>
+#include <QCheckBox>
+#include <QClipboard>
+#include <QPixmap>
+#include <QUrl>
+#include <QDesktopServices>
 #include <QScrollBar>
 #include <QScreen>
 #include <QGuiApplication>
@@ -48,6 +54,10 @@
 #include <QFileInfo>
 #include <QMessageBox>
 #include <QDir>
+#include <QDrag>
+#include <QMimeData>
+#include <QDialog>
+#include <QDialogButtonBox>
 #include <QStackedWidget>
 #include <QStatusBar>
 #include <QVBoxLayout>
@@ -58,7 +68,7 @@ using namespace session;
 namespace fc = fuzzy::control;
 
 namespace {
-constexpr int kLayoutVersion = 6;                  // disposition des panneaux (2 : Pattern et Mixer en panneaux)
+constexpr int kLayoutVersion = 7;                  // disposition des panneaux (2 : Pattern et Mixer en panneaux)
 
 // Clavier musical de l'ordinateur : rangee du milieu = touches blanches, rangee du haut = noires.
 struct KeyLayout { const char* notes; char octDown, octUp, velDown, velUp; };
@@ -74,6 +84,7 @@ fc::Rgb rgb (const QColor& c) { return { (uint8_t) c.red(), (uint8_t) c.green(),
 MainWindow::MainWindow (const Options& options, QWidget* parent) : QMainWindow (parent), opts (options)
 {
     setWindowTitle ("Fuzzy John DAW Pulses");
+    sentReverse.fill (-1);                           // rien encore envoye au moteur
     for (auto& g : padGroup)
         g = 0;
 
@@ -116,6 +127,7 @@ MainWindow::MainWindow (const Options& options, QWidget* parent) : QMainWindow (
     tabifyDockWidget (rollDock, mixerDock);
     groupsDock = makeDock (tr ("Groups"), "groupsDock", buildGroupBlock());
     keysTabDock = makeDock (tr ("Keyboard"), "keyboardTabDock", buildKeyboardTab());
+    soundDock = makeDock (tr ("Sound"), "soundDock", buildSoundTab());
     pads = new PadGrid;
     auto* padsPanel = new QWidget;                   // pads, et dessous : tout reactiver
     auto* padsCol = new QVBoxLayout (padsPanel);
@@ -129,6 +141,8 @@ MainWindow::MainWindow (const Options& options, QWidget* parent) : QMainWindow (
     splitDockWidget (groupsDock, keysTabDock, Qt::Horizontal);
     addDockWidget (Qt::BottomDockWidgetArea, padsDock);
     splitDockWidget (keysTabDock, padsDock, Qt::Horizontal);
+    tabifyDockWidget (keysTabDock, soundDock);       // Keyboard et Sound en onglets (apres les pads)
+    keysTabDock->raise();
 
     addDockWidget (Qt::RightDockWidgetArea, statusDock);
     statusDock->setFloating (true);                  // Status : fenetre a part, cachee
@@ -175,6 +189,15 @@ MainWindow::MainWindow (const Options& options, QWidget* parent) : QMainWindow (
         importMidi (path, state.sound);
     });
     fileMenu->addAction (settingsAction);            // Mac : range dans le menu de l'app (Cmd + ,)
+
+    // Menu About : version, contact
+    auto* aboutMenu = menuBar()->addMenu (tr ("&About"));
+    auto* aboutAction = aboutMenu->addAction (tr ("About Fuzzy John DAW Pulses..."), this, [this] { showAbout(); });
+    aboutAction->setMenuRole (QAction::NoRole);      // reste dans ce menu sur Mac
+    auto* appAbout = new QAction (tr ("About Fuzzy John DAW Pulses"), this);   // et dans le menu de l'app (Mac)
+    appAbout->setMenuRole (QAction::AboutRole);
+    connect (appAbout, &QAction::triggered, this, [this] { showAbout(); });
+    aboutMenu->addAction (appAbout);
 
     // Menu Edit : raccourcis habituels (Cmd sur Mac, Ctrl ailleurs ; Ctrl marche aussi sur Mac)
     auto* editMenu = menuBar()->addMenu (tr ("&Edit"));
@@ -314,6 +337,13 @@ MainWindow::MainWindow (const Options& options, QWidget* parent) : QMainWindow (
         emptyPad->setEnabled (! empty);
         auto* defaultSound = menu.addAction (tr ("Default Sound (%1)").arg (state.group >= 8 ? tr ("empty in A2-H2") : soundName (pad)));
         defaultSound->setEnabled (state.synth[i] != -1 || ! state.samples[i].isEmpty());
+        // Copier / couper / coller le son (aussi vers un autre groupe)
+        menu.addSeparator();
+        auto* copySound = menu.addAction (tr ("Copy Sound"));
+        auto* cutSound = menu.addAction (tr ("Cut Sound (move)"));
+        auto* pasteSound = menu.addAction (soundClip.valid ? tr ("Paste Sound (%1 %2)").arg (groupName (soundClipGroup)).arg (soundClipPad, 2, 10, QChar ('0'))
+                                                           : tr ("Paste Sound"));
+        pasteSound->setEnabled (soundClip.valid && ! (soundClipGroup == state.group && soundClipPad == pad));
         QAction* chosen = nullptr;
         for (auto* a : { mute, solo })
             connect (a, &QAction::triggered, &menu, [&chosen, a] { chosen = a; });
@@ -321,6 +351,37 @@ MainWindow::MainWindow (const Options& options, QWidget* parent) : QMainWindow (
             chosen = picked;
         if (chosen == mute || chosen == solo)
             toggleSound (state.group, pad, chosen == solo);
+        else if (chosen == copySound || chosen == cutSound)
+        {
+            soundClip = takeSound (state.group, pad);
+            soundClipGroup = state.group;
+            soundClipPad = pad;
+            soundClipCut = chosen == cutSound;
+            toast (QString ("%1 %2 %3").arg (soundClipCut ? "CUT" : "COPY").arg (groupName (state.group)).arg (pad, 2, 10, QChar ('0')));
+        }
+        else if (chosen == pasteSound)
+        {
+            const Transfer how = soundClipCut ? Transfer::Move : Transfer::Copy;
+            const bool replace = ! soundIsEmpty (state.group, pad);
+            if (! replace || QMessageBox::question (this, tr ("Paste Sound"),
+                    tr ("%1 %2 (%3) to %4 %5?\nIt replaces %6.")
+                        .arg (how == Transfer::Move ? tr ("Move") : tr ("Copy"))
+                        .arg (groupName (soundClipGroup) + QString (" %1").arg (soundClipPad, 2, 10, QChar ('0')))
+                        .arg (padName (soundClipGroup, soundClipPad))
+                        .arg (groupName (state.group)).arg (pad, 2, 10, QChar ('0'))
+                        .arg (padName (state.group, pad))) == QMessageBox::Yes)
+            {
+                // le son garde en memoire (Copy) peut avoir change depuis : on colle la copie
+                putSound (state.group, pad, soundClip);
+                if (how == Transfer::Move)
+                {
+                    emptySound (soundClipGroup, soundClipPad);
+                    soundClip.valid = false;
+                }
+                syncSamples();
+                refreshAll();
+            }
+        }
         else if (modeActions.contains (chosen))
         {
             state.playMode[i] = (int) modeActions.indexOf (chosen);
@@ -340,6 +401,7 @@ MainWindow::MainWindow (const Options& options, QWidget* parent) : QMainWindow (
         }
     });
     connect (pads, &PadGrid::midiDropped, this, &MainWindow::importMidi);
+    connect (pads, &PadGrid::soundDropped, this, &MainWindow::soundDropMenu);
     connect (pads, &PadGrid::filesDropped, this, [this] (int pad, const QStringList& files)
     {
         // Un fichier = ce pad ; plusieurs = ce pad et les suivants (par ordre de nom)
@@ -393,6 +455,7 @@ MainWindow::MainWindow (const Options& options, QWidget* parent) : QMainWindow (
         engineLabel->setText (why);
         sentSamples = {};                              // un moteur relance ne connait plus rien
         sentLoops = {};
+        sentReverse.fill (-1);
     });
     if (opts.engine && ! engine->start (settings.value ("output").toString()))
         engineLabel->setText (engine->error());
@@ -408,6 +471,7 @@ MainWindow::MainWindow (const Options& options, QWidget* parent) : QMainWindow (
         maschine->updateLights();
     });
     connect (maschine, &MaschineLink::button, this, &MainWindow::onMaschineButton);
+    connect (maschine, &MaschineLink::knob, this, &MainWindow::soundKnob);
     connect (maschine, &MaschineLink::jog, this, [this] (int d)
     {
         if (maschine->property ("tempoHeld").toBool())
@@ -427,6 +491,13 @@ MainWindow::MainWindow (const Options& options, QWidget* parent) : QMainWindow (
         for (int p = 1; p <= 16; ++p)                 // son coupe : eteint ; solo : vif
         {
             const char tag = state.soundTag (g, p);
+            if (padKeyboard)                          // mode KEYBOARD : toniques vives, autres notes douces
+            {
+                const bool playable = state.hasInstrument[(size_t) state.index (g, state.sound)];
+                l.setPad (p, hue, ! playable ? fc::Shade::Off
+                                  : (padNote (p) - keySettings.root) % 12 == 0 ? fc::Shade::Bright : fc::Shade::Dim);
+                continue;
+            }
             l.setPad (p, hue, tag == 'M' || tag == 'm' || ! state.hasInstrument[(size_t) state.index (g, p)] ? fc::Shade::Off
                               : p == state.sound || tag == 'S' ? fc::Shade::Bright : fc::Shade::Dim);
         }
@@ -441,7 +512,9 @@ MainWindow::MainWindow (const Options& options, QWidget* parent) : QMainWindow (
         l.setButton ("pattern", shown (patternView) ? fc::Shade::Bright : fc::Shade::Dim);
         l.setButton ("events", shown (pianoRoll) ? fc::Shade::Bright : fc::Shade::Dim);
         l.setButton ("mixer", shown (mixer) ? fc::Shade::Bright : fc::Shade::Dim);
-        l.setButton ("keyboard", shown (keyboardView) ? fc::Shade::Bright : fc::Shade::Dim);
+        l.setButton ("keyboard", padKeyboard ? fc::Shade::Bright : fc::Shade::Dim);
+        l.setButton ("pad_mode", padKeyboard ? fc::Shade::Dim : fc::Shade::Bright);
+        l.setButton ("plug_in", shown (soundUi.title) ? fc::Shade::Bright : fc::Shade::Dim);
         l.setButton ("variation", fc::Shade::Dim);
         l.setButton ("sampling", fc::Shade::Dim);
         l.setButton ("play", transport->playing() ? fc::Shade::Bright : fc::Shade::Dim);
@@ -467,7 +540,7 @@ MainWindow::MainWindow (const Options& options, QWidget* parent) : QMainWindow (
             const bool chosen = p == state.sound;
             left.fillRect (x, y, 110, 50, chosen ? rgb (acc) : fc::Rgb { 26, 26, 34 });
             left.frameRect (x, y, 110, 50, rgb (acc.darker (150)));
-            const auto name = QString ("%1 %2").arg (p, 2, 10, QChar ('0')).arg (padName (state.group, p)).left (13).toStdString();
+            const auto name = QString ("%1 %2").arg (p, 2, 10, QChar ('0')).arg (padKeyboard ? session::noteName (padNote (p)) : padName (state.group, p)).left (13).toStdString();
             left.text (x + 4, y + 17, name, chosen ? fc::kBlack : fc::kWhite);
         }
         // Ecran droit : transport
@@ -614,6 +687,7 @@ QWidget* MainWindow::buildGroupBlock()
     });
     head->addWidget (title);
     head->addStretch();
+    head->addWidget (muteSoloRow (groupUnmute, groupUnsolo, true));
     head->addWidget (bankButton);
     col->addLayout (head);
     auto* grid = new QGridLayout;
@@ -624,6 +698,9 @@ QWidget* MainWindow::buildGroupBlock()
         b->setCheckable (true);
         b->setFocusPolicy (Qt::NoFocus);
         b->setMinimumHeight (48);
+        b->setAcceptDrops (true);                    // pad ou groupe lache dessus
+        b->installEventFilter (this);                // glisser le groupe (copier / deplacer)
+        b->setProperty ("groupIndex", i);
         connect (b, &QPushButton::clicked, this, [this, i] { selectGroup (i + (state.group >= 8 ? 8 : 0)); });
         b->setContextMenuPolicy (Qt::CustomContextMenu);   // clic droit : Mute (rouge), Solo (jaune)
         connect (b, &QPushButton::customContextMenuRequested, this, [this, i, b] (const QPoint& p)
@@ -646,9 +723,26 @@ QWidget* MainWindow::buildGroupBlock()
                 items << action;
                 connect (button, &QPushButton::clicked, &menu, [&menu, &chosen, action] { chosen = action; menu.close(); });
             }
-            menu.exec (b->mapToGlobal (p));
+            menu.addSeparator();
+            auto* copyGroup = menu.addAction (tr ("Copy Group %1").arg (groupName (g)));
+            auto* cutGroup = menu.addAction (tr ("Cut Group %1 (move)").arg (groupName (g)));
+            auto* pasteGroup = menu.addAction (groupClip >= 0 ? tr ("Paste Group %1 here").arg (groupName (groupClip)) : tr ("Paste Group"));
+            pasteGroup->setEnabled (groupClip >= 0 && groupClip != g);
+            auto* picked = menu.exec (b->mapToGlobal (p));
             if (chosen)
                 toggleGroup (g, chosen == items[1]);
+            else if (picked == copyGroup || picked == cutGroup)
+            {
+                groupClip = g;
+                groupClipCut = picked == cutGroup;
+                toast (QString ("%1 GROUP %2").arg (groupClipCut ? "CUT" : "COPY").arg (groupName (g)));
+            }
+            else if (picked == pasteGroup && confirmGroup (groupClip, g, groupClipCut ? Transfer::Move : Transfer::Copy))
+            {
+                transferGroup (groupClip, g, groupClipCut ? Transfer::Move : Transfer::Copy);
+                if (groupClipCut)
+                    groupClip = -1;
+            }
         });
         grid->addWidget (b, i / 4, i % 4);
         groupButtons[(size_t) i] = b;
@@ -733,18 +827,42 @@ QWidget* MainWindow::buildLeftPanel()
     hint->setObjectName ("hint");
     hint->setSizePolicy (QSizePolicy::Ignored, QSizePolicy::Preferred);   // peut retrecir
     hint->setMinimumWidth (0);
-    tools->addWidget (hint);
-    tools->addStretch();
-    tools->addSpacing (10);
-    tools->addWidget (lenLabel);
-    tools->addWidget (lengthBox);
+    hint->setAlignment (Qt::AlignRight | Qt::AlignVCenter);
+    // Ordre : Edit enter, Length, x2, Generate, Clear, transposition ; aide a droite
+    editButton = new QPushButton (tr ("Edit enter"));
+    editButton->setCheckable (true);
+    editButton->setFocusPolicy (Qt::NoFocus);
+    editButton->setObjectName ("keys");              // orange quand actif
+    editButton->setToolTip (tr ("Edit mode: Enter adds / erases the note of the chosen sound, Del erases"));
+    editMode = QSettings().value ("pattern/edit", false).toBool();
+    editButton->setChecked (editMode);
+    connect (editButton, &QPushButton::toggled, this, [this] (bool on)
+    {
+        editMode = on;
+        QSettings().setValue ("pattern/edit", on);
+    });
     auto* gen = new QPushButton (QStringLiteral ("\U0001F3B2 ") + tr ("Generate"));
     gen->setFocusPolicy (Qt::NoFocus);
     gen->setToolTip (tr ("Random notes for the chosen sound (Cmd+G)"));
     connect (gen, &QPushButton::clicked, this, [this] { openGenerate(); });
-    tools->addWidget (gen);
+    tools->addWidget (editButton);
+    tools->addSpacing (8);
+    tools->addWidget (lenLabel);
+    tools->addWidget (lengthBox);
     tools->addWidget (twice);
+    tools->addWidget (gen);
     tools->addWidget (clear);
+    tools->addSpacing (8);
+    for (const int step : { -12, -1, 1, 12 })        // transposition : selection, sinon case du curseur
+    {
+        auto* t = new QPushButton (step == -12 ? tr ("OCT -") : step == -1 ? tr ("SEMI -") : step == 1 ? tr ("SEMI +") : tr ("OCT +"));
+        t->setFocusPolicy (Qt::NoFocus);
+        t->setToolTip (tr ("Transpose the selected notes (or the note at the cursor)"));
+        connect (t, &QPushButton::clicked, this, [this, step] { transposePattern (step); });
+        tools->addWidget (t);
+    }
+    tools->addSpacing (10);
+    tools->addWidget (hint, 1);
     head->addWidget (patternTools);
     patternTools->setObjectName ("patternTools");
 
@@ -789,10 +907,16 @@ QWidget* MainWindow::buildLeftPanel()
 void MainWindow::showLeftTab (int index)
 {
     // 0 = Mixer, 1 = Pattern : le panneau s'affiche et passe devant
-    QDockWidget* dock = index == 0 ? mixerDock : index == 2 ? rollDock : index == 3 ? keysTabDock : patternDock;
+    QDockWidget* dock = index == 0 ? mixerDock : index == 2 ? rollDock : index == 3 ? keysTabDock
+                      : index == 4 ? soundDock : patternDock;
     dock->show();
     dock->raise();
     QTimer::singleShot (0, this, [this] { refreshMaschine(); });
+}
+
+bool MainWindow::rollShown() const
+{
+    return rollDock->isVisible() && ! pianoRoll->visibleRegion().isEmpty();
 }
 
 bool MainWindow::patternShown() const
@@ -1021,22 +1145,54 @@ void MainWindow::playPad (int pad, int velocity, bool down)
             QMetaObject::invokeMethod (this, [this, pad] { shiftPad (pad); }, Qt::QueuedConnection);
             return;
         }
+        if (duplicateHeld)                           // DUPLICATE + pad + pad : copie du son
+        {
+            QMetaObject::invokeMethod (this, [this, g, pad]
+            {
+                if (dupPad == 0)
+                {
+                    dupGroup = g;
+                    dupPad = pad;
+                    toast (QString ("COPY %1 %2 TO ?").arg (groupName (g)).arg (pad, 2, 10, QChar ('0')));
+                }
+                else if (! (dupGroup == g && dupPad == pad))
+                {
+                    transferSound (dupGroup, dupPad, g, pad, Transfer::Copy);
+                    dupPad = 0;
+                }
+            }, Qt::QueuedConnection);
+            return;
+        }
+        if (padKeyboard && ! muteHeld && ! soloHeld)  // mode KEYBOARD : une note du son choisi
+        {
+            const int note = padNote (pad);
+            padKey[(size_t) pad] = note;
+            QMetaObject::invokeMethod (this, [this, note, velocity] { playKey (note, velocity, true); }, Qt::QueuedConnection);
+            return;
+        }
         if (muteHeld || soloHeld)                   // MUTE / SOLO + pad : couper / solo ce son
         {
             toggleSound (g, pad, soloHeld);
             return;
         }
-        const int v = state.outVelocity (g, velocity);   // volume du groupe et master (mixeur)
+        const int v = state.outVelocity (g, pad, velocity);   // volume du son, du groupe et master
+        padSent[(size_t) pad] = state.pitched (g, pad, defaultNote (pad));   // la fin de note coupera celle-ci
         if (v > 0 && state.audible (g, pad) && state.hasInstrument[(size_t) state.index (g, pad)])
-            engine->hit (pad, v, defaultNote (pad), g, state.held (g, pad), state.releaseMs[(size_t) state.index (g, pad)],
-                         0, state.effSynth (g, pad));
+            engine->hit (pad, v, padSent[(size_t) pad], g, state.held (g, pad), state.releaseMs[(size_t) state.index (g, pad)],
+                         0, state.effSynth (g, pad), state.pan (g, pad));
         std::lock_guard<std::mutex> lk (recLock);
         recordStart (padRec[(size_t) pad], pad - 1, defaultNote (pad), velocity);
     }
     else
     {
+        if (padKey[(size_t) pad] > 0)                 // mode KEYBOARD : fin de la note de ce pad
+        {
+            const int note = padKey[(size_t) pad].exchange (0);
+            QMetaObject::invokeMethod (this, [this, note] { playKey (note, 0, false); }, Qt::QueuedConnection);
+            return;
+        }
         if (state.held (padGroup[(size_t) pad], pad))
-            engine->noteOff (pad, defaultNote (pad), padGroup[(size_t) pad]);
+            engine->noteOff (pad, padSent[(size_t) pad], padGroup[(size_t) pad]);
         std::lock_guard<std::mutex> lk (recLock);
         recordEnd (padRec[(size_t) pad]);
     }
@@ -1045,12 +1201,14 @@ void MainWindow::playPad (int pad, int velocity, bool down)
 void MainWindow::playNote (int note, int velocity, bool down)
 {
     const int snd = state.sound;
-    const int v = state.outVelocity (state.group, velocity);
+    const int v = state.outVelocity (state.group, snd, velocity);
     if (down)
     {
+        const LiveNote live { snd, state.pitched (state.group, snd, note), state.group };
+        liveNotes.insert (note, live);                // le relachement coupera exactement cette note
         if (v > 0 && state.audible (state.group, snd) && state.hasInstrument[(size_t) state.index (state.group, snd)])
-            engine->hit (snd, v, note, state.group, state.held (state.group, snd), state.releaseMs[(size_t) state.index (state.group, snd)],
-                         0, state.effSynth (state.group, snd));
+            engine->hit (snd, v, live.sent, state.group, state.held (state.group, snd), state.releaseMs[(size_t) state.index (state.group, snd)],
+                         0, state.effSynth (state.group, snd), state.pan (state.group, snd));
         if (keyboardView)
             keyboardView->setActive (note, true);
         std::lock_guard<std::mutex> lk (recLock);
@@ -1064,7 +1222,8 @@ void MainWindow::playNote (int note, int velocity, bool down)
         if (noteRec.contains (note))
             recordEnd (noteRec[note]);
     }
-    engine->noteOff (snd, note, state.group);
+    const LiveNote live = liveNotes.contains (note) ? liveNotes.take (note) : LiveNote { snd, note, state.group };
+    engine->noteOff (live.sound, live.sent, live.group);
 }
 
 void MainWindow::recordStart (RecNote& slot, int track, int note, int velocity)
@@ -1118,13 +1277,15 @@ void MainWindow::setOctave (int octave)
 
 void MainWindow::refreshAll()
 {
+    refreshSoundPanel();
     if (rollTitle)                                   // Piano Roll : le son choisi
         rollTitle->setText (tr ("SOUND %1 — %2").arg (state.sound.load(), 2, 10, QChar ('0')).arg (padName (state.group, state.sound)));
     const QColor c = groupColor (state.group);
     pads->setColor (c);
+    pads->setGroup (state.group);
     pads->setSelected (state.sound);
     for (int p = 1; p <= 16; ++p)
-        pads->setLabel (p, padName (state.group, p));
+        pads->setLabel (p, padKeyboard ? session::noteName (padNote (p)) : padName (state.group, p));
     {
         std::array<bool, 16> empty {};
         for (int p = 1; p <= 16; ++p)
@@ -1134,8 +1295,12 @@ void MainWindow::refreshAll()
     piano->setColor (c);
     piano->setBaseNote (12 * (state.octave + 1));
     octaveLabel->setText (tr ("Octave %1   Velocity %2").arg (state.octave.load()).arg (state.velocity.load()));
-    if (keyInfo)
-        keyInfo->setText (tr ("Oct %1   Vel %2").arg (state.octave.load()).arg (state.velocity.load()));
+    if (octaveSpin)
+    {
+        const QSignalBlocker b1 (octaveSpin), b2 (velocitySpin);
+        octaveSpin->setValue (state.octave);
+        velocitySpin->setValue (state.velocity);
+    }
     updateKeyLabels();                               // les lettres suivent l'octave
     soundLabel->setText (tr ("Group <b>%1</b> — sound <b>%2 %3</b> (%4)<br>The keyboard plays this sound; click a pad to change it.")
                              .arg (groupName (state.group))
@@ -1238,6 +1403,15 @@ void MainWindow::onMaschineButton (const QString& name, bool down)
         refreshMaschine();
         return;
     }
+    if (name == "duplicate")                         // DUPLICATE tenu + source + cible (pad ou groupe)
+    {
+        duplicateHeld = down;
+        dupGroup = -1;
+        dupPad = 0;
+        if (down)
+            toast ("DUPLICATE: source, then target");
+        return;
+    }
     if (name == "tap")
     {
         maschine->setProperty ("tapHeld", down);
@@ -1273,7 +1447,22 @@ void MainWindow::onMaschineButton (const QString& name, bool down)
     {
         const int i = name.at (6).toLatin1() - 'a';                // A-H ; Shift = A2-H2
         const bool bank2 = shift ? state.group < 8 : state.group >= 8;
-        if (muteHeld || soloHeld)                    // MUTE / SOLO + groupe
+        if (duplicateHeld)                           // DUPLICATE + groupe + groupe : copie du groupe
+        {
+            const int g = i + (bank2 ? 8 : 0);
+            if (dupGroup < 0 || dupPad != 0)
+            {
+                dupGroup = g;
+                dupPad = 0;
+                toast (QString ("COPY GROUP %1 TO ?").arg (groupName (g)));
+            }
+            else if (dupGroup != g)
+            {
+                transferGroup (dupGroup, g, Transfer::Copy);
+                dupGroup = -1;
+            }
+        }
+        else if (muteHeld || soloHeld)                    // MUTE / SOLO + groupe
             toggleGroup (i + (state.group >= 8 ? 8 : 0), soloHeld);
         else
             selectGroup (i + (bank2 ? 8 : 0));
@@ -1285,8 +1474,12 @@ void MainWindow::onMaschineButton (const QString& name, bool down)
         toggleView (1, "PATTERN");
     else if (name == "events")
         toggleView (2, "PIANO ROLL");
-    else if (name == "keyboard")
-        toggleView (3, "KEYBOARD");
+    else if (name == "keyboard")                     // pads : le son choisi sur 16 notes (bascule)
+        setPadKeyboard (! padKeyboard);
+    else if (name == "pad_mode")                     // pads : les 16 sons
+        setPadKeyboard (false);
+    else if (name == "plug_in")                      // PLUG-IN : reglages du son choisi
+        toggleView (4, "SOUND");
     else if (name == "mixer")
         toggleView (0, "MIXER");
     else if (name == "variation")                    // nouveau tirage ; Shift = la fenetre Generate
@@ -1299,10 +1492,13 @@ void MainWindow::onMaschineButton (const QString& name, bool down)
         showLeftTab (1);
         shift ? patternView->moveCursor (0, step) : patternView->moveCursor (step, 0);
     }
-    else if (name == "nav_click")                    // appui molette : la note du son choisi
+    else if (name == "nav_click")                    // appui molette : la note du son choisi (mode EDIT)
     {
         showLeftTab (1);
-        addNoteAtCursor();
+        if (editMode)
+            addNoteAtCursor();
+        else
+            toast ("Edit enter is off");
     }
 }
 
@@ -1310,8 +1506,85 @@ void MainWindow::onMaschineButton (const QString& name, bool down)
 
 bool MainWindow::eventFilter (QObject* watched, QEvent* event)
 {
+    if (auto* b = qobject_cast<QPushButton*> (watched); b && b->property ("groupIndex").isValid())
+    {
+        // Bouton de groupe : le glisser (copier / deplacer le groupe) ; y lacher un pad ou un groupe
+        const int i = b->property ("groupIndex").toInt();
+        switch (event->type())
+        {
+            case QEvent::MouseButtonPress:
+            {
+                auto* m = static_cast<QMouseEvent*> (event);
+                if (m->button() == Qt::LeftButton)
+                {
+                    groupPress = m->position().toPoint();
+                    groupPressIndex = i;
+                }
+                break;
+            }
+            case QEvent::MouseMove:
+            {
+                auto* m = static_cast<QMouseEvent*> (event);
+                if (groupPressIndex == i && (m->buttons() & Qt::LeftButton)
+                    && (m->position().toPoint() - groupPress).manhattanLength() >= QApplication::startDragDistance() * 2)
+                {
+                    groupPressIndex = -1;
+                    const int g = i + (state.group >= 8 ? 8 : 0);
+                    auto* mime = new QMimeData;
+                    mime->setData (kGroupMime, QByteArray::number (g));
+                    auto* drag = new QDrag (b);
+                    drag->setMimeData (mime);
+                    drag->setPixmap (b->grab().scaled (b->size() * 0.7, Qt::KeepAspectRatio, Qt::SmoothTransformation));
+                    drag->exec (Qt::CopyAction | Qt::MoveAction);
+                    b->setDown (false);
+                    return true;
+                }
+                break;
+            }
+            case QEvent::MouseButtonRelease:
+                groupPressIndex = -1;
+                break;
+            case QEvent::DragEnter:
+            case QEvent::DragMove:
+            {
+                auto* d = static_cast<QDropEvent*> (event);
+                const bool ok = d->mimeData()->hasFormat (kSoundMime) || d->mimeData()->hasFormat (kGroupMime);
+                ok ? d->acceptProposedAction() : d->ignore();
+                return true;
+            }
+            case QEvent::Drop:
+            {
+                auto* d = static_cast<QDropEvent*> (event);
+                d->acceptProposedAction();
+                // copie des donnees : la fenetre s'ouvre apres la fin du glisser
+                auto* copy = new QMimeData;
+                for (const char* f : { kSoundMime, kGroupMime })
+                    if (d->mimeData()->hasFormat (f))
+                        copy->setData (f, d->mimeData()->data (f));
+                QMetaObject::invokeMethod (this, [this, i, copy] { groupDropped (i, copy); delete copy; }, Qt::QueuedConnection);
+                return true;
+            }
+            default:
+                break;
+        }
+    }
     if (event->type() == QEvent::KeyRelease && maschine && static_cast<QKeyEvent*> (event)->key() == Qt::Key_Shift)
         maschine->setProperty ("shiftHeld", false);
+    if (event->type() == QEvent::KeyRelease)
+    {
+        // Une touche qui joue une note : son relachement passe toujours (Cmd, Alt, menu ouvert,
+        // champ de saisie...), sinon la note resterait tenue jusqu'a la securite du moteur (30 s)
+        auto* k = static_cast<QKeyEvent*> (event);
+        if (! k->isAutoRepeat() && keyNotes.contains (k->key()))
+        {
+            const int note = keyNotes.take (k->key());
+            playKey (note, 0, false);
+            piano->setHeld (note, false);
+            return true;
+        }
+    }
+    if (event->type() == QEvent::ApplicationDeactivate)
+        releaseAllKeys();                            // on change d'app en tenant une touche
     if (event->type() == QEvent::KeyPress || event->type() == QEvent::KeyRelease)
     {
         // Pas de notes quand on tape dans un champ (tempo...)
@@ -1344,6 +1617,17 @@ bool MainWindow::handleKey (QKeyEvent* e, bool down)
         transport->playing() ? transport->pause() : transport->play();
         return true;
     }
+    if ((e->key() == Qt::Key_Delete || e->key() == Qt::Key_Backspace) && rollShown())
+    {
+        if (const int n = pianoRoll->deleteSelection())
+            statusBar()->showMessage (tr ("%1 note(s) erased").arg (n), 1200);
+        return true;
+    }
+    if ((e->key() == Qt::Key_Delete || e->key() == Qt::Key_Backspace) && patternShown() && ! editMode)
+    {
+        statusBar()->showMessage (tr ("Turn \"Edit enter\" on to erase notes with Del"), 1500);
+        return true;
+    }
     if ((e->key() == Qt::Key_Delete || e->key() == Qt::Key_Backspace) && patternShown())
     {
         const QList<QPoint> sel = patternView->selection();     // les notes choisies, sinon la case
@@ -1367,7 +1651,10 @@ bool MainWindow::handleKey (QKeyEvent* e, bool down)
         }
         if (e->key() == Qt::Key_Return || e->key() == Qt::Key_Enter)
         {
-            addNoteAtCursor();
+            if (editMode)
+                addNoteAtCursor();
+            else
+                statusBar()->showMessage (tr ("Turn \"Edit enter\" on to add / erase notes with Enter"), 1500);
             return true;
         }
     }
@@ -1647,6 +1934,11 @@ QDockWidget* MainWindow::makeDock (const QString& title, const QString& name, QW
     dock->setWidget (content);
     dock->setFeatures (QDockWidget::DockWidgetMovable | QDockWidget::DockWidgetFloatable
                        | QDockWidget::DockWidgetClosable);
+    // Panneau deplace, detache ou redimensionne : toute la fenetre est repeinte (sans trait oublie)
+    auto repaintAll = [this] { QTimer::singleShot (0, this, [this] { repaint(); for (auto* w : findChildren<QWidget*>()) w->update(); }); };
+    connect (dock, &QDockWidget::dockLocationChanged, this, repaintAll);
+    connect (dock, &QDockWidget::topLevelChanged, this, repaintAll);
+    connect (dock, &QDockWidget::visibilityChanged, this, repaintAll);
     return dock;
 }
 
@@ -1676,6 +1968,8 @@ void MainWindow::buildViewMenu (QMenu* menu)
     rollAction->setShortcut (QKeySequence ("Ctrl+R"));
     auto* keysAction = menu->addAction (tr ("Keyboard"), this, [this] { showLeftTab (3); });
     keysAction->setShortcut (QKeySequence ("Ctrl+K"));
+    auto* soundAction = menu->addAction (tr ("Sound"), this, [this] { showLeftTab (4); });
+    soundAction->setShortcut (QKeySequence ("Ctrl+U"));
     auto* bankAction = menu->addAction (tr ("Switch Group Bank (A-H / A2-H2)"), this, [this] { switchBank(); });
     bankAction->setShortcut (QKeySequence ("Ctrl+B"));
 
@@ -1852,6 +2146,11 @@ void MainWindow::paste()
 
 void MainWindow::selectAll()
 {
+    if (rollShown())
+    {
+        pianoRoll->selectAll();
+        return;
+    }
     if (! patternShown())
         return;
     const seq::Pattern p = sequencer.pattern (state.group);
@@ -1917,6 +2216,8 @@ void MainWindow::refreshMuteSolo()
     padsUnsolo->setEnabled (anySolo);
     mixUnmute->setEnabled (anyGMute);
     mixUnsolo->setEnabled (anyGSolo);
+    groupUnmute->setEnabled (anyGMute);
+    groupUnsolo->setEnabled (anyGSolo);
     std::array<char, 16> tags {};
     for (int p = 1; p <= 16; ++p)
         tags[(size_t) p - 1] = state.soundTag (state.group, p);
@@ -2016,6 +2317,13 @@ void MainWindow::syncSamples (bool all)
                 engine->setSample (g, s, state.samples[i], defaultNote (s));
                 sentSamples[i] = state.samples[i];
             }
+            // A l'envers (Reverse)
+            const int rev = state.soundReverse[i] ? 1 : 0;
+            if (all || sentReverse[i] != rev)
+            {
+                engine->setReverse (g, s, rev != 0);
+                sentReverse[i] = rev;
+            }
             // Boucle (envoyee apres le sample : le moteur garde l'ordre)
             const bool loop = state.playMode[i] == session::State::Loop;
             const QString key = QString ("%1;%2;%3").arg (loop).arg (state.loopStart[i].load()).arg (state.loopEnd[i].load());
@@ -2061,7 +2369,7 @@ QWidget* MainWindow::buildPianoRoll()
     auto* head = new QHBoxLayout;
     rollTitle = new QLabel;
     rollTitle->setObjectName ("section");
-    auto* hint = new QLabel (tr ("click = note, drag = move (%1 copy), double-click = erase, wheel = velocity")
+    auto* hint = new QLabel (tr ("click = note, drag = move (%1 copy), Shift + click / frame = select, double-click = erase, wheel = velocity")
                                  .arg (PatternView::copyKey()));
     hint->setObjectName ("hint");
     hint->setSizePolicy (QSizePolicy::Ignored, QSizePolicy::Preferred);   // peut retrecir
@@ -2074,6 +2382,14 @@ QWidget* MainWindow::buildPianoRoll()
     gen->setToolTip (tr ("Random notes for this sound (Cmd+G)"));
     connect (gen, &QPushButton::clicked, this, [this] { openGenerate(); });
     head->addWidget (gen);
+    for (const int step : { -12, -1, 1, 12 })        // transposition : selection, sinon la derniere note
+    {
+        auto* t = new QPushButton (step == -12 ? tr ("OCT -") : step == -1 ? tr ("SEMI -") : step == 1 ? tr ("SEMI +") : tr ("OCT +"));
+        t->setFocusPolicy (Qt::NoFocus);
+        t->setToolTip (tr ("Transpose the selected notes (or the last note touched)"));
+        connect (t, &QPushButton::clicked, this, [this, step] { transposeRoll (step); });
+        head->addWidget (t);
+    }
     col->addLayout (head);
     pianoRoll = new PianoRollView (sequencer, state);
     connect (pianoRoll, &PianoRollView::midiDropped, this, &MainWindow::importMidi);
@@ -2243,7 +2559,7 @@ void MainWindow::toggleView (int index, const QString& name)
         const int back = viewBefore;
         viewBefore = -1;
         showLeftTab (back);
-        toast (QStringList { "MIXER", "PATTERN", "PIANO ROLL", "KEYBOARD" }[back]);
+        toast (QStringList { "MIXER", "PATTERN", "PIANO ROLL", "KEYBOARD", "SOUND" }[back]);
         return;
     }
     if (now != index)
@@ -2252,12 +2568,29 @@ void MainWindow::toggleView (int index, const QString& name)
     toast (name);
 }
 
+void MainWindow::releaseAllKeys()
+{
+    for (auto it = keyNotes.begin(); it != keyNotes.end(); ++it)
+    {
+        playKey (it.value(), 0, false);
+        piano->setHeld (it.value(), false);
+    }
+    keyNotes.clear();
+    const auto left = liveNotes;                     // et ce qui resterait (souris, Maschine...)
+    for (auto it = left.begin(); it != left.end(); ++it)
+        engine->noteOff (it->sound, it->sent, it->group);
+    liveNotes.clear();
+    keyChords.clear();
+}
+
 void MainWindow::playKey (int key, int velocity, bool down)
 {
     // Une touche joue une note, ou un accord (Harmonizer, Chord Set) ; on garde les notes
     // jouees pour les relacher toutes, meme si les reglages changent entre-temps
     if (down)
     {
+        if (keyChords.contains (key))                 // la meme touche encore : son accord d'avant s'arrete
+            playKey (key, 0, false);
         const QList<int> notes = music::chordFor (key, keySettings);
         keyChords[key] = notes;
         for (int i = 0; i < notes.size(); ++i)
@@ -2278,8 +2611,13 @@ QWidget* MainWindow::buildKeyboardTab()
     // Onglet Keyboard : reglages (octave, gamme, accords, clavier de l'ordinateur) + grand clavier
     QSettings settings;
     keySettings.root = settings.value ("keys/root", 0).toInt();
-    keySettings.scale = std::clamp (settings.value ("keys/scale", 0).toInt(), 0, (int) music::scales().size() - 1);
-    keySettings.chordMode = settings.value ("keys/chordMode", 0).toInt();
+    music::loadCustom();                             // gammes et accords personnalises
+    keySettings.scale = std::clamp (settings.value ("keys/scale", 0).toInt(), -(int) music::customScales().size(),
+                                    (int) music::scales().size() - 1);
+    keySettings.chordMode = std::clamp (settings.value ("keys/chordMode", 0).toInt(), 0, 3);
+    keySettings.customChord = std::clamp (settings.value ("keys/customChord", 0).toInt(), 0, std::max (0, (int) music::customChords().size() - 1));
+    if (keySettings.chordMode == 3 && music::customChords().empty())
+        keySettings.chordMode = 0;
     keySettings.harmony = std::clamp (settings.value ("keys/harmony", 2).toInt(), 0, (int) music::harmonies().size() - 1);
     keySettings.chordSet = std::clamp (settings.value ("keys/chordSet", 0).toInt(), 0, (int) music::chordSets().size() - 1);
 
@@ -2294,14 +2632,30 @@ QWidget* MainWindow::buildKeyboardTab()
         b->setToolTip (tip);
         return b;
     };
-    auto* octDown = button (tr ("OCT - (W)"), tr ("One octave down (computer key W, QWERTY: Z)"));
-    auto* octUp = button (tr ("OCT + (X)"), tr ("One octave up (computer key X)"));
-    connect (octDown, &QPushButton::clicked, this, [this] { setOctave (state.octave - 1); keyboardView->update(); });
-    connect (octUp, &QPushButton::clicked, this, [this] { setOctave (state.octave + 1); keyboardView->update(); });
-    auto* velDown = button (tr ("VEL - (C)"), tr ("Velocity down (computer key C)"));
-    auto* velUp = button (tr ("VEL + (V)"), tr ("Velocity up (computer key V)"));
-    connect (velDown, &QPushButton::clicked, this, [this] { state.velocity = qBound (1, state.velocity - 16, 127); refreshAll(); });
-    connect (velUp, &QPushButton::clicked, this, [this] { state.velocity = qBound (1, state.velocity + 16, 127); refreshAll(); });
+    // Octave et velocite : chiffres et petites fleches, comme le BPM (touches W / X et C / V)
+    auto spinBox = [] (int lo, int hi, int value, const QString& prefix, const QString& tip)
+    {
+        auto* b = new QSpinBox;
+        b->setRange (lo, hi);
+        b->setValue (value);
+        b->setPrefix (prefix);
+        b->setFocusPolicy (Qt::ClickFocus);
+        b->setToolTip (tip);
+        b->setKeyboardTracking (false);
+        return b;
+    };
+    octaveSpin = spinBox (0, 7, state.octave, tr ("Octave "), tr ("Octave of the keyboard (computer keys W / X, QWERTY: Z / X)"));
+    velocitySpin = spinBox (1, 127, state.velocity, tr ("Velocity "), tr ("Velocity of the notes played (computer keys C / V)"));
+    connect (octaveSpin, &QSpinBox::valueChanged, this, [this] (int v) { if (v != state.octave) setOctave (v); keyboardView->update(); });
+    connect (velocitySpin, &QSpinBox::valueChanged, this, [this] (int v) { state.velocity = v; refreshAll(); });
+    for (auto* b : { octaveSpin, velocitySpin })
+        connect (b, &QSpinBox::editingFinished, b, [b] { b->clearFocus(); });
+    auto keyHint = [] (const QString& t)
+    {
+        auto* l = new QLabel (t);
+        l->setObjectName ("hint");
+        return l;
+    };
     auto combo = [] (const QStringList& items, int current)
     {
         auto* c = new QComboBox;
@@ -2312,31 +2666,19 @@ QWidget* MainWindow::buildKeyboardTab()
     };
     auto* rootBox = combo ({ "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B" }, keySettings.root);
     rootBox->setToolTip (tr ("Root note of the scale"));
-    QStringList scaleItems;
-    for (int i = 0; i < (int) music::scales().size(); ++i)
-        scaleItems << music::scaleLabel (i);
-    auto* scaleBox = combo (scaleItems, keySettings.scale);
-    scaleBox->setToolTip (tr ("Scale (same list as the Maschine driver); its notes are shown in color"));
-    scaleBox->setMaxVisibleItems (20);
-    auto* modeBox = combo ({ tr ("Chords off"), tr ("Harmonizer"), tr ("Chord Set") }, keySettings.chordMode);
-    modeBox->setToolTip (tr ("Harmonizer: each key plays a chord built on the scale. Chord Set: the 12 keys of an octave play 12 chords"));
-    auto* typeBox = new QComboBox;
-    typeBox->setFocusPolicy (Qt::ClickFocus);
-    auto fillTypes = [this, typeBox]
-    {
-        const QSignalBlocker block (typeBox);
-        typeBox->clear();
-        if (keySettings.chordMode == 1)
-            for (const auto& h : music::harmonies())
-                typeBox->addItem (h.name);
-        else if (keySettings.chordMode == 2)
-            for (const auto& c : music::chordSets())
-                typeBox->addItem (c.name);
-        typeBox->setEnabled (keySettings.chordMode != 0);
-        typeBox->setCurrentIndex (keySettings.chordMode == 1 ? keySettings.harmony : keySettings.chordSet);
-    };
-    fillTypes();
-    auto save = [this]
+    // Gamme et accords : menus en arborescence (categorie, puis gamme), personnalises compris
+    auto* scaleButton = new QPushButton;
+    scaleButton->setFocusPolicy (Qt::NoFocus);
+    scaleButton->setToolTip (tr ("Scale: categories of the Maschine driver, then Custom (your own scales)"));
+    auto* scaleMenu = new QMenu (scaleButton);
+    scaleButton->setMenu (scaleMenu);
+    auto* chordButton = new QPushButton;
+    chordButton->setFocusPolicy (Qt::NoFocus);
+    chordButton->setToolTip (tr ("Harmonizer: each key plays a chord built on the scale. Chord Set: the 12 keys of an octave "
+                                 "play 12 chords. Custom: your own chords"));
+    auto* chordMenu = new QMenu (chordButton);
+    chordButton->setMenu (chordMenu);
+    auto save = [this, scaleButton, chordButton]
     {
         QSettings s;
         s.setValue ("keys/root", keySettings.root);
@@ -2344,16 +2686,33 @@ QWidget* MainWindow::buildKeyboardTab()
         s.setValue ("keys/chordMode", keySettings.chordMode);
         s.setValue ("keys/harmony", keySettings.harmony);
         s.setValue ("keys/chordSet", keySettings.chordSet);
+        s.setValue ("keys/customChord", keySettings.customChord);
+        scaleButton->setText (music::scaleLabel (keySettings.scale));
+        chordButton->setText (music::chordLabel (keySettings));
         keyboardView->update();
+        refreshAll();                                // pads en mode KEYBOARD : leurs notes
     };
-    connect (rootBox, &QComboBox::currentIndexChanged, this, [this, save] (int i) { keySettings.root = i; save(); });
-    connect (scaleBox, &QComboBox::currentIndexChanged, this, [this, save] (int i) { keySettings.scale = i; save(); });
-    connect (modeBox, &QComboBox::currentIndexChanged, this, [this, save, fillTypes] (int i) { keySettings.chordMode = i; fillTypes(); save(); });
-    connect (typeBox, &QComboBox::currentIndexChanged, this, [this, save] (int i)
+    connect (scaleMenu, &QMenu::aboutToShow, this, [this, scaleMenu, save]
     {
-        (keySettings.chordMode == 1 ? keySettings.harmony : keySettings.chordSet) = std::max (0, i);
-        save();
+        music::fillScaleMenu (scaleMenu, keySettings.scale, [this, save] (int sc) { keySettings.scale = sc; save(); }, this);
     });
+    connect (chordMenu, &QMenu::aboutToShow, this, [this, chordMenu, save]
+    {
+        music::fillChordMenu (chordMenu, keySettings, [this, save] (int mode, int idx)
+        {
+            keySettings.chordMode = mode;
+            if (mode == 1)
+                keySettings.harmony = idx;
+            else if (mode == 2)
+                keySettings.chordSet = idx;
+            else if (mode == 3)
+                keySettings.customChord = idx;
+            save();
+        }, this);
+    });
+    scaleButton->setText (music::scaleLabel (keySettings.scale));
+    chordButton->setText (music::chordLabel (keySettings));
+    connect (rootBox, &QComboBox::currentIndexChanged, this, [this, save] (int i) { keySettings.root = i; save(); });
     // Clavier de l'ordinateur : le meme reglage que le panneau PC Keyboard
     auto* pcKeys = button (QStringLiteral ("\u2328 ") + tr ("PC KEYS"), tr ("Play with the computer keyboard (on / off)"));
     pcKeys->setCheckable (true);
@@ -2370,30 +2729,42 @@ QWidget* MainWindow::buildKeyboardTab()
 
     // Deux lignes (le panneau reste etroit possible) : octave et clavier de l'ordinateur,
     // puis gamme et accords
-    keyInfo = new QLabel;
-    keyInfo->setObjectName ("hint");
-    keyInfo->setSizePolicy (QSizePolicy::Ignored, QSizePolicy::Preferred);
-    for (auto* c : { scaleBox, typeBox })
+    for (auto* b : { scaleButton, chordButton })
     {
-        c->setSizeAdjustPolicy (QComboBox::AdjustToMinimumContentsLengthWithIcon);
-        c->setMinimumContentsLength (12);
+        b->setSizePolicy (QSizePolicy::Ignored, QSizePolicy::Fixed);   // panneau etroit possible
+        b->setMinimumWidth (90);
+        b->setStyleSheet ("text-align: left; padding-left: 10px;");
     }
-    row->addWidget (octDown);
-    row->addWidget (octUp);
-    row->addWidget (velDown);
-    row->addWidget (velUp);
-    row->addWidget (keyInfo, 1);
+    row->addWidget (octaveSpin);
+    row->addWidget (keyHint ("W / X"));
+    row->addSpacing (10);
+    row->addWidget (velocitySpin);
+    row->addWidget (keyHint ("C / V"));
+    row->addStretch (1);
     row->addWidget (pcKeys);
     row->addWidget (layout2);
     col->addLayout (row);
     auto* row2 = new QHBoxLayout;
     row2->addWidget (rootBox);
-    row2->addWidget (scaleBox, 2);
+    // Color : les notes de la gamme en couleur ; sinon touches noires et blanches classiques
+    auto* colorButton = new QPushButton (tr ("Color"));
+    colorButton->setCheckable (true);
+    colorButton->setFocusPolicy (Qt::NoFocus);
+    colorButton->setObjectName ("keys");
+    colorButton->setToolTip (tr ("On: the notes of the scale in color. Off: classic black and white keys (scale shown by dots)"));
+    colorButton->setChecked (QSettings().value ("keys/color", true).toBool());
+    connect (colorButton, &QPushButton::toggled, this, [this] (bool on)
+    {
+        QSettings().setValue ("keys/color", on);
+        keyboardView->setColorScale (on);
+    });
+    row2->addWidget (scaleButton, 3);
     row2->addSpacing (12);
-    row2->addWidget (modeBox);
-    row2->addWidget (typeBox, 1);
+    row2->addWidget (chordButton, 2);
+    row2->addWidget (colorButton);
     col->addLayout (row2);
     keyboardView = new KeyboardView (state, keySettings);
+    keyboardView->setColorScale (QSettings().value ("keys/color", true).toBool());
     connect (keyboardView, &KeyboardView::keyPressed, this, [this] (int n) { playKey (n, state.velocity, true); });
     connect (keyboardView, &KeyboardView::keyReleased, this, [this] (int n) { playKey (n, 0, false); });
     col->addWidget (keyboardView, 1);
@@ -2608,4 +2979,587 @@ void MainWindow::shiftPad (int pad)
             break;
     }
     patternView->update();
+}
+
+// ------------------------------------------------------------------------------- onglet Sound
+
+QWidget* MainWindow::buildSoundTab()
+{
+    auto* panel = new QFrame;
+    panel->setObjectName ("panel");
+    auto* col = new QVBoxLayout (panel);
+    auto button = [] (const QString& text, const QString& tip)
+    {
+        auto* b = new QPushButton (text);
+        b->setFocusPolicy (Qt::NoFocus);
+        b->setToolTip (tip);
+        return b;
+    };
+    // Titre et ecoute
+    auto* head = new QHBoxLayout;
+    soundUi.title = new QLabel;
+    soundUi.title->setObjectName ("section");
+    auto* preview = button (tr ("Hold to preview"), tr ("Plays the chosen sound while the button is held"));
+    connect (preview, &QPushButton::pressed, this, [this] { playPad (state.sound, 110, true); pads->flash (state.sound, true); });
+    connect (preview, &QPushButton::released, this, [this] { playPad (state.sound, 0, false); pads->flash (state.sound, false); });
+    head->addWidget (soundUi.title, 1);
+    head->addWidget (preview);
+    col->addLayout (head);
+
+    auto* form = new QGridLayout;
+    form->setHorizontalSpacing (10);
+    int row = 0;
+    auto label = [] (const QString& text)
+    {
+        auto* l = new QLabel (text);
+        l->setObjectName ("hint");
+        return l;
+    };
+    // Source : synthe (comme le pilote) ou sample
+    soundUi.synth = new QComboBox;
+    soundUi.synth->addItems ({ tr ("Default"), "Kick", "Snare", "Closed HH", "Open HH", "Tone", tr ("None (empty)") });
+    soundUi.synth->setFocusPolicy (Qt::ClickFocus);
+    soundUi.synth->setToolTip (tr ("Built-in sound (used when there is no sample)"));
+    connect (soundUi.synth, &QComboBox::currentIndexChanged, this, [this] (int idx)
+    {
+        const size_t i = (size_t) state.index (state.group, state.sound);
+        state.synth[i] = idx == 0 ? -1 : idx == 6 ? 0 : idx;   // Default / Kick..Tone / None
+        syncSamples();
+        refreshAll();
+    });
+    soundUi.sample = new QLabel;
+    soundUi.sample->setSizePolicy (QSizePolicy::Ignored, QSizePolicy::Preferred);
+    auto* load = button (tr ("Load..."), tr ("Load a sample (WAV, AIFF, FLAC, Ogg, MP3...)"));
+    soundUi.removeSample = button (tr ("Remove"), tr ("Remove the sample (back to the built-in sound)"));
+    connect (load, &QPushButton::clicked, this, [this] { loadSampleDialog (state.sound); });
+    connect (soundUi.removeSample, &QPushButton::clicked, this, [this] { setPadSample (state.group, state.sound, {}); });
+    auto* source = new QHBoxLayout;
+    source->addWidget (soundUi.synth);
+    source->addWidget (soundUi.sample, 1);
+    source->addWidget (load);
+    source->addWidget (soundUi.removeSample);
+    form->addWidget (label (tr ("Source")), row, 0);
+    form->addLayout (source, row++, 1, 1, 2);
+
+    // Lecture : One-shot / Gate / Loop, boucle, release
+    soundUi.mode = new QComboBox;
+    soundUi.mode->addItems ({ tr ("One-shot"), tr ("Gate"), tr ("Loop") });
+    soundUi.mode->setFocusPolicy (Qt::ClickFocus);
+    connect (soundUi.mode, &QComboBox::currentIndexChanged, this, [this] (int m)
+    {
+        const size_t i = (size_t) state.index (state.group, state.sound);
+        if (m == session::State::Loop && state.samples[i].isEmpty())
+            m = session::State::Gate;                // boucle : samples seulement
+        state.playMode[i] = m;
+        syncSamples();
+        refreshAll();
+    });
+    soundUi.editLoop = button (tr ("Edit Loop..."), tr ("Loop start and end, on the waveform"));
+    reverseBox = new QCheckBox (tr ("Reverse"));
+    reverseBox->setFocusPolicy (Qt::NoFocus);
+    reverseBox->setToolTip (tr ("Play the sample backwards"));
+    connect (reverseBox, &QCheckBox::toggled, this, [this] (bool on)
+    {
+        state.soundReverse[(size_t) state.index (state.group, state.sound)] = on;
+        syncSamples();
+    });
+    connect (soundUi.editLoop, &QPushButton::clicked, this, [this] { editLoop (state.sound); });
+    soundUi.release = new QSpinBox;
+    soundUi.release->setRange (5, 5000);
+    soundUi.release->setSuffix (" ms");
+    soundUi.release->setFocusPolicy (Qt::ClickFocus);
+    soundUi.release->setToolTip (tr ("Fade-out after the release (Gate and Loop)"));
+    connect (soundUi.release, &QSpinBox::valueChanged, this, [this] (int ms)
+    {
+        state.releaseMs[(size_t) state.index (state.group, state.sound)] = ms;
+    });
+    connect (soundUi.release, &QSpinBox::editingFinished, soundUi.release, [this] { soundUi.release->clearFocus(); });
+    auto* play = new QHBoxLayout;
+    play->addWidget (soundUi.mode);
+    play->addWidget (soundUi.editLoop);
+    play->addWidget (reverseBox);
+    play->addSpacing (10);
+    play->addWidget (label (tr ("Release")));
+    play->addWidget (soundUi.release);
+    play->addStretch();
+    form->addWidget (label (tr ("Play")), row, 0);
+    form->addLayout (play, row++, 1, 1, 2);
+
+    // Volume, Pan, Pitch, Cutoff (encodeurs 1 a 4 de la Maschine)
+    const QStringList names { tr ("Volume"), tr ("Pan"), tr ("Pitch"), tr ("Cutoff") };
+    for (int k = 0; k < 4; ++k)
+    {
+        auto* slider = new QSlider (Qt::Horizontal);
+        slider->setRange (k == 2 ? 40 : 0, k == 2 ? 88 : 127);   // pitch : +/- 24 demi-tons
+        slider->setFocusPolicy (Qt::NoFocus);
+        auto* value = new QLabel;
+        value->setMinimumWidth (56);
+        soundUi.sliders[(size_t) k] = slider;
+        soundUi.values[(size_t) k] = value;
+        form->addWidget (label (names[k] + QString ("  (%1)").arg (k + 1)), row, 0);
+        form->addWidget (slider, row, 1);
+        form->addWidget (value, row++, 2);
+        connect (slider, &QSlider::valueChanged, this, [this, k] (int v)
+        {
+            const size_t i = (size_t) state.index (state.group, state.sound);
+            auto& target = k == 0 ? state.soundVolume[i] : k == 1 ? state.soundPan[i] : k == 2 ? state.soundPitch[i] : state.soundCutoff[i];
+            target = v;
+            refreshSoundPanel();
+        });
+        // double-clic sur la valeur : retour au reglage d'origine
+    }
+    soundUi.sliders[3]->setEnabled (false);
+    soundUi.sliders[3]->setToolTip (tr ("Kept in the project; the engine filter comes later"));
+    form->setColumnStretch (1, 1);
+    col->addLayout (form);
+    auto* reset = button (tr ("Reset Volume / Pan / Pitch"), tr ("Back to 100 / center / original pitch"));
+    connect (reset, &QPushButton::clicked, this, [this]
+    {
+        const size_t i = (size_t) state.index (state.group, state.sound);
+        state.soundVolume[i] = 100;
+        state.soundPan[i] = 64;
+        state.soundPitch[i] = 64;
+        refreshSoundPanel();
+    });
+    auto* foot = new QHBoxLayout;
+    auto* hint = label (tr ("Maschine: PLUG-IN = this tab, knobs 1-4 = Volume, Pan, Pitch, Cutoff"));
+    hint->setSizePolicy (QSizePolicy::Ignored, QSizePolicy::Preferred);
+    foot->addWidget (hint, 1);
+    foot->addWidget (reset);
+    col->addLayout (foot);
+    col->addStretch();
+    return panel;
+}
+
+void MainWindow::refreshSoundPanel()
+{
+    if (! soundUi.title)
+        return;
+    const int g = state.group, snd = state.sound;
+    const size_t i = (size_t) state.index (g, snd);
+    soundUi.title->setText (tr ("SOUND %1 — %2   (group %3)").arg (snd, 2, 10, QChar ('0')).arg (padName (g, snd), groupName (g)));
+    {
+        const QSignalBlocker b (soundUi.synth);
+        const int syn = state.synth[i];
+        soundUi.synth->setCurrentIndex (syn < 0 ? 0 : syn == 0 ? 6 : syn);
+    }
+    const QString path = state.samples[i];
+    soundUi.sample->setText (path.isEmpty() ? tr ("no sample") : QFileInfo (path).fileName());
+    soundUi.sample->setToolTip (path);
+    soundUi.removeSample->setEnabled (! path.isEmpty());
+    {
+        const QSignalBlocker b (soundUi.mode);
+        soundUi.mode->setCurrentIndex (state.playMode[i]);
+    }
+    soundUi.editLoop->setEnabled (! path.isEmpty());
+    {
+        const QSignalBlocker b (reverseBox);
+        reverseBox->setChecked (state.soundReverse[i]);
+        reverseBox->setEnabled (! path.isEmpty());   // a l'envers : samples seulement
+    }
+    {
+        const QSignalBlocker b (soundUi.release);
+        soundUi.release->setValue (state.releaseMs[i]);
+    }
+    const std::array<int, 4> vals { state.soundVolume[i].load(), state.soundPan[i].load(),
+                                    state.soundPitch[i].load(), state.soundCutoff[i].load() };
+    for (int k = 0; k < 4; ++k)
+    {
+        const QSignalBlocker b (soundUi.sliders[(size_t) k]);
+        soundUi.sliders[(size_t) k]->setValue (vals[(size_t) k]);
+    }
+    const int pan = vals[1] - 64, semis = std::clamp (vals[2] - 64, -24, 24);
+    soundUi.values[0]->setText (QString::number (vals[0]));
+    soundUi.values[1]->setText (pan == 0 ? "C" : pan < 0 ? QString ("L%1").arg (-pan) : QString ("R%1").arg (pan));
+    soundUi.values[2]->setText (semis == 0 ? "0 st" : QString ("%1%2 st").arg (semis > 0 ? "+" : "").arg (semis));
+    soundUi.values[3]->setText (QString::number (vals[3]));
+}
+
+void MainWindow::soundKnob (int index, int delta)
+{
+    // Encodeurs de la Maschine, comme le pilote : 1-4 reglages du son choisi,
+    // 5 ligne du curseur, 6 note de la case, 7 velocite de la case, 8 longueur du pattern
+    // (Shift + 5 : gamme, Shift + 6 : tonique, pour le clavier)
+    index -= 1;                                      // la bibliotheque numerote les encodeurs de 1 a 8
+    const int g = state.group, snd = state.sound;
+    const size_t i = (size_t) state.index (g, snd);
+    if (index < 0 || index > 7)
+        return;
+    if (index < 4)
+    {
+        static const char* names[] { "VOLUME", "PAN", "PITCH", "CUTOFF" };
+        auto& target = index == 0 ? state.soundVolume[i] : index == 1 ? state.soundPan[i] : index == 2 ? state.soundPitch[i] : state.soundCutoff[i];
+        target = std::clamp (target + delta, index == 2 ? 40 : 0, index == 2 ? 88 : 127);
+        refreshSoundPanel();
+        toast (QString ("%1  sound %2 : %3").arg (names[index]).arg (snd, 2, 10, QChar ('0')).arg (soundUi.values[(size_t) index]->text()));
+        return;
+    }
+    if (maschineShift && (index == 4 || index == 5))
+    {
+        if (index == 4)
+            keySettings.scale = std::clamp (std::max (0, keySettings.scale) + delta, 0, (int) music::scales().size() - 1);
+        else
+            keySettings.root = ((keySettings.root + delta) % 12 + 12) % 12;
+        keyboardView->update();
+        static const char* roots[12] { "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B" };
+        toast (QString ("%1 %2").arg (roots[keySettings.root]).arg (music::scaleLabel (keySettings.scale)));
+        return;
+    }
+    if (index == 4)
+    {
+        patternView->moveCursor (delta, 0);
+        return;
+    }
+    if (index == 7)
+    {
+        lengthBox->setValue (std::clamp (lengthBox->value() + delta, 1, seq::kMaxRows));
+        toast (QString ("LENGTH %1").arg (lengthBox->value()));
+        return;
+    }
+    // 6 : note, 7 : velocite de la case du curseur (accord compris)
+    const int row = patternView->selectedRow(), track = patternView->selectedTrack();
+    seq::Cell c = sequencer.pattern (g).rows[(size_t) row][(size_t) track];
+    if (c.empty())
+        return;
+    remember (g);
+    if (index == 5)
+    {
+        QList<int> notes = PianoRollView::notesOf (c);
+        for (int& n : notes)
+            n = std::clamp (n + delta, 0, 127);
+        c = PianoRollView::withNotes (c, notes);
+        toast (QString ("NOTE %1").arg (session::noteName (c.note)));
+    }
+    else
+    {
+        c.velocity = std::clamp (c.velocity + delta, 1, 127);
+        toast (QString ("VELOCITY %1").arg (c.velocity));
+    }
+    sequencer.setCell (g, row, track, c);
+    patternView->update();
+}
+
+// ------------------------------------------------------------------------------- pads : mode KEYBOARD
+
+int MainWindow::padNote (int pad) const
+{
+    // Pad 1 = la tonique de l'octave choisie ; gamme chromatique : demi-ton par demi-ton,
+    // sinon les notes de la gamme (comme le mode KEYBOARD du pilote)
+    const int base = 12 * (state.octave + 1) + keySettings.root;
+    const std::vector<int>& steps = music::scaleSteps (keySettings.scale);
+    if (keySettings.scale == 0 || steps.empty())
+        return std::clamp (base + pad - 1, 0, 127);
+    const int n = (int) steps.size(), k = pad - 1;
+    return std::clamp (base + steps[(size_t) (k % n)] + 12 * (k / n), 0, 127);
+}
+
+void MainWindow::setPadKeyboard (bool on)
+{
+    padKeyboard = on;
+    refreshAll();
+    refreshMaschine();
+    toast (on ? QString ("KEYBOARD : sound %1 %2").arg (state.sound.load(), 2, 10, QChar ('0')).arg (padName (state.group, state.sound))
+              : QString ("PAD MODE"));
+}
+
+// ------------------------------------------------------------------------------- About
+
+void MainWindow::showAbout()
+{
+    QDialog dialog (this);
+    dialog.setWindowTitle (tr ("About Fuzzy John DAW Pulses"));
+    auto* col = new QVBoxLayout (&dialog);
+    col->setSpacing (10);
+    auto* logo = new QLabel;
+    logo->setAlignment (Qt::AlignCenter);
+#ifdef FUZZY_HAS_LOGO
+    logo->setPixmap (QPixmap (":/logo.png").scaled (220, 220, Qt::KeepAspectRatio, Qt::SmoothTransformation));
+#else
+    logo->setText (QString ("<span style='font-size:28px; font-weight:bold; color:%1'>FUZZY JOHN</span>"
+                            "<span style='font-size:28px; color:%1'> DAW Pulses</span>").arg (css (kAccent)));
+#endif
+    col->addWidget (logo);
+    auto* text = new QLabel (tr ("<p align='center'><b>Fuzzy John DAW Pulses</b><br>Version %1</p>"
+                                 "<p align='center'>Fuzzy Turtle Software<br>Free software, GPLv3 license</p>"
+                                 "<p align='center' style='color:#8a8a92'>Qt %2 &middot; JUCE engine &middot; Maschine MK3 / Maschine+</p>")
+                                 .arg (QString (FUZZY_VERSION), qVersion()));
+    text->setTextFormat (Qt::RichText);
+    col->addWidget (text);
+    // Contact : l'adresse a lire ou copier (pas de lien mailto)
+    const QString address = "fuzzyturtlesoftware@gmail.com";
+    auto* contact = new QLabel (tr ("<p align='center'>Contact<br><b>%1</b></p>").arg (address));
+    contact->setTextFormat (Qt::RichText);
+    contact->setTextInteractionFlags (Qt::TextSelectableByMouse);
+    col->addWidget (contact);
+    auto* copy = new QPushButton (tr ("Copy the address"));
+    connect (copy, &QPushButton::clicked, &dialog, [address, copy]
+    {
+        QGuiApplication::clipboard()->setText (address);
+        copy->setText (tr ("Copied"));
+    });
+    col->addWidget (copy);
+    auto* close = new QPushButton (tr ("Close"));
+    connect (close, &QPushButton::clicked, &dialog, &QDialog::accept);
+    col->addWidget (close);
+    dialog.exec();
+}
+
+void MainWindow::transposePattern (int step)
+{
+    // Demi-tons ou octaves, accords compris ; la selection, sinon la case du curseur
+    showLeftTab (1);
+    const seq::Pattern p = sequencer.pattern (state.group);
+    QList<QPoint> targets = patternView->selection();
+    if (targets.isEmpty())
+        targets << QPoint (patternView->selectedTrack(), patternView->selectedRow());
+    remember (state.group);
+    int moved = 0;
+    for (const QPoint& c : targets)
+    {
+        seq::Cell cell = p.rows[(size_t) c.y()][(size_t) c.x()];
+        if (cell.empty())
+            continue;
+        QList<int> notes = PianoRollView::notesOf (cell);
+        bool fits = true;
+        for (int& n : notes)
+            fits &= (n += step) >= 0 && n <= 127;
+        if (fits)
+        {
+            sequencer.setCell (state.group, c.y(), c.x(), PianoRollView::withNotes (cell, notes));
+            ++moved;
+        }
+    }
+    patternView->update();
+    toast (QString ("%1 %2%3 : %4 note(s)").arg (std::abs (step) == 12 ? "OCT" : "SEMI").arg (step > 0 ? "+" : "-")
+               .arg (std::abs (step) == 12 ? 1 : std::abs (step)).arg (moved));
+}
+
+void MainWindow::transposeRoll (int step)
+{
+    showLeftTab (2);
+    const int n = pianoRoll->transpose (step);
+    toast (n ? QString ("%1 %2 : %3 note(s)").arg (std::abs (step) == 12 ? "OCT" : "SEMI").arg (step > 0 ? "+" : "-").arg (n)
+             : QString ("Select notes first"));
+}
+
+// ------------------------------------------------------------ copier / deplacer sons et groupes
+
+MainWindow::SoundCopy MainWindow::takeSound (int g, int p) const
+{
+    const size_t i = (size_t) state.index (g, p);
+    SoundCopy s;
+    s.valid = true;
+    s.sample = state.samples[i];
+    s.mode = state.playMode[i];
+    s.release = state.releaseMs[i];
+    // le synthe « du pad » depend du pad et du groupe : on garde le synthe reel
+    s.synth = state.effSynth (g, p);
+    s.volume = state.soundVolume[i];
+    s.pan = state.soundPan[i];
+    s.pitch = state.soundPitch[i];
+    s.cutoff = state.soundCutoff[i];
+    s.loopStart = state.loopStart[i];
+    s.loopEnd = state.loopEnd[i];
+    s.reverse = state.soundReverse[i];
+    return s;
+}
+
+void MainWindow::putSound (int g, int p, const SoundCopy& s)
+{
+    const size_t i = (size_t) state.index (g, p);
+    state.samples[i] = s.sample;
+    state.playMode[i] = s.mode;
+    state.releaseMs[i] = s.release;
+    // meme synthe que le pad par defaut : on garde « -1 » (comme le pilote)
+    const int padDefault = g >= 8 ? 0 : session::State::defaultSynth (p);
+    state.synth[i] = s.synth == padDefault ? -1 : s.synth;
+    state.soundVolume[i] = s.volume;
+    state.soundPan[i] = s.pan;
+    state.soundPitch[i] = s.pitch;
+    state.soundCutoff[i] = s.cutoff;
+    state.loopStart[i] = s.loopStart;
+    state.loopEnd[i] = s.loopEnd;
+    state.soundReverse[i] = s.reverse;
+}
+
+void MainWindow::emptySound (int g, int p)
+{
+    const size_t i = (size_t) state.index (g, p);
+    state.samples[i].clear();
+    state.synth[i] = g >= 8 ? -1 : 0;                // A2-H2 : vide par defaut ; A-H : « None »
+    state.playMode[i] = session::State::defaultMode (p);
+    state.loopStart[i] = 0.0f;
+    state.loopEnd[i] = 1.0f;
+    state.releaseMs[i] = 150;
+    state.resetSoundSettings (i);
+}
+
+bool MainWindow::soundIsEmpty (int g, int p) const
+{
+    return state.samples[(size_t) state.index (g, p)].isEmpty() && state.effSynth (g, p) == 0;
+}
+
+void MainWindow::transferSound (int fg, int fp, int tg, int tp, Transfer how)
+{
+    if (fg == tg && fp == tp)
+        return;
+    const SoundCopy from = takeSound (fg, fp), to = takeSound (tg, tp);
+    putSound (tg, tp, from);
+    if (how == Transfer::Move)
+        emptySound (fg, fp);
+    else if (how == Transfer::Swap)
+        putSound (fg, fp, to);
+    syncSamples();
+    refreshAll();
+    const QString a = QString ("%1 %2").arg (groupName (fg)).arg (fp, 2, 10, QChar ('0'));
+    const QString b = QString ("%1 %2").arg (groupName (tg)).arg (tp, 2, 10, QChar ('0'));
+    toast (QString ("%1 %2 %3 %4").arg (how == Transfer::Copy ? "COPY" : how == Transfer::Move ? "MOVE" : "SWAP")
+               .arg (a).arg (how == Transfer::Swap ? "<>" : ">").arg (b));
+}
+
+void MainWindow::transferGroup (int from, int to, Transfer how)
+{
+    // Tout le groupe : ses 16 sons, son pattern, son volume (mute / solo non)
+    if (from == to || from < 0 || to < 0)
+        return;
+    std::array<SoundCopy, 16> a, b;
+    for (int p = 1; p <= 16; ++p)
+    {
+        a[(size_t) p - 1] = takeSound (from, p);
+        b[(size_t) p - 1] = takeSound (to, p);
+    }
+    const seq::Pattern pa = sequencer.pattern (from), pb = sequencer.pattern (to);
+    const int va = state.groupVolume[(size_t) from], vb = state.groupVolume[(size_t) to];
+    remember (to);
+    for (int p = 1; p <= 16; ++p)
+        putSound (to, p, a[(size_t) p - 1]);
+    sequencer.setPattern (to, pa);
+    state.groupVolume[(size_t) to] = va;
+    if (how != Transfer::Copy)
+    {
+        remember (from);
+        seq::Pattern blank;
+        blank.length = pa.length;
+        for (int p = 1; p <= 16; ++p)
+            how == Transfer::Swap ? putSound (from, p, b[(size_t) p - 1]) : emptySound (from, p);
+        sequencer.setPattern (from, how == Transfer::Swap ? pb : blank);
+        state.groupVolume[(size_t) from] = how == Transfer::Swap ? vb : 100;
+    }
+    syncSamples();
+    refreshAll();
+    showPatternState();
+    toast (QString ("%1 GROUP %2 > %3").arg (how == Transfer::Copy ? "COPY" : how == Transfer::Move ? "MOVE" : "SWAP")
+               .arg (groupName (from)).arg (groupName (to)));
+}
+
+bool MainWindow::confirmGroup (int from, int to, Transfer how)
+{
+    QMessageBox box (QMessageBox::Question, tr ("Group %1 > %2").arg (groupName (from)).arg (groupName (to)),
+                     tr ("%1 group %2 to group %3?\nIts 16 sounds, its pattern and its volume replace those of group %3.%4")
+                         .arg (how == Transfer::Move ? tr ("Move") : tr ("Copy"))
+                         .arg (groupName (from)).arg (groupName (to))
+                         .arg (how == Transfer::Move ? tr ("\nGroup %1 becomes empty.").arg (groupName (from)) : QString()),
+                     QMessageBox::Yes | QMessageBox::Cancel, this);
+    box.setDefaultButton (QMessageBox::Cancel);
+    return box.exec() == QMessageBox::Yes;
+}
+
+void MainWindow::soundDropMenu (int fg, int fp, int tp, const QPoint& at)
+{
+    // Pad lache sur un autre pad : Copy / Move / Swap (le menu sert de confirmation)
+    const int tg = state.group;
+    QMenu menu (this);
+    const QString from = QString ("%1 %2 (%3)").arg (groupName (fg)).arg (fp, 2, 10, QChar ('0')).arg (padName (fg, fp));
+    const QString to = QString ("%1 %2").arg (groupName (tg)).arg (tp, 2, 10, QChar ('0'));
+    auto* title = menu.addAction (from + "  >  " + to + (soundIsEmpty (tg, tp) ? QString() : tr ("  (replaces %1)").arg (padName (tg, tp))));
+    title->setEnabled (false);
+    menu.addSeparator();
+    auto* copy = menu.addAction (tr ("Copy here"));
+    auto* move = menu.addAction (tr ("Move here"));
+    auto* swap = menu.addAction (tr ("Swap"));
+    menu.addAction (tr ("Cancel"));
+    auto* picked = menu.exec (at);
+    if (picked == copy || picked == move || picked == swap)
+        transferSound (fg, fp, tg, tp, picked == copy ? Transfer::Copy : picked == move ? Transfer::Move : Transfer::Swap);
+}
+
+void MainWindow::groupDropped (int index, const QMimeData* mime)
+{
+    const int tg = index + (state.group >= 8 ? 8 : 0);
+    if (mime->hasFormat (kGroupMime))                // groupe lache sur un groupe
+    {
+        const int fg = mime->data (kGroupMime).toInt();
+        if (fg == tg)
+            return;
+        QMenu menu (this);
+        auto* title = menu.addAction (tr ("Group %1  >  group %2").arg (groupName (fg)).arg (groupName (tg)));
+        title->setEnabled (false);
+        menu.addSeparator();
+        auto* copy = menu.addAction (tr ("Copy group here..."));
+        auto* move = menu.addAction (tr ("Move group here..."));
+        menu.addAction (tr ("Cancel"));
+        auto* picked = menu.exec (QCursor::pos());
+        if ((picked == copy || picked == move) && confirmGroup (fg, tg, picked == move ? Transfer::Move : Transfer::Copy))
+            transferGroup (fg, tg, picked == move ? Transfer::Move : Transfer::Copy);
+        return;
+    }
+    const QStringList from = QString::fromLatin1 (mime->data (kSoundMime)).split (':');
+    if (from.size() == 2)                            // pad lache sur un groupe : choisir le pad
+        pickPadDialog (from[0].toInt(), from[1].toInt(), tg);
+}
+
+void MainWindow::pickPadDialog (int fg, int fp, int tg, bool)
+{
+    // Les 16 pads du groupe vise (comme la Maschine : 1 en bas a gauche) ; choisir puis Copy / Move
+    QDialog dialog (this);
+    dialog.setWindowTitle (tr ("%1 %2  >  group %3").arg (groupName (fg)).arg (fp, 2, 10, QChar ('0')).arg (groupName (tg)));
+    auto* col = new QVBoxLayout (&dialog);
+    auto* info = new QLabel (tr ("Choose the pad of group %1 for %2:").arg (groupName (tg)).arg (padName (fg, fp)));
+    col->addWidget (info);
+    auto* grid = new QGridLayout;
+    grid->setSpacing (6);
+    const QColor c = groupColor (tg);
+    int chosen = 0;
+    QList<QPushButton*> buttons;
+    auto* warn = new QLabel;
+    warn->setObjectName ("hint");
+    for (int p = 1; p <= 16; ++p)
+    {
+        auto* b = new QPushButton (QString ("%1\n%2").arg (p, 2, 10, QChar ('0')).arg (padName (tg, p).left (12)));
+        b->setCheckable (true);
+        b->setMinimumSize (92, 56);
+        const bool empty = soundIsEmpty (tg, p);
+        b->setStyleSheet (QString ("QPushButton { color: %1; border: 2px solid %2; background: #17171c; }"
+                                   "QPushButton:checked { color: #111; background: %2; }")
+                              .arg (empty ? "#777" : css (c)).arg (css (empty ? QColor (70, 70, 78) : c)));
+        grid->addWidget (b, 3 - (p - 1) / 4, (p - 1) % 4);
+        buttons << b;
+        connect (b, &QPushButton::clicked, &dialog, [&, p]
+        {
+            chosen = p;
+            for (int k = 0; k < 16; ++k)
+                buttons[k]->setChecked (k == p - 1);
+            warn->setText (soundIsEmpty (tg, p) ? tr ("Pad %1 is empty.").arg (p, 2, 10, QChar ('0'))
+                                                 : tr ("Replaces %1 on pad %2.").arg (padName (tg, p)).arg (p, 2, 10, QChar ('0')));
+        });
+    }
+    col->addLayout (grid);
+    col->addWidget (warn);
+    auto* box = new QDialogButtonBox;
+    auto* copy = box->addButton (tr ("Copy"), QDialogButtonBox::AcceptRole);
+    auto* move = box->addButton (tr ("Move"), QDialogButtonBox::AcceptRole);
+    box->addButton (QDialogButtonBox::Cancel);
+    copy->setEnabled (false);
+    move->setEnabled (false);
+    for (auto* b : buttons)
+        connect (b, &QPushButton::clicked, &dialog, [&] { copy->setEnabled (! (tg == fg && chosen == fp)); move->setEnabled (copy->isEnabled()); });
+    QPushButton* clicked = nullptr;
+    connect (box, &QDialogButtonBox::clicked, &dialog, [&] (QAbstractButton* b)
+    {
+        clicked = qobject_cast<QPushButton*> (b);
+        b == copy || b == move ? dialog.accept() : dialog.reject();
+    });
+    col->addWidget (box);
+    if (dialog.exec() == QDialog::Accepted && chosen && (clicked == copy || clicked == move))
+        transferSound (fg, fp, tg, chosen, clicked == copy ? Transfer::Copy : Transfer::Move);
 }

@@ -13,6 +13,7 @@ class QComboBox;
 class QSlider;
 class QSpinBox;
 class QLabel;
+class QPushButton;
 
 struct GenerateSettings
 {
@@ -62,7 +63,9 @@ private:
     QCheckBox* accents = nullptr;
     QSpinBox *velMin = nullptr, *velMax = nullptr, *lenMin = nullptr, *lenMax = nullptr;
     QCheckBox* fixedPitch = nullptr;
-    QComboBox *scale = nullptr, *root = nullptr;
+    QPushButton* scale = nullptr;                    // menu des gammes (categories, personnalisees)
+    int scaleValue = 1;
+    QComboBox* root = nullptr;
     QSpinBox* octaves = nullptr;
     QCheckBox* walk = nullptr;
     QSlider* chords = nullptr;

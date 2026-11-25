@@ -328,6 +328,8 @@ void PatternView::mouseReleaseEvent (QMouseEvent* e)
             selTrack = targetTrack;
         }
     }
+    if (banding && frameRect.width() * frameRect.height() <= 1)
+        frameRect = {};                              // un simple clic : pas de zone (pas de trait qui reste)
     dragRow = dragTrack = targetRow = targetTrack = -1;
     moving = banding = false;
     unsetCursor();

@@ -5,7 +5,7 @@
 #   - libs/fuzzy-control  : la Maschine MK3 / Maschine+ (pads, lumieres, ecrans)
 #   - prototypes/pad-sound : le moteur audio JUCE (programme a part, pilote en OSC)
 cmake_minimum_required(VERSION 3.22)
-project(FuzzyDawPulses VERSION 0.1.0 LANGUAGES CXX)
+project(FuzzyDawPulses VERSION 0.2.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -42,6 +42,7 @@ qt_add_executable(fuzzy-daw-pulses MACOSX_BUNDLE
     src/midi_import.cpp src/midi_import.h
     src/keyboard_view.cpp src/keyboard_view.h src/music_tables.h
     src/note_dialog.cpp src/note_dialog.h
+    src/scale_menu.cpp src/scale_menu.h
     src/settings_dialog.cpp src/settings_dialog.h
     src/session.h)
 
@@ -55,4 +56,17 @@ set_target_properties(fuzzy-daw-pulses PROPERTIES
 target_link_libraries(fuzzy-daw-pulses PRIVATE Qt6::Widgets Qt6::Network fuzzy_control)
 if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
     target_compile_options(fuzzy-daw-pulses PRIVATE -Wall -Wextra)
+endif()
+
+# Version affichee dans About ; logo (About et icone) si resources/logo.png existe
+target_compile_definitions(fuzzy-daw-pulses PRIVATE FUZZY_VERSION="${PROJECT_VERSION}")
+if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/resources/logo.png)
+    target_sources(fuzzy-daw-pulses PRIVATE resources/logo.qrc)
+    target_compile_definitions(fuzzy-daw-pulses PRIVATE FUZZY_HAS_LOGO)
+endif()
+# Icone du paquet Mac (Finder, Dock), faite a partir du logo SVG
+if(APPLE AND EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/resources/logo.icns)
+    target_sources(fuzzy-daw-pulses PRIVATE resources/logo.icns)
+    set_source_files_properties(resources/logo.icns PROPERTIES MACOSX_PACKAGE_LOCATION Resources)
+    set_target_properties(fuzzy-daw-pulses PROPERTIES MACOSX_BUNDLE_ICON_FILE logo.icns)
 endif()

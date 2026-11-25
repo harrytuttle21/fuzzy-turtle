@@ -166,11 +166,13 @@ LoopDialog::LoopDialog (EngineLink& e, session::State& s, int g, int snd, const 
     preview->setToolTip (tr ("Plays the sound while the button is held"));
     connect (preview, &QPushButton::pressed, this, [this]
     {
-        engine.hit (sound, 110, session::defaultNote (sound), group, state.held (group, sound), state.releaseMs[slot]);
+        previewNote = state.pitched (group, sound, session::defaultNote (sound));
+        engine.hit (sound, 110, previewNote, group, state.held (group, sound), state.releaseMs[slot],
+                    0, state.effSynth (group, sound), state.pan (group, sound));
     });
     connect (preview, &QPushButton::released, this, [this]
     {
-        engine.noteOff (sound, session::defaultNote (sound), group);
+        engine.noteOff (sound, previewNote, group);
     });
     bottom->addWidget (info, 1);
     bottom->addWidget (preview);
