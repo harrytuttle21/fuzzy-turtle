@@ -74,6 +74,11 @@ protected:
 
 private:
     static constexpr int kKeys = 44, kHeader = 18;   // clavier, en-tete
+    int laneH() const { return height() > 220 ? 56 : 0; }   // barres de velocite en bas
+    int notesBottom() const { return height() - laneH(); }
+    void setVelocityAt (const QPointF& p);           // barres de velocite : la note sous la souris
+    bool laneDrag = false;                           // reglage de velocite en cours
+    bool pendingNote = false;                        // Edit + Select : clic = note, glisser = cadre
     int rowPx = 12;                                  // hauteur d'une note (zoom vertical)
     int zoomPercent = 100;                           // zoom horizontal
     int firstRowShown = 0;

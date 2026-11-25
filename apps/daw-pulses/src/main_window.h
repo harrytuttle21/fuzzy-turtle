@@ -137,6 +137,7 @@ private:
     QDockWidget* keysTabDock = nullptr;              // onglet Keyboard (grand clavier, gammes, accords)
     KeyboardView* keyboardView = nullptr;
     QLabel* keyInfo = nullptr;                       // (plus utilise : remplace par les cases ci-dessous)
+    QComboBox* rootCombo = nullptr;                  // onglet Keyboard : tonalite (Shift + pad 13 / 14)
     QSpinBox* octaveSpin = nullptr;                  // onglet Keyboard : octave et velocite, comme le BPM
     QSpinBox* velocitySpin = nullptr;
     void showAbout();
@@ -247,6 +248,24 @@ private:
     class PianoRollView* pianoRoll = nullptr;
     QLabel* rollTitle = nullptr;
     QWidget* buildPianoRoll();
+    QWidget* buildTracker();                         // vue TRACKER (onglet a cote de Pattern)
+    bool trackerKey (QKeyEvent* e);                  // touches de la vue Tracker
+    void trackerWrite (int row, int track, int note);
+    bool trackerShown() const;
+    void placeTracker();                             // ajoute le Tracker aux dispositions d'avant
+    class TrackerView* tracker = nullptr;
+    class TrackerView* rollTracker = nullptr;        // Piano Roll, affichage Tracker (une piste)
+    class StepView* stepView = nullptr;              // Piano Roll, affichage Steps
+    class QStackedWidget* rollStack = nullptr;       // Roll / Steps / Tracker
+    TrackerView* activeTracker() const;              // Tracker visible (onglet ou Piano Roll)
+    bool stepsKey (QKeyEvent* e);
+    QDockWidget* trackerDock = nullptr;
+    QPushButton* trackerEditButton = nullptr;
+    QSpinBox* trackerStep = nullptr;
+    QSpinBox* trackerLength = nullptr;
+    QSpinBox* rollLength = nullptr;                  // Piano Roll : longueur du pattern               // Tracker : longueur (relie a celle de Pattern)
+    QString typedDigits;                             // chiffres tapes (velocite / longueur)
+    int lastTrackerNote = -1;
     bool patternShown() const;                       // le panneau Pattern est-il visible ?
     bool rollShown() const;                          // et le Piano Roll ?
     QSpinBox* lengthBox = nullptr;

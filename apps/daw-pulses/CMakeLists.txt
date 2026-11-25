@@ -35,6 +35,8 @@ qt_add_executable(fuzzy-daw-pulses MACOSX_BUNDLE
     src/mixer_view.cpp src/mixer_view.h
     src/sequencer.cpp src/sequencer.h
     src/pattern_view.cpp src/pattern_view.h
+    src/tracker_view.cpp src/tracker_view.h
+    src/step_view.cpp src/step_view.h
     src/project.cpp src/project.h
     src/loop_dialog.cpp src/loop_dialog.h
     src/piano_roll.cpp src/piano_roll.h

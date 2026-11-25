@@ -67,7 +67,7 @@ int PianoRollView::visibleRows() const
 
 int PianoRollView::visiblePitches() const
 {
-    return std::max (1, (height() - kHeader) / rowPx);
+    return std::max (1, (notesBottom() - kHeader) / rowPx);
 }
 
 void PianoRollView::setZoomX (int percent)
@@ -79,7 +79,7 @@ void PianoRollView::setZoomX (int percent)
 void PianoRollView::setRowHeight (int px)
 {
     const int middle = topPitch - visiblePitches() / 2;     // garder le milieu en place
-    rowPx = std::clamp (px, 6, 30);
+    rowPx = std::clamp (px, 3, 30);
     setTopPitch (middle + visiblePitches() / 2);
 }
 
@@ -280,7 +280,7 @@ void PianoRollView::paintEvent (QPaintEvent*)
     const double cw = colWidth();
 
     // Lignes de notes (touches noires plus sombres) et clavier
-    for (int pitch = topPitch; yOfPitch (pitch) < height(); --pitch)
+    for (int pitch = topPitch; yOfPitch (pitch) < notesBottom(); --pitch)
     {
         if (pitch < 0)
             break;
@@ -303,7 +303,7 @@ void PianoRollView::paintEvent (QPaintEvent*)
     for (int r = firstRowShown; r <= std::min (pat.length, firstRowShown + visibleRows()); ++r)
     {
         g.setPen (r % 4 == 0 ? QColor (60, 60, 70) : QColor (34, 34, 40));
-        g.drawLine (QPointF (xOfRow (r), kHeader), QPointF (xOfRow (r), height()));
+        g.drawLine (QPointF (xOfRow (r), kHeader), QPointF (xOfRow (r), notesBottom()));
     }
     // En-tete : numero des lignes a chaque temps
     g.fillRect (QRectF (0, 0, width(), kHeader), QColor (14, 14, 17));
@@ -321,7 +321,7 @@ void PianoRollView::paintEvent (QPaintEvent*)
     g.drawText (QRectF (0, 0, kKeys, kHeader), Qt::AlignCenter, QString ("%1").arg (state.sound.load(), 2, 10, QChar ('0')));
 
     // Notes du son choisi
-    g.setClipRect (QRectF (kKeys, kHeader, width() - kKeys, height() - kHeader));
+    g.setClipRect (QRectF (kKeys, kHeader, width() - kKeys, notesBottom() - kHeader));
     for (int r = 0; r < pat.length; ++r)
     {
         const seq::Cell& c = pat.rows[(size_t) r][(size_t) track()];
@@ -374,6 +374,77 @@ void PianoRollView::paintEvent (QPaintEvent*)
         const double x = xOfRow (playRow % std::max (1, pat.length));
         g.fillRect (QRectF (x, kHeader, std::max (2.0, cw), height()), QColor (255, 255, 255, 30));
     }
+    // Barres de velocite (une par case : un accord a une seule velocite) ; tirer = regler
+    if (laneH() > 0)
+    {
+        g.setClipping (false);
+        const double top = notesBottom();
+        g.fillRect (QRectF (0, top, width(), laneH()), QColor (14, 14, 17));
+        g.setPen (QColor (60, 60, 70));
+        g.drawLine (QPointF (0, top), QPointF (width(), top));
+        g.setPen (QColor (140, 140, 150));
+        QFont lf = font();
+        lf.setPixelSize (10);
+        g.setFont (lf);
+        g.drawText (QRectF (0, top, kKeys - 4, laneH()), Qt::AlignCenter, "VEL");
+        g.setClipRect (QRectF (kKeys, top, width() - kKeys, laneH()));
+        for (int r = 0; r < pat.length; ++r)
+        {
+            const seq::Cell& c = pat.rows[(size_t) r][(size_t) track()];
+            if (c.empty())
+                continue;
+            bool chosen = false;
+            for (int pitch : notesOf (c))
+                chosen |= sel.contains (key (r, pitch));
+            const double x = xOfRow (r + c.offset / double (seq::kTiming));
+            const double h = (laneH() - 8) * c.velocity / 127.0;
+            const double w = std::clamp (cw * 0.5, 3.0, 10.0);
+            g.fillRect (QRectF (x + 1, top + laneH() - 3 - h, w, h), chosen ? QColor (252, 140, 40) : color);
+        }
+        g.setClipping (false);
+    }
+}
+
+void PianoRollView::setVelocityAt (const QPointF& p)
+{
+    // La case dont la barre est la plus proche de la souris (sur la meme ligne de temps)
+    const seq::Pattern pat = sequencer.pattern (state.group);
+    const int r = (int) std::floor (rowAt (p.x()));
+    int best = -1;
+    for (int d : { 0, -1, 1 })
+        if (r + d >= 0 && r + d < pat.length && ! pat.rows[(size_t) (r + d)][(size_t) track()].empty())
+        {
+            best = r + d;
+            break;
+        }
+    if (best < 0)
+        return;
+    seq::Cell c = pat.rows[(size_t) best][(size_t) track()];
+    const int v = std::clamp ((int) std::lround ((height() - 3 - p.y()) / (laneH() - 8) * 127.0), 1, 127);
+    // Barre d'une note choisie : toutes les notes choisies prennent cette velocite
+    bool inSel = false;
+    for (int pitch : notesOf (c))
+        inSel |= sel.contains (key (best, pitch));
+    if (inSel)
+    {
+        QSet<int> rows;
+        for (int k : sel)
+            rows.insert (k / 128);
+        for (int row : rows)
+        {
+            seq::Cell o = pat.rows[(size_t) row][(size_t) track()];
+            if (o.empty() || o.velocity == v)
+                continue;
+            o.velocity = v;
+            sequencer.setCell (state.group, row, track(), o);
+        }
+    }
+    else if (c.velocity != v)
+    {
+        c.velocity = v;
+        sequencer.setCell (state.group, best, track(), c);
+    }
+    update();
 }
 
 void PianoRollView::mousePressEvent (QMouseEvent* e)
@@ -392,6 +463,13 @@ void PianoRollView::mousePressEvent (QMouseEvent* e)
     }
     pressPos = p;
     moved = false;
+    if (laneH() > 0 && p.y() >= notesBottom())       // barres de velocite
+    {
+        emit aboutToEdit();
+        laneDrag = true;
+        setVelocityAt (p);
+        return;
+    }
     int row = 0, pitch = 0;
     bool edge = false;
     const bool shift = e->modifiers() & Qt::ShiftModifier;
@@ -403,11 +481,15 @@ void PianoRollView::mousePressEvent (QMouseEvent* e)
         update();
         return;
     }
-    if (selectOn && (shift || ! editOn) && ! noteAt (p, row, pitch, edge))   // glisser dans le vide : cadre
+    if (selectOn && ! noteAt (p, row, pitch, edge))   // dans le vide : cadre si on glisse
     {
         banding = true;
-        bandBase = sel;
+        bandBase = shift ? sel : QSet<int> {};
+        if (! shift)
+            sel.clear();
         bandRect = {};
+        pendingNote = editOn && ! shift;             // Edit : un simple clic posera une note
+        update();
         return;
     }
     if (noteAt (p, row, pitch, edge))
@@ -458,6 +540,14 @@ void PianoRollView::mousePressEvent (QMouseEvent* e)
 void PianoRollView::mouseMoveEvent (QMouseEvent* e)
 {
     const QPointF p = e->position();
+    if (laneDrag)
+    {
+        setVelocityAt (p);
+        return;
+    }
+    if (banding && pendingNote && (p - pressPos).manhattanLength() < 5)
+        return;                                      // pas encore un glisser
+    pendingNote = false;
     if (banding)
     {
         bandRect = QRectF (pressPos, p).normalized();
@@ -499,6 +589,36 @@ void PianoRollView::mouseMoveEvent (QMouseEvent* e)
 
 void PianoRollView::mouseReleaseEvent (QMouseEvent* e)
 {
+    if (laneDrag)
+    {
+        laneDrag = false;
+        emit edited();
+        return;
+    }
+    if (pendingNote)                                 // clic simple dans le vide (Edit) : une note
+    {
+        pendingNote = false;
+        banding = false;
+        bandRect = {};
+        const int r = std::clamp ((int) rowAt (pressPos.x()), 0, sequencer.patternLength (state.group) - 1);
+        const int y = pitchAt (pressPos.y());
+        seq::Cell c = sequencer.pattern (state.group).rows[(size_t) r][(size_t) track()];
+        QList<int> notes = notesOf (c);
+        if (notes.size() <= seq::kChordExtra && ! notes.contains (y))
+        {
+            emit aboutToEdit();
+            if (c.empty())
+                c = { y, state.velocity.load(), 1, 0 };
+            notes << y;
+            sequencer.setCell (state.group, r, track(), withNotes (c, notes));
+            lastNote = key (r, y);
+            emit keyPressed (y);                     // on l'entend, brievement
+            QTimer::singleShot (150, this, [this, y] { emit keyReleased (y); });
+            emit edited();
+        }
+        update();
+        return;
+    }
     if (keyDown >= 0)
     {
         emit keyReleased (keyDown);

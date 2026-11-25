@@ -109,7 +109,7 @@ seq::Pattern GenerateDialog::generate (const seq::Pattern& base, int track, int 
     return p;
 }
 
-GenerateDialog::GenerateDialog (seq::Sequencer& seqr, const session::State& state, int g, int snd, QWidget* parent)
+GenerateDialog::GenerateDialog (seq::Sequencer& seqr, const session::State& /* state */, int g, int snd, QWidget* parent)
     : QDialog (parent), sequencer (seqr), group (g), sound (snd), before (seqr.pattern (g))
 {
     setWindowTitle (tr ("Generate notes — sound %1").arg (snd, 2, 10, QChar ('0')));

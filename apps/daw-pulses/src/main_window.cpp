@@ -5,6 +5,8 @@
 #include "maschine_link.h"
 #include "mixer_view.h"
 #include "pattern_view.h"
+#include "tracker_view.h"
+#include "step_view.h"
 #include "loop_dialog.h"
 #include "piano_roll.h"
 #include "generate_dialog.h"
@@ -56,6 +58,8 @@
 #include <QDir>
 #include <QDrag>
 #include <QShortcut>
+#include <QButtonGroup>
+#include <QTabBar>
 #include <QAbstractButton>
 #include <QMimeData>
 #include <QDialog>
@@ -124,10 +128,12 @@ MainWindow::MainWindow (const Options& options, QWidget* parent) : QMainWindow (
     // en bas, Groups | Keyboard | Pads cote a cote
     patternDock = makeDock (tr ("Pattern"), "patternDock", buildLeftPanel());
     mixerDock = makeDock (tr ("Mixer"), "mixerDock", buildMixer());
+    trackerDock = makeDock (tr ("Tracker"), "trackerDock", buildTracker());   // avant le Piano Roll (Edit / Step partages)
     rollDock = makeDock (tr ("Piano Roll"), "pianoRollDock", buildPianoRoll());
     addDockWidget (Qt::TopDockWidgetArea, patternDock);
-    tabifyDockWidget (patternDock, rollDock);       // onglets : Pattern, Piano Roll, Mixer
-    tabifyDockWidget (rollDock, mixerDock);
+    tabifyDockWidget (patternDock, rollDock);       // onglets : Pattern, Piano Roll, Tracker, Mixer
+    tabifyDockWidget (rollDock, trackerDock);
+    tabifyDockWidget (trackerDock, mixerDock);
     groupsDock = makeDock (tr ("Groups"), "groupsDock", buildGroupBlock());
     keysTabDock = makeDock (tr ("Keyboard"), "keyboardTabDock", buildKeyboardTab());
     soundDock = makeDock (tr ("Sound"), "soundDock", buildSoundTab());
@@ -287,6 +293,9 @@ MainWindow::MainWindow (const Options& options, QWidget* parent) : QMainWindow (
         QSettings s;
         if (s.contains ("windowState"))
             restoreState (s.value ("windowState").toByteArray(), kLayoutVersion);
+        placeTracker();                              // disposition d'avant le Tracker : on l'ajoute
+        // et une 2e fois quand les onglets sont dessines (sur Mac, ils arrivent un peu apres)
+        QTimer::singleShot (250, this, [this] { placeTracker(); });
     });
 
     // Menu Settings bien visible, une entree par page
@@ -512,11 +521,21 @@ MainWindow::MainWindow (const Options& options, QWidget* parent) : QMainWindow (
         if (g == state.group && snd == state.sound)  // le son choisi : ses notes s'allument
             keyboardView->flash (note, gateMs);
     });
-    connect (transport, &Transport::row, this, [this] (int r) { patternView->setPlayRow (r); pianoRoll->setPlayRow (r); });
+    connect (transport, &Transport::row, this, [this] (int r)
+    {
+        patternView->setPlayRow (r);
+        pianoRoll->setPlayRow (r);
+        tracker->setPlayRow (r);
+        rollTracker->setPlayRow (r);
+        stepView->setPlayRow (r);
+    });
     connect (transport, &Transport::playingChanged, this, [this] (bool on)
     {
         patternView->setPlaying (on);
         pianoRoll->setPlaying (on);
+        tracker->setPlaying (on);
+        rollTracker->setPlaying (on);
+        stepView->setPlaying (on);
         for (auto& t : takeSaved)                     // nouvelle prise a chaque lecture
             t = false;
         playButton->setChecked (on);
@@ -796,7 +815,8 @@ QWidget* MainWindow::buildGroupBlock()
         connect (b, &QPushButton::customContextMenuRequested, this, [this, i, b] (const QPoint& p)
         {
             const int g = i + (state.group >= 8 ? 8 : 0);
-            const bool several = groupTargets (g).size() > 1;   // groupes choisis : « Mute Groups »...
+            const int count = (int) groupTargets (g).size();
+            const bool several = count > 1;              // groupes choisis : « Mute 3 groups »...
             QMenu menu (this);
             QAction* chosen = nullptr;
             QList<QAction*> items;
@@ -804,7 +824,7 @@ QWidget* MainWindow::buildGroupBlock()
             {
                 const bool on = solo ? state.groupSolo[(size_t) g].load() : state.groupMute[(size_t) g].load();
                 auto* button = new QPushButton ((on ? QStringLiteral ("\u2713 ") : QStringLiteral ("   "))
-                                                + (solo ? "Solo " : "Mute ") + (several ? QString ("Groups") : groupName (g)));
+                                                + (solo ? "Solo " : "Mute ") + (several ? QString ("%1 groups").arg (count) : groupName (g)));
                 button->setFlat (true);
                 button->setStyleSheet (QString ("QPushButton { color: %1; text-align: left; padding: 5px 14px; border: none; font-weight: bold; }"
                                                 "QPushButton:hover { background: #2c2c36; }").arg (solo ? "#e8c040" : "#e05050"));
@@ -819,13 +839,13 @@ QWidget* MainWindow::buildGroupBlock()
             QStringList names;
             for (int t : targets)
                 names << groupName (t);
-            auto* copyGroup = menu.addAction (several ? tr ("Copy Groups") : tr ("Copy Group %1").arg (groupName (g)));
-            auto* cutGroup = menu.addAction (several ? tr ("Cut Groups (move)") : tr ("Cut Group %1 (move)").arg (groupName (g)));
+            auto* copyGroup = menu.addAction (several ? tr ("Copy %1 groups").arg (count) : tr ("Copy Group %1").arg (groupName (g)));
+            auto* cutGroup = menu.addAction (several ? tr ("Cut %1 groups (move)").arg (count) : tr ("Cut Group %1 (move)").arg (groupName (g)));
             QStringList clipNames;
             for (int t : groupClips)
                 clipNames << groupName (t);
             auto* pasteGroup = menu.addAction (groupClips.empty() ? tr ("Paste Group")
-                                               : groupClips.size() > 1 ? tr ("Paste Groups here") : tr ("Paste Group %1 here").arg (clipNames.join (" ")));
+                                               : groupClips.size() > 1 ? tr ("Paste %1 groups here").arg (groupClips.size()) : tr ("Paste Group %1 here").arg (clipNames.join (" ")));
             pasteGroup->setEnabled (! groupClips.empty() && ! (groupClips.size() == 1 && groupClips[0] == g));
             auto* picked = menu.exec (b->mapToGlobal (p));
             if (chosen)
@@ -1006,7 +1026,7 @@ void MainWindow::showLeftTab (int index)
 {
     // 0 = Mixer, 1 = Pattern : le panneau s'affiche et passe devant
     QDockWidget* dock = index == 0 ? mixerDock : index == 2 ? rollDock : index == 3 ? keysTabDock
-                      : index == 4 ? soundDock : patternDock;
+                      : index == 4 ? soundDock : index == 5 ? trackerDock : patternDock;
     dock->show();
     dock->raise();
     QTimer::singleShot (0, this, [this] { refreshMaschine(); });
@@ -1015,6 +1035,46 @@ void MainWindow::showLeftTab (int index)
 bool MainWindow::rollShown() const
 {
     return rollDock->isVisible() && ! pianoRoll->visibleRegion().isEmpty();
+}
+
+bool MainWindow::trackerShown() const
+{
+    return trackerDock->isVisible() && ! tracker->visibleRegion().isEmpty();
+}
+
+void MainWindow::placeTracker()
+{
+    // Une disposition enregistree avant le Tracker ne le connait pas : il rejoint les onglets.
+    // Ordre des onglets du haut : Pattern, Piano Roll, Tracker, Mixer.
+    if (! trackerDock->isVisible() && ! trackerDock->isFloating())
+    {
+        tabifyDockWidget (rollDock, trackerDock);
+        trackerDock->show();
+    }
+    for (auto* bar : findChildren<QTabBar*>())
+    {
+        QStringList titles;
+        for (int k = 0; k < bar->count(); ++k)
+            titles << bar->tabText (k);
+        if (! titles.contains (patternDock->windowTitle()) || ! titles.contains (trackerDock->windowTitle())
+            || ! titles.contains (rollDock->windowTitle()) || ! titles.contains (mixerDock->windowTitle()))
+            continue;
+        const int roll = (int) titles.indexOf (rollDock->windowTitle()), trk = (int) titles.indexOf (trackerDock->windowTitle()),
+                  mix = (int) titles.indexOf (mixerDock->windowTitle());
+        if (trk == roll + 1 && mix == trk + 1)
+            break;                                   // deja dans le bon ordre
+        const QString front = bar->tabText (bar->currentIndex());
+        removeDockWidget (trackerDock);
+        removeDockWidget (mixerDock);
+        tabifyDockWidget (rollDock, trackerDock);
+        tabifyDockWidget (trackerDock, mixerDock);
+        trackerDock->show();
+        mixerDock->show();
+        for (auto* d : { patternDock, rollDock, trackerDock, mixerDock })
+            if (d->windowTitle() == front)
+                d->raise();
+        break;
+    }
 }
 
 bool MainWindow::patternShown() const
@@ -1388,6 +1448,15 @@ void MainWindow::refreshAll()
     const QColor c = groupColor (state.group);
     pads->setColor (c);
     pads->setGroup (state.group);
+    if (tracker)                                     // en-tete du Tracker : noms des sons
+    {
+        QStringList names;
+        for (int p = 1; p <= 16; ++p)
+            names << padName (state.group, p);
+        tracker->setTrackNames (names);
+        if (rollTracker)
+            rollTracker->setTrackNames (names);
+    }
     pads->setSelected (state.sound);
     for (int p = 1; p <= 16; ++p)
         pads->setLabel (p, padLabel (p));
@@ -1779,6 +1848,10 @@ bool MainWindow::handleKey (QKeyEvent* e, bool down)
         transport->playing() ? transport->pause() : transport->play();
         return true;
     }
+    if (activeTracker() && trackerKey (e))
+        return true;
+    if (stepView && ! stepView->visibleRegion().isEmpty() && stepsKey (e))
+        return true;
     if ((e->key() == Qt::Key_Delete || e->key() == Qt::Key_Backspace) && rollShown())
     {
         if (const int n = pianoRoll->deleteSelection())
@@ -2128,6 +2201,8 @@ void MainWindow::buildViewMenu (QMenu* menu)
     mixerAction->setShortcut (QKeySequence ("Ctrl+M"));
     auto* patternAction = menu->addAction (tr ("Pattern"), this, [this] { showLeftTab (1); });
     patternAction->setShortcut (QKeySequence ("Ctrl+P"));
+    auto* trackerAction = menu->addAction (tr ("Tracker"), this, [this] { showLeftTab (5); });
+    trackerAction->setShortcut (QKeySequence ("Ctrl+T"));
     auto* rollAction = menu->addAction (tr ("Piano Roll"), this, [this] { showLeftTab (2); });
     rollAction->setShortcut (QKeySequence ("Ctrl+R"));
     auto* keysAction = menu->addAction (tr ("Keyboard"), this, [this] { showLeftTab (3); });
@@ -2170,6 +2245,7 @@ void MainWindow::applyView (const QString& name)
     if (kBuiltInViews.contains (name))
     {
         restoreState (defaultLayout, kLayoutVersion);
+        placeTracker();
         QTimer::singleShot (50, this, [this] { fixSeparators(); });
         statusDock->hide();
         if (name == "Live")                          // jouer : pattern, pads, groupes (sans clavier)
@@ -2190,6 +2266,7 @@ void MainWindow::applyView (const QString& name)
     {
         QSettings s;
         restoreState (s.value ("views/" + name + "/state").toByteArray(), kLayoutVersion);
+        placeTracker();
         QTimer::singleShot (50, this, [this] { fixSeparators(); });
         showLeftTab (s.value ("views/" + name + "/tab", 1).toInt());
     }
@@ -2613,7 +2690,7 @@ QWidget* MainWindow::buildPianoRoll()
     auto* head = new QHBoxLayout;
     rollTitle = new QLabel;
     rollTitle->setObjectName ("section");
-    auto* hint = new QLabel (tr ("Edit: click = note, double-click = erase  \u00B7  Select: frame / Shift + click  \u00B7  drag = move (%1 copy)  \u00B7  wheel = velocity")
+    auto* hint = new QLabel (tr ("click = note \u00B7 drag in empty space = select \u00B7 drag a note = move (%1 copy) \u00B7 double-click = erase \u00B7 bottom bars = velocity")
                                  .arg (PatternView::copyKey()));
     hint->setObjectName ("hint");
     hint->setSizePolicy (QSizePolicy::Ignored, QSizePolicy::Preferred);   // peut retrecir
@@ -2639,6 +2716,7 @@ QWidget* MainWindow::buildPianoRoll()
     head->addWidget (rollEditButton);
     head->addWidget (rollSelectButton);
     head->addWidget (gen);
+    QList<QPushButton*> transposes;
     for (const int step : { -1, 1, -12, 12 })        // transposition : selection, sinon la derniere note
     {
         auto* t = new QPushButton (step == -12 ? tr ("OCT -") : step == -1 ? tr ("SEMI -") : step == 1 ? tr ("SEMI +") : tr ("OCT +"));
@@ -2646,13 +2724,14 @@ QWidget* MainWindow::buildPianoRoll()
         t->setToolTip (tr ("Transpose the selected notes (or the last note touched)"));
         connect (t, &QPushButton::clicked, this, [this, step] { transposeRoll (step); });
         head->addWidget (t);
+        transposes << t;
     }
     col->addLayout (head);
     pianoRoll = new PianoRollView (sequencer, state);
     {
         QSettings s;
         rollEditButton->setChecked (s.value ("roll/edit", true).toBool());
-        rollSelectButton->setChecked (s.value ("roll/select", true).toBool());
+        rollSelectButton->setChecked (true);         // Select : toujours actif au demarrage (avec Edit)
         pianoRoll->setEditMode (rollEditButton->isChecked());
         pianoRoll->setSelectMode (rollSelectButton->isChecked());
     }
@@ -2677,7 +2756,7 @@ QWidget* MainWindow::buildPianoRoll()
     auto* zoomH = new QSlider (Qt::Horizontal);
     auto* zoomV = new QSlider (Qt::Horizontal);
     zoomH->setRange (100, 1600);
-    zoomV->setRange (6, 30);
+    zoomV->setRange (3, 30);
     for (auto* z : { zoomH, zoomV })
     {
         z->setFixedWidth (110);
@@ -2712,13 +2791,153 @@ QWidget* MainWindow::buildPianoRoll()
     connect (vBar, &QScrollBar::valueChanged, this, [this] (int v) { pianoRoll->setTopPitch (127 - v); });
     connect (zoomH, &QSlider::valueChanged, pianoRoll, &PianoRollView::setZoomX);
     connect (zoomV, &QSlider::valueChanged, pianoRoll, &PianoRollView::setRowHeight);
-    auto* grid = new QGridLayout;
+    auto* rollPage = new QWidget;
+    auto* grid = new QGridLayout (rollPage);
+    grid->setContentsMargins (0, 0, 0, 0);
     grid->setSpacing (0);
     grid->addWidget (pianoRoll, 0, 0);
     grid->addWidget (vBar, 0, 1);
     grid->addWidget (hBar, 1, 0);
-    col->addLayout (grid, 1);
     syncBars();
+
+    // Trois affichages de la piste du son choisi : Roll (notes), Steps (pas, comme la Maschine),
+    // Tracker (colonnes NOTE / VEL / LONG). Le reste de la barre suit l'affichage.
+    stepView = new StepView (sequencer, state, *patternView);
+    rollTracker = new TrackerView (sequencer, state, *patternView);
+    rollTracker->setSingleTrack (true);
+    rollStack = new QStackedWidget;
+    rollStack->addWidget (rollPage);
+    rollStack->addWidget (stepView);
+    rollStack->addWidget (rollTracker);
+    col->addWidget (rollStack, 1);
+    auto* modes = new QButtonGroup (panel);
+    int k = 0;
+    for (const QString& name : { tr ("Roll"), tr ("Steps"), tr ("Track") })
+    {
+        auto* b = new QPushButton (name);
+        b->setCheckable (true);
+        b->setFocusPolicy (Qt::NoFocus);
+        b->setObjectName ("keys");
+        b->setToolTip (k == 0 ? tr ("Piano roll of the chosen sound")
+                     : k == 1 ? tr ("The chosen sound in steps, 16 per line (like the Maschine step mode)")
+                              : tr ("The chosen sound as a tracker column (NOTE / VEL / LENGTH)"));
+        modes->addButton (b, k);
+        head->insertWidget (1 + k, b);
+        ++k;
+    }
+    // Barre commune aux 3 affichages, toujours dans le meme ordre (comme la vue Pattern) :
+    // titre, Roll / Steps / Track, Length, x2, Generate, Clear, SEMI / OCT, puis les reglages
+    // propres a l'affichage, l'aide a droite.
+    auto* lenLabel = new QLabel (tr ("Length"));
+    lenLabel->setObjectName ("hint");
+    rollLength = new QSpinBox;
+    rollLength->setRange (1, seq::kMaxRows);
+    rollLength->setFocusPolicy (Qt::ClickFocus);
+    rollLength->setToolTip (tr ("Pattern length in lines (4 lines = 1 beat)"));
+    rollLength->setValue (sequencer.patternLength (state.group));
+    connect (rollLength, &QSpinBox::editingFinished, rollLength, [this] { rollLength->clearFocus(); });
+    connect (rollLength, &QSpinBox::valueChanged, this, [this] (int v) { lengthBox->setValue (v); pianoRoll->update(); });
+    auto* twice = new QPushButton (QStringLiteral ("\u00D72"));
+    twice->setFocusPolicy (Qt::NoFocus);
+    twice->setToolTip (tr ("Double: length x 2, notes copied into the new half"));
+    connect (twice, &QPushButton::clicked, this, [this] { doublePattern(); });
+    auto* clear = new QPushButton (tr ("Clear"));
+    clear->setFocusPolicy (Qt::NoFocus);
+    clear->setToolTip (tr ("Erase the notes of this sound"));
+    connect (clear, &QPushButton::clicked, this, [this]
+    {
+        remember (state.group);                      // seulement la piste du son choisi
+        for (int r = 0; r < sequencer.patternLength (state.group); ++r)
+            sequencer.setCell (state.group, r, state.sound - 1, {});
+        patternView->update();
+        pianoRoll->update();
+    });
+    // Track : Edit et Step, les memes que l'onglet Tracker
+    auto* trackEdit = new QPushButton (tr ("Edit"));
+    trackEdit->setCheckable (true);
+    trackEdit->setFocusPolicy (Qt::NoFocus);
+    trackEdit->setObjectName ("keys");
+    trackEdit->setChecked (trackerEditButton->isChecked());
+    connect (trackEdit, &QPushButton::toggled, trackerEditButton, &QPushButton::setChecked);
+    connect (trackerEditButton, &QPushButton::toggled, trackEdit, &QPushButton::setChecked);
+    connect (trackerEditButton, &QPushButton::toggled, rollTracker, &TrackerView::setEditMode);
+    rollTracker->setEditMode (trackerEditButton->isChecked());
+    auto* stepLabel = new QLabel (tr ("Step"));
+    stepLabel->setObjectName ("hint");
+    auto* trackStep = new QSpinBox;
+    trackStep->setRange (0, 16);
+    trackStep->setFocusPolicy (Qt::ClickFocus);
+    trackStep->setValue (trackerStep->value());
+    connect (trackStep, &QSpinBox::valueChanged, trackerStep, &QSpinBox::setValue);
+    connect (trackerStep, &QSpinBox::valueChanged, trackStep, &QSpinBox::setValue);
+    while (auto* item = head->takeAt (0))            // on range tout dans le meme ordre
+        delete item;                                 // (les boutons restent : seule la place part)
+    head->addWidget (rollTitle);
+    for (auto* b : modes->buttons())
+        head->addWidget (b);
+    head->addSpacing (8);
+    head->addWidget (lenLabel);
+    head->addWidget (rollLength);
+    head->addWidget (twice);
+    head->addWidget (gen);
+    head->addWidget (clear);
+    head->addSpacing (8);
+    for (auto* t : transposes)
+        head->addWidget (t);
+    head->addSpacing (8);
+    const QList<QWidget*> rollOnly { rollEditButton, rollSelectButton, zoomLabel, zoomH, vLabel, zoomV };
+    const QList<QWidget*> trackOnly { trackEdit, stepLabel, trackStep };
+    for (auto* w : rollOnly + trackOnly)
+        head->addWidget (w);
+    head->addWidget (hint, 1);
+    hint->setAlignment (Qt::AlignRight | Qt::AlignVCenter);
+    auto showMode = [this, rollOnly, trackOnly, hint] (int id)
+    {
+        rollStack->setCurrentIndex (id);
+        for (auto* w : rollOnly)
+            w->setVisible (id == 0);
+        for (auto* w : trackOnly)
+            w->setVisible (id == 2);
+        hint->setText (id == 0 ? tr ("click = note \u00B7 drag in empty space = select \u00B7 drag a note = move (%1 copy) \u00B7 double-click = erase \u00B7 bottom bars = velocity").arg (PatternView::copyKey())
+                     : id == 1 ? tr ("click = note \u00B7 Shift / Cmd + click = select \u00B7 double-click = options \u00B7 wheel = velocity \u00B7 Del = erase")
+                               : tr ("keys = notes \u00B7 digits = velocity / length \u00B7 Del = erase \u00B7 %1 + wheel = value").arg (PatternView::copyKey()));
+    };
+    connect (modes, &QButtonGroup::idClicked, this, [showMode] (int id)
+    {
+        showMode (id);
+        QSettings().setValue ("roll/mode", id);
+    });
+    const int mode = std::clamp (QSettings().value ("roll/mode", 0).toInt(), 0, 2);
+    modes->button (mode)->setChecked (true);
+    showMode (mode);
+    connect (stepView, &StepView::addRequested, this, [this] (int row)
+    {
+        const int snd = state.sound, note = defaultNote (snd);
+        remember (state.group);
+        sequencer.setCell (state.group, row, snd - 1, { note, state.velocity.load(), 1, 0 });
+        patternView->update();
+        stepView->update();
+        playNote (note, state.velocity, true);       // on l'entend, brievement
+        QTimer::singleShot (150, this, [this, note] { playNote (note, 0, false); });
+    });
+    connect (stepView, &StepView::cellMenu, this, &MainWindow::patternMenu);
+    connect (stepView, &StepView::cellDoubleClicked, this, &MainWindow::noteOptions);
+    connect (stepView, &StepView::valueWheel, this, [this] (int row, int steps)
+    {
+        seq::Cell c = sequencer.pattern (state.group).rows[(size_t) row][(size_t) (state.sound - 1)];
+        remember (state.group);
+        c.velocity = std::clamp (c.velocity + steps * 4, 1, 127);
+        sequencer.setCell (state.group, row, state.sound - 1, c);
+        stepView->update();
+    });
+    connect (rollTracker, &TrackerView::cellMenu, this, &MainWindow::patternMenu);
+    connect (rollTracker, &TrackerView::cellDoubleClicked, this, [this] (int row, int track, int)
+    {
+        if (sequencer.pattern (state.group).rows[(size_t) row][(size_t) track].empty())
+            trackerWrite (row, track, lastTrackerNote >= 0 ? lastTrackerNote : defaultNote (track + 1));
+        else
+            noteOptions (row, track);
+    });
     return panel;
 }
 
@@ -2954,6 +3173,7 @@ QWidget* MainWindow::buildKeyboardTab()
         return c;
     };
     auto* rootBox = combo ({ "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B" }, keySettings.root);
+    rootCombo = rootBox;
     rootBox->setToolTip (tr ("Root note of the scale"));
     // Gamme et accords : menus en arborescence (categorie, puis gamme), personnalises compris
     auto* scaleButton = new QPushButton;
@@ -3193,6 +3413,37 @@ void MainWindow::shiftPad (int pad)
     if (pad == 10)
     {
         toast ("CLEAR AUTO : no automation yet");
+        return;
+    }
+    if (padKeyboard && pad >= 13)
+    {
+        // KEYBOARD / CHORDS (comme le pilote) : 13 / 14 = tonalite -/+ 1 demi-ton, 15 / 16 = octave -/+.
+        // Les notes et accords des pads sont recalcules (C -> C# : l'accord de base devient C#...).
+        if (pad <= 14)
+        {
+            const int root = ((keySettings.root + (pad == 13 ? -1 : 1)) % 12 + 12) % 12;
+            if (rootCombo)
+                rootCombo->setCurrentIndex (root);   // met a jour l'onglet Keyboard, enregistre, recalcule
+            else
+            {
+                keySettings.root = root;
+                if (saveKeySettings)
+                    saveKeySettings();
+            }
+            static const char* names[] { "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B" };
+            toast (QString ("ROOT %1").arg (names[root]));
+        }
+        else
+        {
+            const int octave = qBound (0, state.octave + (pad == 15 ? -1 : 1), 7);
+            if (octaveSpin)
+                octaveSpin->setValue (octave);
+            else
+                setOctave (octave);
+            refreshAll();
+            toast (QString ("OCTAVE %1").arg (octave));
+        }
+        refreshMaschine();
         return;
     }
     showLeftTab (1);
@@ -3721,7 +3972,6 @@ void MainWindow::showAbout()
 void MainWindow::transposePattern (int step)
 {
     // Demi-tons ou octaves, accords compris ; la selection, sinon la case du curseur
-    showLeftTab (1);
     const seq::Pattern p = sequencer.pattern (state.group);
     QList<QPoint> targets = patternView->selection();
     if (targets.isEmpty())
@@ -3751,6 +4001,11 @@ void MainWindow::transposePattern (int step)
 void MainWindow::transposeRoll (int step)
 {
     showLeftTab (2);
+    if (rollStack && rollStack->currentIndex() != 0)   // Steps / Tracker : selection, sinon la case
+    {
+        transposePattern (step);
+        return;
+    }
     const int n = pianoRoll->transpose (step);
     toast (n ? QString ("%1 %2 : %3 note(s)").arg (std::abs (step) == 12 ? "OCT" : "SEMI").arg (step > 0 ? "+" : "-").arg (n)
              : QString ("Select notes first"));
@@ -4192,4 +4447,374 @@ void MainWindow::pasteGroups (int target)
     refreshMuteSolo();
     showPatternState();
     toast (QString ("PASTE GROUP %1").arg (what.join (", ")));
+}
+
+// ------------------------------------------------------------ vue TRACKER
+
+QWidget* MainWindow::buildTracker()
+{
+    auto* panel = new QFrame;
+    panel->setObjectName ("panel");
+    auto* col = new QVBoxLayout (panel);
+    auto* head = new QHBoxLayout;
+    auto* title = new QLabel (tr ("TRACKER"));
+    title->setObjectName ("section");
+    head->addWidget (title);
+    // Edit : le clavier ecrit (ligne rouge) ; sinon il joue seulement
+    trackerEditButton = new QPushButton (tr ("Edit"));
+    trackerEditButton->setCheckable (true);
+    trackerEditButton->setFocusPolicy (Qt::NoFocus);
+    trackerEditButton->setObjectName ("keys");
+    trackerEditButton->setToolTip (tr ("Edit: the computer keys write notes at the cursor (red line)"));
+    head->addWidget (trackerEditButton);
+    head->addSpacing (8);
+    // Memes outils que la vue Pattern : Length, x2, Generate, Clear
+    auto* lenLabel = new QLabel (tr ("Length"));
+    lenLabel->setObjectName ("hint");
+    trackerLength = new QSpinBox;
+    trackerLength->setRange (1, seq::kMaxRows);
+    trackerLength->setFocusPolicy (Qt::ClickFocus);
+    trackerLength->setToolTip (tr ("Pattern length in lines (4 lines = 1 beat)"));
+    trackerLength->setValue (sequencer.patternLength (state.group));
+    connect (trackerLength, &QSpinBox::editingFinished, trackerLength, [this] { trackerLength->clearFocus(); });
+    connect (trackerLength, &QSpinBox::valueChanged, this, [this] (int v) { lengthBox->setValue (v); tracker->update(); });
+    auto* twice = new QPushButton (QStringLiteral ("\u00D72"));
+    twice->setFocusPolicy (Qt::NoFocus);
+    twice->setToolTip (tr ("Double: length x 2, notes copied into the new half"));
+    connect (twice, &QPushButton::clicked, this, [this] { doublePattern(); });
+    auto* gen = new QPushButton (QStringLiteral ("\U0001F3B2 ") + tr ("Generate"));
+    gen->setFocusPolicy (Qt::NoFocus);
+    gen->setToolTip (tr ("Random notes for the chosen sound (Cmd+G)"));
+    connect (gen, &QPushButton::clicked, this, [this] { openGenerate(); });
+    auto* clear = new QPushButton (tr ("Clear"));
+    clear->setFocusPolicy (Qt::NoFocus);
+    clear->setToolTip (tr ("Erase the whole pattern of this group"));
+    connect (clear, &QPushButton::clicked, this, [this]
+    {
+        remember (state.group);
+        sequencer.clear (state.group);
+        patternView->clearSelection();
+        tracker->update();
+    });
+    head->addWidget (lenLabel);
+    head->addWidget (trackerLength);
+    head->addWidget (twice);
+    head->addWidget (gen);
+    head->addWidget (clear);
+    head->addSpacing (8);
+    for (const int step : { -1, 1, -12, 12 })        // transposition : selection, sinon la case
+    {
+        auto* t = new QPushButton (step == -12 ? tr ("OCT -") : step == -1 ? tr ("SEMI -") : step == 1 ? tr ("SEMI +") : tr ("OCT +"));
+        t->setFocusPolicy (Qt::NoFocus);
+        connect (t, &QPushButton::clicked, this, [this, step] { transposePattern (step); showLeftTab (5); });
+        head->addWidget (t);
+    }
+    head->addSpacing (8);
+    auto* stepLabel = new QLabel (tr ("Step"));
+    trackerStep = new QSpinBox;
+    trackerStep->setRange (0, 16);
+    trackerStep->setFocusPolicy (Qt::ClickFocus);
+    trackerStep->setToolTip (tr ("Lines the cursor goes down after each note (0 = stays)"));
+    head->addWidget (stepLabel);
+    head->addWidget (trackerStep);
+    auto* followButton = new QPushButton (tr ("Follow"));
+    followButton->setCheckable (true);
+    followButton->setFocusPolicy (Qt::NoFocus);
+    followButton->setObjectName ("keys");
+    followButton->setToolTip (tr ("While playing, the view follows the play line"));
+    head->addWidget (followButton);
+    auto* hint = new QLabel (tr ("keys = notes · digits = velocity / length · Del = erase · arrows, Tab · double-click = note · %1 + wheel = value")
+                                 .arg (PatternView::copyKey()));
+    hint->setObjectName ("hint");
+    hint->setSizePolicy (QSizePolicy::Ignored, QSizePolicy::Preferred);
+    hint->setMinimumWidth (0);
+    hint->setAlignment (Qt::AlignRight | Qt::AlignVCenter);
+    head->addWidget (hint, 1);
+    col->addLayout (head);
+    tracker = new TrackerView (sequencer, state, *patternView);
+    col->addWidget (tracker, 1);
+
+    QSettings s;
+    trackerEditButton->setChecked (s.value ("tracker/edit", true).toBool());
+    trackerStep->setValue (s.value ("tracker/step", 1).toInt());
+    followButton->setChecked (s.value ("tracker/follow", true).toBool());
+    tracker->setEditMode (trackerEditButton->isChecked());
+    tracker->setFollow (followButton->isChecked());
+    connect (trackerEditButton, &QPushButton::toggled, this, [this] (bool on)
+    {
+        tracker->setEditMode (on);
+        QSettings().setValue ("tracker/edit", on);
+    });
+    connect (trackerStep, &QSpinBox::valueChanged, this, [] (int v) { QSettings().setValue ("tracker/step", v); });
+    connect (followButton, &QPushButton::toggled, this, [this] (bool on)
+    {
+        tracker->setFollow (on);
+        QSettings().setValue ("tracker/follow", on);
+    });
+    connect (tracker, &TrackerView::cellMenu, this, &MainWindow::patternMenu);
+    connect (tracker, &TrackerView::trackClicked, this, [this] (int track, bool solo) { toggleSound (state.group, track + 1, solo); });
+    connect (tracker, &TrackerView::cellClicked, this, [this] (int track)
+    {
+        typedDigits.clear();
+        tracker->setTyping ({});
+        if (track + 1 != state.sound)
+            selectSound (track + 1);
+    });
+    connect (tracker, &TrackerView::cellDoubleClicked, this, [this] (int row, int track, int)
+    {
+        // Double-clic : case vide = une note (la derniere ecrite) ; note = ses options
+        if (sequencer.pattern (state.group).rows[(size_t) row][(size_t) track].empty())
+            trackerWrite (row, track, lastTrackerNote >= 0 ? lastTrackerNote : defaultNote (track + 1));
+        else
+            noteOptions (row, track);
+    });
+    connect (tracker, &TrackerView::valueWheel, this, [this] (int row, int track, int field, int steps)
+    {
+        // Option + molette : note (demi-tons), velocite (de 4 en 4), longueur (en lignes)
+        seq::Cell c = sequencer.pattern (state.group).rows[(size_t) row][(size_t) track];
+        if (c.empty())
+            return;
+        remember (state.group);
+        if (field == TrackerView::Note)
+        {
+            QList<int> notes = PianoRollView::notesOf (c);
+            bool fits = true;
+            for (int& n : notes)
+                fits &= (n += steps) >= 0 && n <= 127;
+            if (! fits)
+                return;
+            c = PianoRollView::withNotes (c, notes);
+        }
+        else if (field == TrackerView::Velocity)
+            c.velocity = std::clamp (c.velocity + steps * 4, 1, 127);
+        else
+            c.length = std::clamp (c.length + steps, 1, sequencer.pattern (state.group).length);
+        sequencer.setCell (state.group, row, track, c);
+        patternView->update();
+        tracker->update();
+    });
+    // Le Tracker suit les changements (enregistrement, Maschine, autres vues)
+    auto* timer = new QTimer (tracker);
+    connect (timer, &QTimer::timeout, this, [this]
+    {
+        for (QWidget* v : { (QWidget*) rollTracker, (QWidget*) stepView })   // affichages du Piano Roll
+            if (v && ! v->visibleRegion().isEmpty())
+                v->update();
+        if (rollLength && ! rollLength->hasFocus() && rollLength->value() != sequencer.patternLength (state.group))
+        {
+            const QSignalBlocker block (rollLength);  // longueur changee ailleurs
+            rollLength->setValue (sequencer.patternLength (state.group));
+        }
+        if (trackerShown())
+        {
+            tracker->update();
+            if (! trackerLength->hasFocus() && trackerLength->value() != sequencer.patternLength (state.group))
+            {
+                const QSignalBlocker block (trackerLength);   // longueur changee ailleurs (Pattern, Maschine)
+                trackerLength->setValue (sequencer.patternLength (state.group));
+            }
+        }
+    });
+    timer->start (66);
+    return panel;
+}
+
+TrackerView* MainWindow::activeTracker() const
+{
+    if (trackerShown())
+        return tracker;
+    if (rollTracker && rollDock->isVisible() && ! rollTracker->visibleRegion().isEmpty())
+        return rollTracker;
+    return nullptr;
+}
+
+bool MainWindow::stepsKey (QKeyEvent* e)
+{
+    // Affichage Steps : fleches = pas (gauche / droite) et mesures (haut / bas), Suppr = effacer
+    const int key = e->key(), t = state.sound - 1;
+    const int length = sequencer.patternLength (state.group);
+    int row = patternView->selectedRow();
+    const int d = key == Qt::Key_Left ? -1 : key == Qt::Key_Right ? 1 : key == Qt::Key_Up ? -16 : key == Qt::Key_Down ? 16 : 0;
+    if (d)
+    {
+        patternView->setCurrentCell (((row + d) % length + length) % length, t);
+        stepView->update();
+        return true;
+    }
+    if (key == Qt::Key_Delete || key == Qt::Key_Backspace)
+    {
+        remember (state.group);
+        const QList<QPoint> sel = patternView->selection();
+        if (sel.isEmpty())
+            sequencer.setCell (state.group, row, t, {});
+        for (const QPoint& c : sel)
+            sequencer.setCell (state.group, c.y(), c.x(), {});
+        patternView->clearSelection();
+        stepView->update();
+        return true;
+    }
+    return false;
+}
+
+void MainWindow::trackerWrite (int row, int track, int note)
+{
+    // Ecrit une note (ou l'accord du menu Chords) dans la case ; garde la longueur deja la
+    const seq::Cell old = sequencer.pattern (state.group).rows[(size_t) row][(size_t) track];
+    QList<int> notes = keySettings.chordMode ? music::chordFor (note, keySettings) : QList<int> { note };
+    seq::Cell c { notes.isEmpty() ? note : notes.first(), state.velocity.load(), old.empty() ? 1 : old.length, 0 };
+    c = PianoRollView::withNotes (c, notes);
+    remember (state.group);
+    sequencer.setCell (state.group, row, track, c);
+    lastTrackerNote = note;
+    patternView->update();
+    tracker->update();
+    if (rollTracker)
+        rollTracker->update();
+}
+
+bool MainWindow::trackerKey (QKeyEvent* e)
+{
+    // Touches de la vue Tracker (sans Cmd / Ctrl / Option : ceux-la sont des raccourcis)
+    TrackerView* tracker = activeTracker();          // l'onglet Tracker, ou celui du Piano Roll
+    if (! tracker)
+        return false;
+    if (tracker->singleTrack() && patternView->selectedTrack() != state.sound - 1)
+        patternView->setCurrentCell (patternView->selectedRow(), state.sound - 1);
+    const int key = e->key();
+    const int length = sequencer.pattern (state.group).length;
+    auto follow = [this, tracker]                             // la piste du curseur = le son choisi
+    {
+        typedDigits.clear();
+        tracker->setTyping ({});
+        if (patternView->selectedTrack() + 1 != state.sound)
+            selectSound (patternView->selectedTrack() + 1);
+        tracker->update();
+    };
+    auto advance = [this, tracker]
+    {
+        if (trackerStep->value())
+            tracker->moveCursor (trackerStep->value(), 0);
+    };
+    // Deplacements
+    if (key == Qt::Key_Up || key == Qt::Key_Down)
+    {
+        tracker->moveCursor (key == Qt::Key_Up ? -1 : 1, 0);
+        follow();
+        return true;
+    }
+    if (key == Qt::Key_Left || key == Qt::Key_Right)
+    {
+        tracker->moveCursor (0, key == Qt::Key_Left ? -1 : 1);
+        follow();
+        return true;
+    }
+    if ((key == Qt::Key_Tab || key == Qt::Key_Backtab) && tracker->singleTrack())
+        return true;                                 // une seule piste
+    if (key == Qt::Key_Tab || key == Qt::Key_Backtab)  // piste suivante / precedente
+    {
+        const int t = std::clamp (patternView->selectedTrack() + (key == Qt::Key_Tab ? 1 : -1), 0, seq::kTracks - 1);
+        patternView->setCurrentCell (patternView->selectedRow(), t);
+        tracker->setField (TrackerView::Note);
+        follow();
+        return true;
+    }
+    if (key == Qt::Key_PageUp || key == Qt::Key_PageDown)
+    {
+        tracker->moveCursor (key == Qt::Key_PageUp ? -16 : 16, 0);
+        follow();
+        return true;
+    }
+    if (key == Qt::Key_Home || key == Qt::Key_End)
+    {
+        patternView->setCurrentCell (key == Qt::Key_Home ? 0 : length - 1, patternView->selectedTrack());
+        follow();
+        return true;
+    }
+    const int row = patternView->selectedRow(), track = patternView->selectedTrack();
+    // Effacer : la selection, sinon la case (puis le curseur descend)
+    if (key == Qt::Key_Delete || key == Qt::Key_Backspace)
+    {
+        if (! trackerEditButton->isChecked())
+        {
+            toast ("Tracker: turn Edit on to erase");
+            return true;
+        }
+        remember (state.group);
+        const QList<QPoint> sel = patternView->selection();
+        if (sel.isEmpty())
+        {
+            sequencer.setCell (state.group, row, track, {});
+            advance();
+        }
+        for (const QPoint& c : sel)
+            sequencer.setCell (state.group, c.y(), c.x(), {});
+        patternView->clearSelection();
+        patternView->update();
+        tracker->update();
+        return true;
+    }
+    // Chiffres (aussi la rangee du haut d'un clavier AZERTY, sans Maj) : velocite ou longueur
+    if (tracker->field() != TrackerView::Note)
+    {
+        static const QString azerty = QString::fromUtf8 ("à&é\"'(-è_ç");   // 0 a 9
+        const QString t = e->text();
+        int digit = -1;
+        if (t.size() == 1 && t[0].isDigit())
+            digit = t[0].digitValue();
+        else if (t.size() == 1 && azerty.contains (t[0]))
+            digit = (int) azerty.indexOf (t[0]);
+        if (digit < 0)
+            return false;
+        if (! trackerEditButton->isChecked())
+        {
+            toast ("Tracker: turn Edit on to type values");
+            return true;
+        }
+        seq::Cell c = sequencer.pattern (state.group).rows[(size_t) row][(size_t) track];
+        if (c.empty())
+        {
+            toast ("No note here");
+            return true;
+        }
+        const bool vel = tracker->field() == TrackerView::Velocity;
+        if (typedDigits.isEmpty())
+            remember (state.group);
+        typedDigits += QString::number (digit);
+        const int value = typedDigits.toInt();
+        if (vel)
+            c.velocity = std::clamp (value, 1, 127);
+        else
+            c.length = std::clamp (value, 1, length);
+        sequencer.setCell (state.group, row, track, c);
+        tracker->setTyping (typedDigits);
+        if (typedDigits.size() >= (vel ? 3 : 2))       // valeur complete : ligne suivante
+        {
+            typedDigits.clear();
+            tracker->setTyping ({});
+            advance();
+        }
+        patternView->update();
+        return true;
+    }
+    // Champ NOTE en mode Edit : les touches piano ecrivent la note (et la jouent)
+    if (! trackerEditButton->isChecked())
+        return false;                                // Edit coupe : jeu normal des touches
+    char ch = 0;
+    if (key >= Qt::Key_A && key <= Qt::Key_Z)
+        ch = char ('a' + (key - Qt::Key_A));
+    else if (key == Qt::Key_Semicolon)
+        ch = ';';
+    else if (e->text().size() == 1)
+        ch = e->text().at (0).toLower().toLatin1();
+    const KeyLayout& lay = layoutBox->currentText() == "QWERTY" ? kQwerty : kAzerty;
+    const char* pos = ch ? std::strchr (lay.notes, ch) : nullptr;
+    if (! pos || ch == lay.octDown || ch == lay.octUp || ch == lay.velDown || ch == lay.velUp)
+        return false;                                // octave, velocite... : comme d'habitude
+    const int note = qBound (0, 12 * (state.octave + 1) + int (pos - lay.notes), 127);
+    trackerWrite (row, track, note);
+    keyNotes.insert (key, note);                     // on l'entend tant que la touche est tenue
+    playKey (note, state.velocity, true);
+    piano->setHeld (note, true);
+    advance();
+    return true;
 }
