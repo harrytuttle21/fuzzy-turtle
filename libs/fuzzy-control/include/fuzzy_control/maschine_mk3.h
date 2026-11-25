@@ -34,7 +34,9 @@ public:
 
     enum class Access { Shared, Exclusive };
     // Pad sans nouvelles depuis ce delai : considere comme relache (relachement perdu)
-    static constexpr std::chrono::milliseconds kPadTimeout { 1200 };
+    // Garde des pads : un pad tenu sans nouvelle de la Maschine depuis 10 s est relache (filet
+    // contre une note bloquee). Avant : 1,2 s, qui coupait les notes tenues immobiles (piano, accords).
+    static constexpr std::chrono::milliseconds kPadTimeout { 10000 };
     using Callback = std::function<void (const Event&)>;
 
     MaschineMk3();

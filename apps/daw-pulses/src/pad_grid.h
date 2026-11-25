@@ -3,6 +3,7 @@
 #pragma once
 #include <QColor>
 #include <QElapsedTimer>
+#include <QSet>
 #include <QWidget>
 
 #include <array>
@@ -19,6 +20,10 @@ public:
 
     void setColor (const QColor& c) { color = c; update(); }
     void setGroup (int g) { group = g; }             // groupe affiche (pour glisser un son)
+    // Plusieurs pads choisis : Shift + clic = ligne / colonne / rectangle depuis le dernier pad,
+    // Cmd (Ctrl) + clic = ajouter / retirer un pad. Un clic simple efface la selection.
+    QList<int> selection() const;
+    void clearSelection() { chosen.clear(); update(); emit selectionChanged(); }
     void setSelected (int pad) { selected = pad; update(); }
     void setLabel (int pad, const QString& text) { labels[(size_t) pad - 1] = text; update(); }
     void flash (int pad, bool down);                 // pad frappe (souris ou Maschine)
@@ -37,6 +42,7 @@ signals:
     void filesDropped (int pad, const QStringList& paths);   // fichiers audio deposes (Finder)
     void midiDropped (const QString& path, int sound);       // fichier .mid depose sur un pad
     void soundDropped (int fromGroup, int fromPad, int toPad, const QPoint& globalPos);   // pad lache sur un pad
+    void selectionChanged();
 
 protected:
     void paintEvent (QPaintEvent*) override;
@@ -57,7 +63,9 @@ private:
     int selected = 1, mousePad = 0;
     QPointF pressPos;
     int dropPad = 0;
-    int group = 0;                                 // pad vise pendant un depot de fichiers
+    int group = 0;
+    QSet<int> chosen;                                // pads choisis (Shift / Cmd + clic)
+    int anchor = 0;                                  // depart d'une selection Shift + clic                                 // pad vise pendant un depot de fichiers
     std::array<QString, 16> labels;
     std::array<bool, 16> down {};
     std::array<char, 16> tags {};

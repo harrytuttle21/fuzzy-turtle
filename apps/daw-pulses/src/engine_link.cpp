@@ -136,6 +136,11 @@ void EngineLink::noteOff (int sound, int note, int group) const
     send (fuzzy::osc::message ("/fuzzy/proto/off", { sound, note, group }));
 }
 
+void EngineLink::offLive() const
+{
+    send (fuzzy::osc::message ("/fuzzy/proto/off_live"));
+}
+
 void EngineLink::click (bool accent, int volume) const
 {
     const int vel = qBound (0, (accent ? 127 : 95) * volume / 127, 127);

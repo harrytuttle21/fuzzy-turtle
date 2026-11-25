@@ -70,6 +70,7 @@ private:
     std::array<std::optional<int>, 8> knobValue {};
     std::optional<int> jogValue;
     std::array<bool, 17> pads {};                  // pad tenu (index 1-16)
+    static constexpr int kLostGapMs = 400;           // silence plus long : nouvelle frappe (relachement perdu)
     std::array<std::chrono::steady_clock::time_point, 17> padSeen {};   // derniere pression recue
     int missed = 0, maxGapMs = 0;
 };

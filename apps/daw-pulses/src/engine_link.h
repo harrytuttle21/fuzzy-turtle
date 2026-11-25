@@ -48,6 +48,7 @@ public:
     void hit (int sound, int velocity, int note, int group, bool adsr, int releaseMs = 150,
               int gateMs = 0, int synth = 0, int pan = 64) const;
     void noteOff (int sound, int note, int group) const;
+    void offLive() const;                            // plus rien de tenu : le moteur relache les notes jouees en direct
     void click (bool accent, int volume) const;   // metronome
     void panic() const;
     // Sample d'un son (WAV, AIFF, FLAC, Ogg, MP3... lu directement) ; "" = retour au son de synthese

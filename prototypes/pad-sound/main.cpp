@@ -223,6 +223,9 @@ struct Voice
     const Sample* sample = nullptr;          // fichier joue (nullptr = son de synthese)
     double pos = 0, step = 1;                // lecture du fichier
     bool looping = false;                    // boucle : de loopStart a loopEnd tant que la note tient
+    bool autoSustain = false;                // note tenue sans boucle reglee : tenue longue (piano)
+    bool wrapped = false;                    // la boucle a deja fait un tour
+    double sustainGain = 1;                  // tenue longue : descend lentement (comme une corde)
     double drumRatio = 1;                    // batterie de synthese : 1 = do 4 (hauteur d'origine)
     double loopStart = 0, loopEnd = 0, xfade = 0;   // en echantillons du fichier
 
@@ -246,6 +249,14 @@ struct Voice
         drumRatio = std::pow (2.0, (e.note - 60) / 12.0);   // batterie de synthese : hauteur jouee
         // Boucle : seulement pour un sample tenu (mode ADSR), et assez longue (>= 5 ms)
         looping = false;
+        // Note tenue sans boucle reglee : sustain automatique, comme un synthe. Le sample se lit
+        // normalement, puis une boucle douce sur sa deuxieme moitie tient le son jusqu'au
+        // relachement (le fichier ne s'arrete plus au bout de 2-3 s).
+        autoSustain = smp && adsr && ! loop.on && smp->data.getNumSamples() > 0.2 * smp->rate;
+        wrapped = false;
+        sustainGain = 1;
+        if (autoSustain)
+            loop = { true, 0.55f, 0.95f };
         if (smp && adsr && loop.on)
         {
             const double last = smp->data.getNumSamples() - 2;
@@ -254,8 +265,9 @@ struct Voice
             if (loopEnd - loopStart >= 0.005 * smp->rate)
             {
                 looping = true;
-                // fondu enchaine au raccord : 10 ms, au plus un quart de la boucle
-                xfade = std::min (0.010 * smp->rate, (loopEnd - loopStart) / 4);
+                // fondu enchaine au raccord : 10 ms (sustain automatique : 60 ms, plus doux),
+                // au plus un quart de la boucle
+                xfade = std::min ((autoSustain ? 0.060 : 0.010) * smp->rate, (loopEnd - loopStart) / 4);
             }
         }
     }
@@ -298,12 +310,23 @@ struct Voice
                 // Boucle : a la fin, on repart juste apres le debut ; les derniers xfade
                 // echantillons se melangent avec le debut de la boucle (pas de clic au raccord)
                 if (pos >= loopEnd)
+                {
                     pos = loopStart + xfade + (pos - loopEnd);
+                    wrapped = true;
+                }
                 s = readAt (pos);
                 if (xfade > 0 && pos > loopEnd - xfade)
                 {
                     const double a = (loopEnd - pos) / xfade;
                     s = (float) (s * a + readAt (loopStart + (pos - (loopEnd - xfade))) * (1 - a));
+                }
+                if (autoSustain && wrapped)
+                {
+                    // Tenue longue : apres la fin du fichier, le son continue en s'eteignant
+                    // doucement (-60 dB en 12 s environ), comme une note de piano tenue
+                    sustainGain *= std::exp (-dt / 1.75);
+                    s *= (float) sustainGain;
+                    if (sustainGain < 0.001) active = false;
                 }
                 pos += step;
             }
@@ -352,8 +375,8 @@ struct Voice
             default: { // notes
                 const double f = 440.0 * std::pow (2.0, (note - 69) / 12.0);
                 phase += 2 * juce::MathConstants<double>::pi * f * dt;
-                // ADSR : descend vers un palier (sustain 50 %) tant que la note tient
-                const double e = adsr ? (level = 0.5 + 0.5 * std::exp (-time / 0.3)) : env (0.6);
+                // Note tenue : descend vers 50 %, puis s'eteint lentement (environ 15 s) comme un piano
+                const double e = adsr ? (level = (0.5 + 0.5 * std::exp (-time / 0.3)) * std::exp (-time / 2.2)) : env (0.6);
                 s = (float) ((std::sin (phase) + 0.3 * std::sin (2 * phase)) * 0.6 * e);
                 break;
             }

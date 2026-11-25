@@ -55,6 +55,8 @@
 #include <QMessageBox>
 #include <QDir>
 #include <QDrag>
+#include <QShortcut>
+#include <QAbstractButton>
 #include <QMimeData>
 #include <QDialog>
 #include <QDialogButtonBox>
@@ -110,7 +112,8 @@ MainWindow::MainWindow (const Options& options, QWidget* parent) : QMainWindow (
     addToolBar (Qt::TopToolBarArea, top);
 
     // Tout est en panneaux (pas de zone centrale fixe) : Pattern et Mixer en onglets
-    setDockOptions (AnimatedDocks | AllowNestedDocks | AllowTabbedDocks);
+    // Sans animation des panneaux : sur macOS, les separateurs animes laissaient un trait fin noir
+    setDockOptions (AllowNestedDocks | AllowTabbedDocks);
     setTabPosition (Qt::AllDockWidgetAreas, QTabWidget::North);
     // Un seul clavier : l'onglet Keyboard. L'ancien panneau garde ses reglages (PC KEYS,
     // AZERTY / QWERTY), invisible ; il est cree avant l'onglet qui les reprend.
@@ -133,7 +136,47 @@ MainWindow::MainWindow (const Options& options, QWidget* parent) : QMainWindow (
     auto* padsCol = new QVBoxLayout (padsPanel);
     padsCol->setContentsMargins (4, 2, 4, 2);
     padsCol->addWidget (pads, 1);
-    padsCol->addWidget (muteSoloRow (padsUnmute, padsUnsolo, false));
+    {
+        // En bas des pads : modes des pads, puis Unmute all / Unsolo all
+        auto* row = new QHBoxLayout;
+        row->setContentsMargins (0, 0, 0, 0);
+        // Trois boutons, comme PAD MODE / KEYBOARD / CHORDS de la Maschine : le mode actif est orange
+        padsOnlyButton = new QPushButton (tr ("Pad Mode"));
+        padModeButton = new QPushButton (tr ("Keyboard Mode"));
+        chordsModeButton = new QPushButton (tr ("Chords Mode"));
+        padsOnlyButton->setToolTip (tr ("Pads play their 16 sounds (Maschine: PAD MODE)"));
+        padModeButton->setToolTip (tr ("Pads play the chosen sound on 16 notes of the scale (Maschine: KEYBOARD)"));
+        chordsModeButton->setToolTip (tr ("Each pad plays a chord of the Chords menu (Maschine: CHORDS)"));
+        connect (padsOnlyButton, &QPushButton::clicked, this, [this] { setPadKeyboard (false); });
+        connect (padModeButton, &QPushButton::clicked, this, [this] { setPadKeyboard (true); });
+        connect (chordsModeButton, &QPushButton::clicked, this, [this] { setPadChords (true); });
+        int widest = 0;
+        for (auto* b : { padsOnlyButton, padModeButton, chordsModeButton })
+        {
+            b->setFocusPolicy (Qt::NoFocus);
+            b->setObjectName ("keys");
+            b->setCheckable (true);
+            b->setSizePolicy (QSizePolicy::Fixed, QSizePolicy::Fixed);
+            widest = std::max (widest, b->fontMetrics().horizontalAdvance (b->text()));
+            row->addWidget (b);
+        }
+        Q_UNUSED (widest);
+        QTimer::singleShot (0, this, [this]           // meme taille, mesuree avec le style de l'app
+        {
+            int w = 0;
+            for (auto* b : { padsOnlyButton, padModeButton, chordsModeButton })
+            {
+                b->ensurePolished();
+                w = std::max (w, b->sizeHint().width());
+            }
+            for (auto* b : { padsOnlyButton, padModeButton, chordsModeButton })
+                b->setFixedWidth (w + 4);
+        });
+        padsOnlyButton->setChecked (true);
+        row->addStretch (1);
+        padsCol->addLayout (row);
+        padsCol->addWidget (muteSoloRow (padsUnmute, padsUnsolo, false));   // dessous : tout reactiver
+    }
     padsDock = makeDock (tr ("Pads"), "padsDock", padsPanel);
     statusDock = makeDock (tr ("Status"), "statusDock", buildScreens());
     addDockWidget (Qt::BottomDockWidgetArea, groupsDock);
@@ -145,7 +188,8 @@ MainWindow::MainWindow (const Options& options, QWidget* parent) : QMainWindow (
     keysTabDock->raise();
 
     addDockWidget (Qt::RightDockWidgetArea, statusDock);
-    statusDock->setFloating (true);                  // Status : fenetre a part, cachee
+    statusDock->hide();                              // cachee AVANT de la detacher : sinon elle
+    statusDock->setFloating (true);                  // s'affichait un instant au demarrage
     statusDock->resize (720, 190);
     statusDock->hide();
 
@@ -275,6 +319,12 @@ MainWindow::MainWindow (const Options& options, QWidget* parent) : QMainWindow (
     projectTimer.start();
     updateTitle();
 
+    // --- traits parasites (macOS) : nettoyage au demarrage, F12 = diagnostic
+    QTimer::singleShot (300, this, [this] { fixSeparators(); update(); });
+    QTimer::singleShot (1500, this, [this] { fixSeparators(); update(); });
+    auto* diag = new QShortcut (QKeySequence (Qt::Key_F12), this);
+    connect (diag, &QShortcut::activated, this, &MainWindow::showDisplayDiagnostics);
+
     // --- charge de l'ordinateur (barre du haut), une fois par seconde
     statsTimer.setInterval (1000);
     connect (&statsTimer, &QTimer::timeout, this, &MainWindow::refreshStats);
@@ -284,9 +334,11 @@ MainWindow::MainWindow (const Options& options, QWidget* parent) : QMainWindow (
     // --- pads et clavier de l'ecran
     connect (pads, &PadGrid::pressed, this, [this] (int pad, int vel)
     {
+        lastPad = pad;
         playPad (pad, vel, true);
         pads->flash (pad, true);
-        selectSound (pad);
+        if (! padKeyboard)                           // KEYBOARD / CHORDS : le son joue reste le meme
+            selectSound (pad);
     });
     connect (pads, &PadGrid::released, this, [this] (int pad)
     {
@@ -295,12 +347,33 @@ MainWindow::MainWindow (const Options& options, QWidget* parent) : QMainWindow (
     });
     connect (pads, &PadGrid::menuRequested, this, [this] (int pad, const QPoint& at)
     {
-        // Clic droit sur un pad : Mute (rouge), Solo (jaune), puis le sample
+        lastPad = pad;
+        lastArea = Area::Pads;
+        // Clic droit sur un pad : Mute (rouge), Solo (jaune), puis le sample.
+        // Pads choisis (Shift / Cmd + clic) et pad clique parmi eux : le menu vaut pour tous.
         const size_t i = (size_t) (state.group * 16 + pad - 1);
+        const int g = state.group;
+        QList<int> targets = pads->selection();
+        if (! targets.contains (pad))
+            targets = { pad };
+        const bool many = targets.size() > 1;
+        auto padList = [&targets]
+        {
+            QStringList l;
+            for (int p : targets)
+                l << QString ("%1").arg (p, 2, 10, QChar ('0'));
+            return l.join (" ");
+        };
         QMenu menu (this);
+        if (many)
+        {
+            auto* title = menu.addAction (tr ("%1 pads: %2").arg (targets.size()).arg (padList()));
+            title->setEnabled (false);
+            menu.addSeparator();
+        }
         auto item = [&menu] (const QString& text, const QString& color, bool on)
         {
-            auto* button = new QPushButton ((on ? QStringLiteral ("\u2713 ") : QStringLiteral ("   ")) + text);
+            auto* button = new QPushButton ((on ? QStringLiteral ("✓ ") : QStringLiteral ("   ")) + text);
             button->setFlat (true);
             button->setStyleSheet (QString ("QPushButton { color: %1; text-align: left; padding: 5px 14px; border: none; font-weight: bold; }"
                                             "QPushButton:hover { background: #2c2c36; }").arg (color));
@@ -310,7 +383,7 @@ MainWindow::MainWindow (const Options& options, QWidget* parent) : QMainWindow (
             connect (button, &QPushButton::clicked, &menu, [&menu, action] { menu.setActiveAction (action); action->trigger(); menu.close(); });
             return action;
         };
-        const QString num = QString ("%1").arg (pad, 2, 10, QChar ('0'));
+        const QString num = many ? tr ("%1 pads").arg (targets.size()) : QString ("%1").arg (pad, 2, 10, QChar ('0'));
         auto* mute = item ("Mute " + num, "#e05050", state.soundMute[i]);
         auto* solo = item ("Solo " + num, "#e8c040", state.soundSolo[i]);
         menu.addSeparator();
@@ -328,63 +401,61 @@ MainWindow::MainWindow (const Options& options, QWidget* parent) : QMainWindow (
             modeActions << a;
         }
         auto* editLoopAction = menu.addAction (tr ("Edit Loop..."));
-        editLoopAction->setEnabled (! state.samples[i].isEmpty());
+        editLoopAction->setEnabled (! state.samples[i].isEmpty() && ! many);
         menu.addSeparator();
         auto* load = menu.addAction (tr ("Load Sample..."));
-        QAction* remove = state.samples[i].isEmpty() ? nullptr : menu.addAction (tr ("Remove Sample (%1)").arg (padName (state.group, pad)));
-        const bool empty = state.samples[i].isEmpty() && state.effSynth (state.group, pad) == 0;
-        auto* emptyPad = menu.addAction (tr ("Empty Pad (no sound)"));
-        emptyPad->setEnabled (! empty);
-        auto* defaultSound = menu.addAction (tr ("Default Sound (%1)").arg (state.group >= 8 ? tr ("empty in A2-H2") : soundName (pad)));
-        defaultSound->setEnabled (state.synth[i] != -1 || ! state.samples[i].isEmpty());
-        // Copier / couper / coller le son (aussi vers un autre groupe)
+        load->setEnabled (! many);
+        // Copier / couper / coller les sons (aussi vers un autre groupe)
         menu.addSeparator();
-        auto* copySound = menu.addAction (tr ("Copy Sound"));
-        auto* cutSound = menu.addAction (tr ("Cut Sound (move)"));
-        auto* pasteSound = menu.addAction (soundClip.valid ? tr ("Paste Sound (%1 %2)").arg (groupName (soundClipGroup)).arg (soundClipPad, 2, 10, QChar ('0'))
-                                                           : tr ("Paste Sound"));
-        pasteSound->setEnabled (soundClip.valid && ! (soundClipGroup == state.group && soundClipPad == pad));
+        auto* copySound = menu.addAction (many ? tr ("Copy %1 Sounds").arg (targets.size()) : tr ("Copy Sound"));
+        auto* cutSound = menu.addAction (many ? tr ("Cut %1 Sounds (move)").arg (targets.size()) : tr ("Cut Sound (move)"));
+        const int clipFirst = soundClips.empty() ? 0 : soundClips.front().first;
+        auto* pasteSound = menu.addAction (soundClips.empty() ? tr ("Paste Sound")
+                                           : soundClips.size() > 1 ? tr ("Paste %1 Sounds (from pad %2)").arg (soundClips.size()).arg (pad, 2, 10, QChar ('0'))
+                                           : tr ("Paste Sound (%1 %2)").arg (groupName (soundClipGroup)).arg (clipFirst, 2, 10, QChar ('0')));
+        pasteSound->setEnabled (! soundClips.empty() && ! (soundClipGroup == g && soundClips.size() == 1 && clipFirst == pad));
+        // Remise a zero : tout en bas, dans un sous-menu (loin de Load Sample : pas de clic par erreur)
+        menu.addSeparator();
+        auto* reset = menu.addMenu (tr ("Remove / Reset Pad"));
+        bool anySample = false;
+        for (int p : targets)
+            anySample |= ! state.samples[(size_t) state.index (g, p)].isEmpty();
+        QAction* remove = anySample ? reset->addAction (many ? tr ("Remove Samples") : tr ("Remove Sample (%1)").arg (padName (g, pad))) : nullptr;
+        if (remove)
+            reset->addSeparator();
+        auto* emptyPad = reset->addAction (many ? tr ("Empty Pads (no sound)") : tr ("Empty Pad (no sound)"));
+        auto* defaultSound = reset->addAction (many ? tr ("Default Sounds") : tr ("Default Sound (%1)").arg (g >= 8 ? tr ("empty in A2-H2") : soundName (pad)));
+        if (! many)
+        {
+            emptyPad->setEnabled (! (state.samples[i].isEmpty() && state.effSynth (g, pad) == 0));
+            defaultSound->setEnabled (state.synth[i] != -1 || ! state.samples[i].isEmpty());
+        }
         QAction* chosen = nullptr;
         for (auto* a : { mute, solo })
             connect (a, &QAction::triggered, &menu, [&chosen, a] { chosen = a; });
         if (auto* picked = menu.exec (at))
             chosen = picked;
+        std::vector<std::pair<int, int>> undoPads;
+        for (int p : targets)
+            undoPads.push_back ({ g, p });
         if (chosen == mute || chosen == solo)
-            toggleSound (state.group, pad, chosen == solo);
+        {
+            // Tous comme le pad clique (pas une bascule pad par pad)
+            const bool on = ! (chosen == solo ? state.soundSolo[i].load() : state.soundMute[i].load());
+            for (int p : targets)
+                (chosen == solo ? state.soundSolo : state.soundMute)[(size_t) state.index (g, p)] = on;
+            refreshMuteSolo();
+        }
         else if (chosen == copySound || chosen == cutSound)
-        {
-            soundClip = takeSound (state.group, pad);
-            soundClipGroup = state.group;
-            soundClipPad = pad;
-            soundClipCut = chosen == cutSound;
-            toast (QString ("%1 %2 %3").arg (soundClipCut ? "CUT" : "COPY").arg (groupName (state.group)).arg (pad, 2, 10, QChar ('0')));
-        }
+            copySounds (targets, chosen == cutSound);
         else if (chosen == pasteSound)
-        {
-            const Transfer how = soundClipCut ? Transfer::Move : Transfer::Copy;
-            const bool replace = ! soundIsEmpty (state.group, pad);
-            if (! replace || QMessageBox::question (this, tr ("Paste Sound"),
-                    tr ("%1 %2 (%3) to %4 %5?\nIt replaces %6.")
-                        .arg (how == Transfer::Move ? tr ("Move") : tr ("Copy"))
-                        .arg (groupName (soundClipGroup) + QString (" %1").arg (soundClipPad, 2, 10, QChar ('0')))
-                        .arg (padName (soundClipGroup, soundClipPad))
-                        .arg (groupName (state.group)).arg (pad, 2, 10, QChar ('0'))
-                        .arg (padName (state.group, pad))) == QMessageBox::Yes)
-            {
-                // le son garde en memoire (Copy) peut avoir change depuis : on colle la copie
-                putSound (state.group, pad, soundClip);
-                if (how == Transfer::Move)
-                {
-                    emptySound (soundClipGroup, soundClipPad);
-                    soundClip.valid = false;
-                }
-                syncSamples();
-                refreshAll();
-            }
-        }
+            pasteSounds (pad);
         else if (modeActions.contains (chosen))
         {
-            state.playMode[i] = (int) modeActions.indexOf (chosen);
+            const int m = (int) modeActions.indexOf (chosen);
+            for (int p : targets)                        // Loop : seulement les pads avec un sample
+                if (m != session::State::Loop || ! state.samples[(size_t) state.index (g, p)].isEmpty())
+                    state.playMode[(size_t) state.index (g, p)] = m;
             syncSamples();
             refreshAll();
         }
@@ -393,11 +464,24 @@ MainWindow::MainWindow (const Options& options, QWidget* parent) : QMainWindow (
         else if (chosen == load)
             loadSampleDialog (pad);
         else if (chosen && chosen == remove)
-            setPadSample (state.group, pad, {});
+        {
+            rememberSounds (undoPads, {}, "Remove sample");
+            for (int p : targets)
+                state.samples[(size_t) state.index (g, p)].clear();
+            syncSamples();
+            refreshAll();
+        }
         else if (chosen == emptyPad || chosen == defaultSound)
         {
-            state.synth[i] = chosen == emptyPad ? 0 : -1;   // 0 = aucun instrument (« None » du pilote)
-            setPadSample (state.group, pad, {});
+            rememberSounds (undoPads, {}, chosen == emptyPad ? QString ("Empty pad") : QString ("Default sound"));
+            for (int p : targets)
+            {
+                const size_t k = (size_t) state.index (g, p);
+                state.synth[k] = chosen == emptyPad ? 0 : -1;   // 0 = aucun instrument (« None » du pilote)
+                state.samples[k].clear();
+            }
+            syncSamples();
+            refreshAll();
         }
     });
     connect (pads, &PadGrid::midiDropped, this, &MainWindow::importMidi);
@@ -466,7 +550,7 @@ MainWindow::MainWindow (const Options& options, QWidget* parent) : QMainWindow (
     connect (maschine, &MaschineLink::pad, this, [this] (int pad, int, bool down)
     {
         pads->flash (pad, down);
-        if (down)
+        if (down && ! padKeyboard)                   // KEYBOARD / CHORDS : le son joue reste le meme
             selectSound (pad);
         maschine->updateLights();
     });
@@ -491,6 +575,11 @@ MainWindow::MainWindow (const Options& options, QWidget* parent) : QMainWindow (
         for (int p = 1; p <= 16; ++p)                 // son coupe : eteint ; solo : vif
         {
             const char tag = state.soundTag (g, p);
+            if (padChords)                            // mode CHORDS : pads avec accord doux, le 1er vif
+            {
+                l.setPad (p, hue, padChordKey (p) < 1 ? fc::Shade::Off : p == 1 ? fc::Shade::Bright : fc::Shade::Dim);
+                continue;
+            }
             if (padKeyboard)                          // mode KEYBOARD : toniques vives, autres notes douces
             {
                 const bool playable = state.hasInstrument[(size_t) state.index (g, state.sound)];
@@ -512,7 +601,8 @@ MainWindow::MainWindow (const Options& options, QWidget* parent) : QMainWindow (
         l.setButton ("pattern", shown (patternView) ? fc::Shade::Bright : fc::Shade::Dim);
         l.setButton ("events", shown (pianoRoll) ? fc::Shade::Bright : fc::Shade::Dim);
         l.setButton ("mixer", shown (mixer) ? fc::Shade::Bright : fc::Shade::Dim);
-        l.setButton ("keyboard", padKeyboard ? fc::Shade::Bright : fc::Shade::Dim);
+        l.setButton ("keyboard", padKeyboard && ! padChords ? fc::Shade::Bright : fc::Shade::Dim);
+        l.setButton ("chords", padChords ? fc::Shade::Bright : fc::Shade::Dim);
         l.setButton ("pad_mode", padKeyboard ? fc::Shade::Dim : fc::Shade::Bright);
         l.setButton ("plug_in", shown (soundUi.title) ? fc::Shade::Bright : fc::Shade::Dim);
         l.setButton ("variation", fc::Shade::Dim);
@@ -540,7 +630,7 @@ MainWindow::MainWindow (const Options& options, QWidget* parent) : QMainWindow (
             const bool chosen = p == state.sound;
             left.fillRect (x, y, 110, 50, chosen ? rgb (acc) : fc::Rgb { 26, 26, 34 });
             left.frameRect (x, y, 110, 50, rgb (acc.darker (150)));
-            const auto name = QString ("%1 %2").arg (p, 2, 10, QChar ('0')).arg (padKeyboard ? session::noteName (padNote (p)) : padName (state.group, p)).left (13).toStdString();
+            const auto name = QString ("%1 %2").arg (p, 2, 10, QChar ('0')).arg (padLabel (p)).left (13).toStdString();
             left.text (x + 4, y + 17, name, chosen ? fc::kBlack : fc::kWhite);
         }
         // Ecran droit : transport
@@ -706,6 +796,7 @@ QWidget* MainWindow::buildGroupBlock()
         connect (b, &QPushButton::customContextMenuRequested, this, [this, i, b] (const QPoint& p)
         {
             const int g = i + (state.group >= 8 ? 8 : 0);
+            const bool several = groupTargets (g).size() > 1;   // groupes choisis : « Mute Groups »...
             QMenu menu (this);
             QAction* chosen = nullptr;
             QList<QAction*> items;
@@ -713,7 +804,7 @@ QWidget* MainWindow::buildGroupBlock()
             {
                 const bool on = solo ? state.groupSolo[(size_t) g].load() : state.groupMute[(size_t) g].load();
                 auto* button = new QPushButton ((on ? QStringLiteral ("\u2713 ") : QStringLiteral ("   "))
-                                                + (solo ? "Solo " : "Mute ") + groupName (g));
+                                                + (solo ? "Solo " : "Mute ") + (several ? QString ("Groups") : groupName (g)));
                 button->setFlat (true);
                 button->setStyleSheet (QString ("QPushButton { color: %1; text-align: left; padding: 5px 14px; border: none; font-weight: bold; }"
                                                 "QPushButton:hover { background: #2c2c36; }").arg (solo ? "#e8c040" : "#e05050"));
@@ -724,25 +815,32 @@ QWidget* MainWindow::buildGroupBlock()
                 connect (button, &QPushButton::clicked, &menu, [&menu, &chosen, action] { chosen = action; menu.close(); });
             }
             menu.addSeparator();
-            auto* copyGroup = menu.addAction (tr ("Copy Group %1").arg (groupName (g)));
-            auto* cutGroup = menu.addAction (tr ("Cut Group %1 (move)").arg (groupName (g)));
-            auto* pasteGroup = menu.addAction (groupClip >= 0 ? tr ("Paste Group %1 here").arg (groupName (groupClip)) : tr ("Paste Group"));
-            pasteGroup->setEnabled (groupClip >= 0 && groupClip != g);
+            const QList<int> targets = groupTargets (g);
+            QStringList names;
+            for (int t : targets)
+                names << groupName (t);
+            auto* copyGroup = menu.addAction (several ? tr ("Copy Groups") : tr ("Copy Group %1").arg (groupName (g)));
+            auto* cutGroup = menu.addAction (several ? tr ("Cut Groups (move)") : tr ("Cut Group %1 (move)").arg (groupName (g)));
+            QStringList clipNames;
+            for (int t : groupClips)
+                clipNames << groupName (t);
+            auto* pasteGroup = menu.addAction (groupClips.empty() ? tr ("Paste Group")
+                                               : groupClips.size() > 1 ? tr ("Paste Groups here") : tr ("Paste Group %1 here").arg (clipNames.join (" ")));
+            pasteGroup->setEnabled (! groupClips.empty() && ! (groupClips.size() == 1 && groupClips[0] == g));
             auto* picked = menu.exec (b->mapToGlobal (p));
             if (chosen)
-                toggleGroup (g, chosen == items[1]);
+            {
+                // Mute / Solo : tous les groupes choisis comme celui-ci
+                const bool solo = chosen == items[1];
+                const bool on = ! (solo ? state.groupSolo[(size_t) g].load() : state.groupMute[(size_t) g].load());
+                for (int t : targets)
+                    (solo ? state.groupSolo : state.groupMute)[(size_t) t] = on;
+                refreshMuteSolo();
+            }
             else if (picked == copyGroup || picked == cutGroup)
-            {
-                groupClip = g;
-                groupClipCut = picked == cutGroup;
-                toast (QString ("%1 GROUP %2").arg (groupClipCut ? "CUT" : "COPY").arg (groupName (g)));
-            }
-            else if (picked == pasteGroup && confirmGroup (groupClip, g, groupClipCut ? Transfer::Move : Transfer::Copy))
-            {
-                transferGroup (groupClip, g, groupClipCut ? Transfer::Move : Transfer::Copy);
-                if (groupClipCut)
-                    groupClip = -1;
-            }
+                copyGroups (targets, picked == cutGroup);
+            else if (picked == pasteGroup)
+                pasteGroups (g);
         });
         grid->addWidget (b, i / 4, i % 4);
         groupButtons[(size_t) i] = b;
@@ -828,8 +926,8 @@ QWidget* MainWindow::buildLeftPanel()
     hint->setSizePolicy (QSizePolicy::Ignored, QSizePolicy::Preferred);   // peut retrecir
     hint->setMinimumWidth (0);
     hint->setAlignment (Qt::AlignRight | Qt::AlignVCenter);
-    // Ordre : Edit enter, Length, x2, Generate, Clear, transposition ; aide a droite
-    editButton = new QPushButton (tr ("Edit enter"));
+    // Ordre : Edit by "Enter", Length, x2, Generate, Clear, transposition ; aide a droite
+    editButton = new QPushButton (tr ("Edit by \"Enter\""));
     editButton->setCheckable (true);
     editButton->setFocusPolicy (Qt::NoFocus);
     editButton->setObjectName ("keys");              // orange quand actif
@@ -853,7 +951,7 @@ QWidget* MainWindow::buildLeftPanel()
     tools->addWidget (gen);
     tools->addWidget (clear);
     tools->addSpacing (8);
-    for (const int step : { -12, -1, 1, 12 })        // transposition : selection, sinon case du curseur
+    for (const int step : { -1, 1, -12, 12 })        // transposition : selection, sinon case du curseur
     {
         auto* t = new QPushButton (step == -12 ? tr ("OCT -") : step == -1 ? tr ("SEMI -") : step == 1 ? tr ("SEMI +") : tr ("OCT +"));
         t->setFocusPolicy (Qt::NoFocus);
@@ -1136,6 +1234,7 @@ void MainWindow::playPad (int pad, int velocity, bool down)
 {
     if (pad < 1 || pad > 16)
         return;
+    padHeld[(size_t) pad] = down;
     if (down)
     {
         const int g = state.group;
@@ -1163,11 +1262,14 @@ void MainWindow::playPad (int pad, int velocity, bool down)
             }, Qt::QueuedConnection);
             return;
         }
-        if (padKeyboard && ! muteHeld && ! soloHeld)  // mode KEYBOARD : une note du son choisi
+        if (padKeyboard && ! muteHeld && ! soloHeld)  // KEYBOARD : une note ; CHORDS : un accord
         {
-            const int note = padNote (pad);
+            const bool chords = padChords;
+            const int note = chords ? padChordKey (pad) : padNote (pad);
+            if (note < 1)                            // pad sans accord (Chord Set : pads 13-16)
+                return;
             padKey[(size_t) pad] = note;
-            QMetaObject::invokeMethod (this, [this, note, velocity] { playKey (note, velocity, true); }, Qt::QueuedConnection);
+            QMetaObject::invokeMethod (this, [this, note, velocity, chords] { playKey (note, velocity, true, chords); }, Qt::QueuedConnection);
             return;
         }
         if (muteHeld || soloHeld)                   // MUTE / SOLO + pad : couper / solo ce son
@@ -1188,13 +1290,16 @@ void MainWindow::playPad (int pad, int velocity, bool down)
         if (padKey[(size_t) pad] > 0)                 // mode KEYBOARD : fin de la note de ce pad
         {
             const int note = padKey[(size_t) pad].exchange (0);
-            QMetaObject::invokeMethod (this, [this, note] { playKey (note, 0, false); }, Qt::QueuedConnection);
+            QMetaObject::invokeMethod (this, [this, note] { playKey (note, 0, false); }, Qt::QueuedConnection);   // puis liveCheck
             return;
         }
         if (state.held (padGroup[(size_t) pad], pad))
             engine->noteOff (pad, padSent[(size_t) pad], padGroup[(size_t) pad]);
-        std::lock_guard<std::mutex> lk (recLock);
-        recordEnd (padRec[(size_t) pad]);
+        {
+            std::lock_guard<std::mutex> lk (recLock);
+            recordEnd (padRec[(size_t) pad]);
+        }
+        QMetaObject::invokeMethod (this, [this] { liveCheck(); }, Qt::QueuedConnection);
     }
 }
 
@@ -1285,11 +1390,12 @@ void MainWindow::refreshAll()
     pads->setGroup (state.group);
     pads->setSelected (state.sound);
     for (int p = 1; p <= 16; ++p)
-        pads->setLabel (p, padKeyboard ? session::noteName (padNote (p)) : padName (state.group, p));
+        pads->setLabel (p, padLabel (p));
     {
         std::array<bool, 16> empty {};
         for (int p = 1; p <= 16; ++p)
-            empty[(size_t) p - 1] = ! state.hasInstrument[(size_t) state.index (state.group, p)];
+            empty[(size_t) p - 1] = padChords ? padChordKey (p) < 1
+                                              : ! state.hasInstrument[(size_t) state.index (state.group, p)];
         pads->setEmpty (empty);
     }
     piano->setColor (c);
@@ -1475,7 +1581,22 @@ void MainWindow::onMaschineButton (const QString& name, bool down)
     else if (name == "events")
         toggleView (2, "PIANO ROLL");
     else if (name == "keyboard")                     // pads : le son choisi sur 16 notes (bascule)
-        setPadKeyboard (! padKeyboard);
+        setPadKeyboard (! (padKeyboard && ! padChords));
+    else if (name == "chords")                       // pads : les accords du menu Chords (bascule) ; Shift = le menu
+    {
+        if (shift)
+        {
+            showLeftTab (3);
+            if (chordMenuButton)
+                chordMenuButton->showMenu();
+        }
+        else
+        {
+            setPadChords (! padChords);
+            if (padChords)
+                showLeftTab (3);                     // onglet Keyboard : le menu Chords est la
+        }
+    }
     else if (name == "pad_mode")                     // pads : les 16 sons
         setPadKeyboard (false);
     else if (name == "plug_in")                      // PLUG-IN : reglages du son choisi
@@ -1498,7 +1619,7 @@ void MainWindow::onMaschineButton (const QString& name, bool down)
         if (editMode)
             addNoteAtCursor();
         else
-            toast ("Edit enter is off");
+            toast ("Edit by Enter is off");
     }
 }
 
@@ -1506,6 +1627,22 @@ void MainWindow::onMaschineButton (const QString& name, bool down)
 
 bool MainWindow::eventFilter (QObject* watched, QEvent* event)
 {
+    if (event->type() == QEvent::MouseButtonPress)    // zone cliquee : la cible de Cmd+C / X / V
+    {
+        for (auto* w = qobject_cast<QWidget*> (watched); w; w = w->parentWidget())
+        {
+            if (w == pads)
+            {
+                lastArea = Area::Pads;
+                break;
+            }
+            if (w == patternView || w == pianoRoll)
+            {
+                lastArea = Area::Pattern;
+                break;
+            }
+        }
+    }
     if (auto* b = qobject_cast<QPushButton*> (watched); b && b->property ("groupIndex").isValid())
     {
         // Bouton de groupe : le glisser (copier / deplacer le groupe) ; y lacher un pad ou un groupe
@@ -1515,8 +1652,33 @@ bool MainWindow::eventFilter (QObject* watched, QEvent* event)
             case QEvent::MouseButtonPress:
             {
                 auto* m = static_cast<QMouseEvent*> (event);
+                lastArea = Area::Groups;
+                const int g = i + (state.group >= 8 ? 8 : 0);
+                if (m->button() == Qt::LeftButton && (m->modifiers() & (Qt::ShiftModifier | Qt::ControlModifier)))
+                {
+                    // Choisir des groupes sans changer de groupe : Cmd + clic = celui-ci, Shift + clic = de .. a
+                    if (groupChosen.isEmpty())
+                        groupChosen.insert (state.group);
+                    if (m->modifiers() & Qt::ControlModifier)
+                        groupChosen.contains (g) ? (void) groupChosen.remove (g) : (void) groupChosen.insert (g);
+                    else
+                    {
+                        const int from = groupAnchor >= 0 ? groupAnchor : state.group.load();
+                        for (int k = std::min (from, g); k <= std::max (from, g); ++k)
+                            groupChosen.insert (k);
+                    }
+                    groupAnchor = g;
+                    refreshMuteSolo();
+                    return true;                     // pas de changement de groupe
+                }
                 if (m->button() == Qt::LeftButton)
                 {
+                    if (! groupChosen.isEmpty())     // clic simple : fin de la selection
+                    {
+                        groupChosen.clear();
+                        refreshMuteSolo();
+                    }
+                    groupAnchor = g;
                     groupPress = m->position().toPoint();
                     groupPressIndex = i;
                 }
@@ -1625,7 +1787,7 @@ bool MainWindow::handleKey (QKeyEvent* e, bool down)
     }
     if ((e->key() == Qt::Key_Delete || e->key() == Qt::Key_Backspace) && patternShown() && ! editMode)
     {
-        statusBar()->showMessage (tr ("Turn \"Edit enter\" on to erase notes with Del"), 1500);
+        statusBar()->showMessage (tr ("Turn \"Edit by Enter\" on to erase notes with Del"), 1500);
         return true;
     }
     if ((e->key() == Qt::Key_Delete || e->key() == Qt::Key_Backspace) && patternShown())
@@ -1654,7 +1816,7 @@ bool MainWindow::handleKey (QKeyEvent* e, bool down)
             if (editMode)
                 addNoteAtCursor();
             else
-                statusBar()->showMessage (tr ("Turn \"Edit enter\" on to add / erase notes with Enter"), 1500);
+                statusBar()->showMessage (tr ("Turn \"Edit by Enter\" on to add / erase notes with Enter"), 1500);
             return true;
         }
     }
@@ -1935,7 +2097,7 @@ QDockWidget* MainWindow::makeDock (const QString& title, const QString& name, QW
     dock->setFeatures (QDockWidget::DockWidgetMovable | QDockWidget::DockWidgetFloatable
                        | QDockWidget::DockWidgetClosable);
     // Panneau deplace, detache ou redimensionne : toute la fenetre est repeinte (sans trait oublie)
-    auto repaintAll = [this] { QTimer::singleShot (0, this, [this] { repaint(); for (auto* w : findChildren<QWidget*>()) w->update(); }); };
+    auto repaintAll = [this] { QTimer::singleShot (0, this, [this] { fixSeparators(); repaint(); for (auto* w : findChildren<QWidget*>()) w->update(); }); };
     connect (dock, &QDockWidget::dockLocationChanged, this, repaintAll);
     connect (dock, &QDockWidget::topLevelChanged, this, repaintAll);
     connect (dock, &QDockWidget::visibilityChanged, this, repaintAll);
@@ -1959,6 +2121,8 @@ void MainWindow::buildViewMenu (QMenu* menu)
         menu->addAction (a);
     }
     menu->addAction (transportBar->toggleViewAction());
+    menu->addSeparator();
+    menu->addAction (tr ("Display Diagnostics (F12)"), this, [this] { showDisplayDiagnostics(); });
     menu->addSeparator();
     auto* mixerAction = menu->addAction (tr ("Mixer"), this, [this] { showLeftTab (0); });
     mixerAction->setShortcut (QKeySequence ("Ctrl+M"));
@@ -2006,6 +2170,7 @@ void MainWindow::applyView (const QString& name)
     if (kBuiltInViews.contains (name))
     {
         restoreState (defaultLayout, kLayoutVersion);
+        QTimer::singleShot (50, this, [this] { fixSeparators(); });
         statusDock->hide();
         if (name == "Live")                          // jouer : pattern, pads, groupes (sans clavier)
         {
@@ -2025,6 +2190,7 @@ void MainWindow::applyView (const QString& name)
     {
         QSettings s;
         restoreState (s.value ("views/" + name + "/state").toByteArray(), kLayoutVersion);
+        QTimer::singleShot (50, this, [this] { fixSeparators(); });
         showLeftTab (s.value ("views/" + name + "/tab", 1).toInt());
     }
     statusBar()->showMessage (tr ("View: %1").arg (name), 1500);
@@ -2053,8 +2219,45 @@ void MainWindow::saveViewAs()
 void MainWindow::remember (int group)
 {
     std::lock_guard<std::mutex> lk (undoLock);
-    undoStack.push_back ({ group, sequencer.pattern (group) });
+    UndoStep step;
+    step.group = group;
+    step.pattern = sequencer.pattern (group);
+    undoStack.push_back (std::move (step));
     if (undoStack.size() > 100)                       // 100 pas en arriere (patterns de 256 lignes)
+        undoStack.erase (undoStack.begin());
+    redoStack.clear();
+}
+
+MainWindow::UndoStep MainWindow::capture (const UndoStep& like) const
+{
+    UndoStep now;
+    now.label = like.label;
+    now.group = like.group;
+    if (like.group >= 0)
+        now.pattern = sequencer.pattern (like.group);
+    for (const auto& gs : like.groups)
+        now.groups.push_back ({ gs.group, sequencer.pattern (gs.group), state.groupVolume[(size_t) gs.group].load() });
+    for (const auto& entry : like.sounds)
+        now.sounds.push_back ({ entry.first, takeSound (entry.first / 16, entry.first % 16 + 1) });
+    return now;
+}
+
+void MainWindow::rememberSounds (const std::vector<std::pair<int, int>>& pads, const std::vector<int>& groups, const QString& label)
+{
+    // Avant de changer des sons (et des groupes entiers) : Cmd+Z les remet
+    UndoStep step;
+    step.label = label;
+    for (const auto& [g, p] : pads)
+        step.sounds.push_back ({ state.index (g, p), takeSound (g, p) });
+    for (int g : groups)
+    {
+        step.groups.push_back ({ g, sequencer.pattern (g), state.groupVolume[(size_t) g].load() });
+        for (int p = 1; p <= 16; ++p)
+            step.sounds.push_back ({ state.index (g, p), takeSound (g, p) });
+    }
+    std::lock_guard<std::mutex> lk (undoLock);
+    undoStack.push_back (std::move (step));
+    if (undoStack.size() > 100)
         undoStack.erase (undoStack.begin());
     redoStack.clear();
 }
@@ -2080,13 +2283,29 @@ void MainWindow::undo (bool redoIt)
         }
         step = from.back();
         from.pop_back();
-        to.push_back ({ step.group, sequencer.pattern (step.group) });
+        to.push_back (capture (step));
     }
-    sequencer.setPattern (step.group, step.pattern);
-    if (step.group != state.group)                    // on montre le groupe concerne
-        selectGroup (step.group);
+    if (step.group >= 0)
+        sequencer.setPattern (step.group, step.pattern);
+    for (const auto& gs : step.groups)
+    {
+        sequencer.setPattern (gs.group, gs.pattern);
+        state.groupVolume[(size_t) gs.group] = gs.volume;
+    }
+    for (const auto& [i, s] : step.sounds)
+        putSound (i / 16, i % 16 + 1, s);
+    if (! step.sounds.empty() || ! step.groups.empty())
+    {
+        syncSamples();
+        refreshAll();
+    }
+    const int shown = step.group >= 0 ? step.group : ! step.groups.empty() ? step.groups.back().group
+                    : ! step.sounds.empty() ? step.sounds.back().first / 16 : state.group.load();
+    if (shown != state.group)                         // on montre le groupe concerne
+        selectGroup (shown);
     showPatternState();
-    statusBar()->showMessage (QString ("%1 (%2)").arg (redoIt ? tr ("Redo") : tr ("Undo"), groupName (step.group)), 1200);
+    statusBar()->showMessage (QString ("%1 (%2)").arg (redoIt ? tr ("Redo") : tr ("Undo"),
+                                                       step.label.isEmpty() ? groupName (shown) : step.label), 1500);
 }
 
 void MainWindow::showPatternState()
@@ -2100,6 +2319,17 @@ void MainWindow::showPatternState()
 
 void MainWindow::copySelection (bool cut)
 {
+    if (lastArea == Area::Pads)                      // pads choisis (sinon le dernier pad clique)
+    {
+        QList<int> sel = pads->selection();
+        copySounds (sel.isEmpty() ? QList<int> { lastPad } : sel, cut);
+        return;
+    }
+    if (lastArea == Area::Groups)
+    {
+        copyGroups (groupTargets (state.group), cut);
+        return;
+    }
     if (! patternShown())
         return;
     QList<QPoint> sel = patternView->selection();
@@ -2128,6 +2358,17 @@ void MainWindow::copySelection (bool cut)
 
 void MainWindow::paste()
 {
+    if (lastArea == Area::Pads)
+    {
+        const QList<int> sel = pads->selection();
+        pasteSounds (sel.isEmpty() ? lastPad : sel.first());
+        return;
+    }
+    if (lastArea == Area::Groups)
+    {
+        pasteGroups (state.group);
+        return;
+    }
     // Colle a partir de la ligne du curseur, chaque note dans sa piste
     if (! patternShown() || clipboard.empty())
         return;
@@ -2232,8 +2473,9 @@ void MainWindow::refreshMuteSolo()
         const QString tag = state.groupMute[(size_t) g] ? " M" : state.groupSolo[(size_t) g] ? " S" : "";
         groupButtons[(size_t) i]->setText (groupName (g) + tag);
         const QColor c = state.groupAudible (g) ? groupColor (g) : QColor (90, 90, 98);
-        groupButtons[(size_t) i]->setStyleSheet (QString ("QPushButton { color: %1; border: 2px solid %1; background: #17171c; font-size: 16px; font-weight: bold; }"
-                                                          "QPushButton:checked { color: #111; background: %1; }").arg (css (c)));
+        const QString frame = groupChosen.contains (g) ? QString ("3px dashed #fc8c28") : QString ("2px solid %1").arg (css (c));
+        groupButtons[(size_t) i]->setStyleSheet (QString ("QPushButton { color: %1; border: %2; background: #17171c; font-size: 16px; font-weight: bold; }"
+                                                          "QPushButton:checked { color: #111; background: %1; }").arg (css (c), frame));
     }
     refreshMaschine();
 }
@@ -2291,8 +2533,10 @@ QString MainWindow::padName (int group, int sound) const
     return soundName (sound);
 }
 
-void MainWindow::setPadSample (int group, int sound, const QString& path)
+void MainWindow::setPadSample (int group, int sound, const QString& path, bool undoable)
 {
+    if (undoable)
+        rememberSounds ({ { group, sound } }, {}, path.isEmpty() ? QString ("Remove sample") : QString ("Load sample"));
     state.samples[(size_t) (group * 16 + sound - 1)] = path;
     syncSamples();
     refreshAll();
@@ -2369,7 +2613,7 @@ QWidget* MainWindow::buildPianoRoll()
     auto* head = new QHBoxLayout;
     rollTitle = new QLabel;
     rollTitle->setObjectName ("section");
-    auto* hint = new QLabel (tr ("click = note, drag = move (%1 copy), Shift + click / frame = select, double-click = erase, wheel = velocity")
+    auto* hint = new QLabel (tr ("Edit: click = note, double-click = erase  \u00B7  Select: frame / Shift + click  \u00B7  drag = move (%1 copy)  \u00B7  wheel = velocity")
                                  .arg (PatternView::copyKey()));
     hint->setObjectName ("hint");
     hint->setSizePolicy (QSizePolicy::Ignored, QSizePolicy::Preferred);   // peut retrecir
@@ -2381,8 +2625,21 @@ QWidget* MainWindow::buildPianoRoll()
     gen->setFocusPolicy (Qt::NoFocus);
     gen->setToolTip (tr ("Random notes for this sound (Cmd+G)"));
     connect (gen, &QPushButton::clicked, this, [this] { openGenerate(); });
+    // Edit : ajouter / effacer a la souris ; Select : choisir des notes (cadre, Shift + clic)
+    rollEditButton = new QPushButton (tr ("Edit"));
+    rollSelectButton = new QPushButton (tr ("Select"));
+    for (auto* b : { rollEditButton, rollSelectButton })
+    {
+        b->setCheckable (true);
+        b->setFocusPolicy (Qt::NoFocus);
+        b->setObjectName ("keys");                   // orange quand actif
+    }
+    rollEditButton->setToolTip (tr ("Edit mode: click adds a note, double-click / right-click erases"));
+    rollSelectButton->setToolTip (tr ("Select mode: drag a frame or Shift + click to choose notes"));
+    head->addWidget (rollEditButton);
+    head->addWidget (rollSelectButton);
     head->addWidget (gen);
-    for (const int step : { -12, -1, 1, 12 })        // transposition : selection, sinon la derniere note
+    for (const int step : { -1, 1, -12, 12 })        // transposition : selection, sinon la derniere note
     {
         auto* t = new QPushButton (step == -12 ? tr ("OCT -") : step == -1 ? tr ("SEMI -") : step == 1 ? tr ("SEMI +") : tr ("OCT +"));
         t->setFocusPolicy (Qt::NoFocus);
@@ -2392,11 +2649,28 @@ QWidget* MainWindow::buildPianoRoll()
     }
     col->addLayout (head);
     pianoRoll = new PianoRollView (sequencer, state);
+    {
+        QSettings s;
+        rollEditButton->setChecked (s.value ("roll/edit", true).toBool());
+        rollSelectButton->setChecked (s.value ("roll/select", true).toBool());
+        pianoRoll->setEditMode (rollEditButton->isChecked());
+        pianoRoll->setSelectMode (rollSelectButton->isChecked());
+    }
+    connect (rollEditButton, &QPushButton::toggled, this, [this] (bool on)
+    {
+        pianoRoll->setEditMode (on);
+        QSettings().setValue ("roll/edit", on);
+    });
+    connect (rollSelectButton, &QPushButton::toggled, this, [this] (bool on)
+    {
+        pianoRoll->setSelectMode (on);
+        QSettings().setValue ("roll/select", on);
+    });
     connect (pianoRoll, &PianoRollView::midiDropped, this, &MainWindow::importMidi);
     connect (pianoRoll, &PianoRollView::aboutToEdit, this, [this] { remember (state.group); });
     connect (pianoRoll, &PianoRollView::edited, this, [this] { patternView->update(); });
-    connect (pianoRoll, &PianoRollView::keyPressed, this, [this] (int pitch) { playNote (pitch, state.velocity, true); });
-    connect (pianoRoll, &PianoRollView::keyReleased, this, [this] (int pitch) { playNote (pitch, 0, false); });
+    connect (pianoRoll, &PianoRollView::keyPressed, this, [this] (int pitch) { rollKeyHeld = true; playNote (pitch, state.velocity, true); });
+    connect (pianoRoll, &PianoRollView::keyReleased, this, [this] (int pitch) { playNote (pitch, 0, false); rollKeyHeld = false; liveCheck(); });
     // Barres de defilement et zoom (H = temps, V = hauteur des notes)
     auto* hBar = new QScrollBar (Qt::Horizontal);
     auto* vBar = new QScrollBar (Qt::Vertical);
@@ -2583,7 +2857,7 @@ void MainWindow::releaseAllKeys()
     keyChords.clear();
 }
 
-void MainWindow::playKey (int key, int velocity, bool down)
+void MainWindow::playKey (int key, int velocity, bool down, bool chords)
 {
     // Une touche joue une note, ou un accord (Harmonizer, Chord Set) ; on garde les notes
     // jouees pour les relacher toutes, meme si les reglages changent entre-temps
@@ -2591,7 +2865,7 @@ void MainWindow::playKey (int key, int velocity, bool down)
     {
         if (keyChords.contains (key))                 // la meme touche encore : son accord d'avant s'arrete
             playKey (key, 0, false);
-        const QList<int> notes = music::chordFor (key, keySettings);
+        const QList<int> notes = chords ? music::chordFor (key, keySettings) : QList<int> { key };
         keyChords[key] = notes;
         for (int i = 0; i < notes.size(); ++i)
         {
@@ -2604,6 +2878,21 @@ void MainWindow::playKey (int key, int velocity, bool down)
     const QList<int> notes = keyChords.contains (key) ? keyChords.take (key) : QList<int> { key };
     for (int n : notes)
         playNote (n, 0, false);
+    liveCheck();
+}
+
+void MainWindow::liveCheck()
+{
+    // Plus aucune touche, aucun pad, aucune note du Piano Roll tenus : le moteur relache toute
+    // note jouee en direct encore tenue (filet de securite, comme le pilote : une fin de note
+    // perdue ne laisse plus une note de 30 s). Les notes du pattern ont leur duree : pas touchees.
+    for (int p = 1; p <= 16; ++p)
+        if (padHeld[(size_t) p])
+            return;
+    if (! keyChords.isEmpty() || ! keyNotes.isEmpty() || rollKeyHeld)
+        return;
+    liveNotes.clear();
+    engine->offLive();
 }
 
 QWidget* MainWindow::buildKeyboardTab()
@@ -2673,6 +2962,7 @@ QWidget* MainWindow::buildKeyboardTab()
     auto* scaleMenu = new QMenu (scaleButton);
     scaleButton->setMenu (scaleMenu);
     auto* chordButton = new QPushButton;
+    chordMenuButton = chordButton;
     chordButton->setFocusPolicy (Qt::NoFocus);
     chordButton->setToolTip (tr ("Harmonizer: each key plays a chord built on the scale. Chord Set: the 12 keys of an octave "
                                  "play 12 chords. Custom: your own chords"));
@@ -2687,11 +2977,14 @@ QWidget* MainWindow::buildKeyboardTab()
         s.setValue ("keys/harmony", keySettings.harmony);
         s.setValue ("keys/chordSet", keySettings.chordSet);
         s.setValue ("keys/customChord", keySettings.customChord);
+        if (keySettings.chordMode != 0)
+            s.setValue ("keys/lastChordMode", keySettings.chordMode);   // repris par le mode CHORDS
         scaleButton->setText (music::scaleLabel (keySettings.scale));
         chordButton->setText (music::chordLabel (keySettings));
         keyboardView->update();
         refreshAll();                                // pads en mode KEYBOARD : leurs notes
     };
+    saveKeySettings = save;
     connect (scaleMenu, &QMenu::aboutToShow, this, [this, scaleMenu, save]
     {
         music::fillScaleMenu (scaleMenu, keySettings.scale, [this, save] (int sc) { keySettings.scale = sc; save(); }, this);
@@ -3253,9 +3546,137 @@ int MainWindow::padNote (int pad) const
     return std::clamp (base + steps[(size_t) (k % n)] + 12 * (k / n), 0, 127);
 }
 
+void MainWindow::refreshPadModeButtons()
+{
+    // Chaque bouton propose le mode suivant ; meme largeur pour les deux
+    if (! padModeButton || ! chordsModeButton || ! padsOnlyButton)
+        return;
+    padsOnlyButton->setChecked (! padKeyboard);
+    padModeButton->setChecked (padKeyboard && ! padChords);
+    chordsModeButton->setChecked (padChords);
+}
+
+void MainWindow::setPadChords (bool on)
+{
+    if (on && keySettings.chordMode == 0)
+    {
+        // Pas d'accord choisi : le dernier reglage d'accords, sinon Harmonizer « Oct +1 »
+        QSettings s;
+        const int last = s.value ("keys/lastChordMode", 0).toInt();
+        if (last >= 1 && last <= 3 && ! (last == 3 && music::customChords().empty()))
+            keySettings.chordMode = last;
+        else
+        {
+            keySettings.chordMode = 1;
+            for (int i = 0; i < (int) music::harmonies().size(); ++i)
+                if (QString (music::harmonies()[(size_t) i].name) == "Oct +1")
+                    keySettings.harmony = i;
+        }
+        if (saveKeySettings)
+            saveKeySettings();
+    }
+    padChords = on;
+    padKeyboard = on;
+    if (on)
+        useMelodicSound();
+    refreshPadModeButtons();
+    refreshAll();
+    refreshMaschine();
+    toast (on ? QString ("CHORDS : %1").arg (music::chordLabel (keySettings)) : QString ("PAD MODE"));
+}
+
+int MainWindow::padChordKey (int pad) const
+{
+    // Chord Set : les 12 accords sur les pads 1-12 (touches C a B de l'octave) ;
+    // Harmonizer et Custom : un accord sur chaque note de la gamme (comme les notes du mode KEYBOARD)
+    if (keySettings.chordMode == 2)
+        return pad <= 12 ? std::clamp (12 * (state.octave + 1) + keySettings.root + pad - 1, 1, 127) : -1;
+    return padNote (pad);
+}
+
+namespace {
+// Nom d'accord ecrit en C (« Am/E ») transpose de `shift` demi-tons (« Bm/F# » pour D)
+QString transposeChordName (const QString& name, int shift)
+{
+    static const QStringList sharps { "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B" };
+    static const QStringList flats { "C", "Db", "D", "Eb", "E", "F", "Gb", "G", "Ab", "A", "Bb", "B" };
+    auto note = [&] (const QString& s, int& used)
+    {
+        static const QString letters = "C D EF G A B";
+        used = 0;
+        if (s.isEmpty() || letters.indexOf (s[0]) < 0 || s[0] == ' ')
+            return QString();
+        int pc = (int) letters.indexOf (s[0]);
+        used = 1;
+        bool flat = false;
+        if (s.size() > 1 && (s[1] == '#' || s[1] == 'b'))
+        {
+            flat = s[1] == 'b';
+            pc += flat ? -1 : 1;
+            used = 2;
+        }
+        pc = ((pc + shift) % 12 + 12) % 12;
+        return (flat ? flats : sharps)[pc];
+    };
+    if (shift % 12 == 0)
+        return name;
+    int used = 0;
+    const QString root = note (name, used);
+    if (root.isEmpty())
+        return name;
+    QString out = root + name.mid (used);
+    const int slash = (int) out.lastIndexOf ('/');
+    if (slash > 0)
+    {
+        int bassUsed = 0;
+        const QString bass = note (out.mid (slash + 1), bassUsed);
+        if (! bass.isEmpty())
+            out = out.left (slash + 1) + bass + out.mid (slash + 1 + bassUsed);
+    }
+    return out;
+}
+}
+
+QString MainWindow::padChordLabel (int pad) const
+{
+    const int key = padChordKey (pad);
+    if (key < 1)
+        return {};
+    if (keySettings.chordMode == 2)                  // Chord Set : le nom du jeu d'accords, dans la tonalite
+    {
+        const auto& set = music::chordSets()[(size_t) std::clamp (keySettings.chordSet, 0, (int) music::chordSets().size() - 1)];
+        return transposeChordName (set.chords[(size_t) pad - 1].name, keySettings.root);
+    }
+    const QList<int> notes = music::chordFor (key, keySettings);
+    if (keySettings.chordMode == 1)                  // Oct +1... : la note et l'octave ajoutee
+    {
+        const auto& h = music::harmonies()[(size_t) std::clamp (keySettings.harmony, 0, (int) music::harmonies().size() - 1)];
+        if (h.degrees.empty())
+            return session::noteName (notes.isEmpty() ? key : notes.first()) + " " + QString (h.name).remove (' ');
+    }
+    const QString name = music::chordName (notes);
+    if (name.isEmpty() || name.contains (' '))       // accord sans nom connu : sa note et son nombre de notes
+        return session::noteName (notes.isEmpty() ? key : *std::min_element (notes.begin(), notes.end()))
+               + QString (" (%1)").arg (notes.size());
+    return name;
+}
+
+QString MainWindow::padLabel (int pad) const
+{
+    if (padChords)
+        return padChordLabel (pad);
+    if (padKeyboard)
+        return session::noteName (padNote (pad));
+    return padName (state.group, pad);
+}
+
 void MainWindow::setPadKeyboard (bool on)
 {
     padKeyboard = on;
+    padChords = false;
+    if (on)
+        useMelodicSound();
+    refreshPadModeButtons();
     refreshAll();
     refreshMaschine();
     toast (on ? QString ("KEYBOARD : sound %1 %2").arg (state.sound.load(), 2, 10, QChar ('0')).arg (padName (state.group, state.sound))
@@ -3285,19 +3706,12 @@ void MainWindow::showAbout()
                                  .arg (QString (FUZZY_VERSION), qVersion()));
     text->setTextFormat (Qt::RichText);
     col->addWidget (text);
-    // Contact : l'adresse a lire ou copier (pas de lien mailto)
+    // Contact : l'adresse a lire (selectionnable a la souris ; pas de lien mailto)
     const QString address = "fuzzyturtlesoftware@gmail.com";
     auto* contact = new QLabel (tr ("<p align='center'>Contact<br><b>%1</b></p>").arg (address));
     contact->setTextFormat (Qt::RichText);
     contact->setTextInteractionFlags (Qt::TextSelectableByMouse);
     col->addWidget (contact);
-    auto* copy = new QPushButton (tr ("Copy the address"));
-    connect (copy, &QPushButton::clicked, &dialog, [address, copy]
-    {
-        QGuiApplication::clipboard()->setText (address);
-        copy->setText (tr ("Copied"));
-    });
-    col->addWidget (copy);
     auto* close = new QPushButton (tr ("Close"));
     connect (close, &QPushButton::clicked, &dialog, &QDialog::accept);
     col->addWidget (close);
@@ -3403,6 +3817,7 @@ void MainWindow::transferSound (int fg, int fp, int tg, int tp, Transfer how)
 {
     if (fg == tg && fp == tp)
         return;
+    rememberSounds ({ { fg, fp }, { tg, tp } }, {}, how == Transfer::Copy ? "Copy sound" : how == Transfer::Move ? "Move sound" : "Swap sounds");
     const SoundCopy from = takeSound (fg, fp), to = takeSound (tg, tp);
     putSound (tg, tp, from);
     if (how == Transfer::Move)
@@ -3430,14 +3845,14 @@ void MainWindow::transferGroup (int from, int to, Transfer how)
     }
     const seq::Pattern pa = sequencer.pattern (from), pb = sequencer.pattern (to);
     const int va = state.groupVolume[(size_t) from], vb = state.groupVolume[(size_t) to];
-    remember (to);
+    rememberSounds ({}, how == Transfer::Copy ? std::vector<int> { to } : std::vector<int> { from, to },
+                    how == Transfer::Copy ? "Copy group" : how == Transfer::Move ? "Move group" : "Swap groups");
     for (int p = 1; p <= 16; ++p)
         putSound (to, p, a[(size_t) p - 1]);
     sequencer.setPattern (to, pa);
     state.groupVolume[(size_t) to] = va;
     if (how != Transfer::Copy)
     {
-        remember (from);
         seq::Pattern blank;
         blank.length = pa.length;
         for (int p = 1; p <= 16; ++p)
@@ -3562,4 +3977,219 @@ void MainWindow::pickPadDialog (int fg, int fp, int tg, bool)
     col->addWidget (box);
     if (dialog.exec() == QDialog::Accepted && chosen && (clicked == copy || clicked == move))
         transferSound (fg, fp, tg, chosen, clicked == copy ? Transfer::Copy : Transfer::Move);
+}
+
+// ------------------------------------------------------------ affichage : traits parasites (macOS)
+
+void MainWindow::fixSeparators()
+{
+    // Sur macOS, les separateurs entre panneaux sont de petits widgets. Apres un changement de
+    // disposition (onglets, vue Default), certains restent a une ancienne place, par-dessus un
+    // panneau : c'est le trait fin noir. Un vrai separateur est ENTRE deux panneaux, jamais dedans.
+    QList<QRect> inside;
+    for (auto* d : findChildren<QDockWidget*> (QString(), Qt::FindDirectChildrenOnly))
+        if (d->isVisible() && ! d->isFloating() && ! d->visibleRegion().isEmpty())
+            inside << d->geometry().adjusted (3, 3, -3, -3);
+    for (auto* w : findChildren<QWidget*> ("qt_qmainwindow_extended_splitter", Qt::FindDirectChildrenOnly))
+    {
+        bool stray = ! rect().contains (w->geometry());
+        for (const QRect& r : inside)
+            stray |= r.intersects (w->geometry());
+        if (stray)
+            w->hide();
+    }
+}
+
+void MainWindow::showDisplayDiagnostics()
+{
+    // Pour trouver un trait parasite : ce qui est sous la souris, et les widgets tres fins
+    QString text;
+    if (auto* under = QApplication::widgetAt (QCursor::pos()))
+    {
+        text += "Under the mouse: ";
+        for (QWidget* w = under; w && w != this; w = w->parentWidget())
+            text += QString ("%1 '%2' > ").arg (w->metaObject()->className(), w->objectName());
+        text += "\n\n";
+    }
+    text += "Thin widgets (6 px or less):\n";
+    for (auto* w : findChildren<QWidget*>())
+        if (w->isVisible() && w->width() > 0 && w->height() > 0 && (w->width() <= 6 || w->height() <= 6))
+        {
+            const QPoint p = w->mapTo (this, QPoint());
+            text += QString ("%1 '%2'  x %3, y %4, %5 x %6  (in %7)\n").arg (w->metaObject()->className(), w->objectName())
+                        .arg (p.x()).arg (p.y()).arg (w->width()).arg (w->height())
+                        .arg (w->parentWidget() ? w->parentWidget()->metaObject()->className() : "-");
+        }
+    printf ("%s\n", qPrintable (text));
+    fflush (stdout);
+    QMessageBox box (QMessageBox::Information, tr ("Display diagnostics"),
+                     tr ("Put the mouse on the thin line and press F12 (or fn + F12) to name it.\n"
+                         "Copy this text (Show Details) and send it."), QMessageBox::Ok, this);
+    box.setDetailedText (text);
+    auto* hide = box.addButton (tr ("Hide thin widgets (test)"), QMessageBox::ActionRole);
+    box.exec();
+    if (box.clickedButton() == hide)
+        for (auto* w : findChildren<QWidget*>())
+            if (w->isVisible() && w->width() > 0 && w->height() > 0 && (w->width() <= 6 || w->height() <= 6)
+                && ! qobject_cast<QAbstractButton*> (w))
+                w->hide();
+}
+
+void MainWindow::useMelodicSound()
+{
+    // Comme le pilote : KEYBOARD / CHORDS jouent des notes ; un son de batterie de synthese (1-4
+    // sans sample) ne sait pas faire de melodie : on prend le son 5
+    const int g = state.group, s = state.sound;
+    if (s <= 4 && state.samples[(size_t) state.index (g, s)].isEmpty() && state.effSynth (g, s) >= 1 && state.effSynth (g, s) <= 4)
+        selectSound (5);
+}
+
+// ------------------------------------------------------------ copier / coller : sons et groupes
+
+void MainWindow::copySounds (const QList<int>& list, bool cut)
+{
+    soundClips.clear();
+    QStringList names;
+    for (int p : list)
+    {
+        soundClips.push_back ({ p, takeSound (state.group, p) });
+        names << QString ("%1").arg (p, 2, 10, QChar ('0'));
+    }
+    soundClipGroup = state.group;
+    soundClipCut = cut;
+    toast (QString ("%1 %2 %3").arg (cut ? "CUT" : "COPY").arg (groupName (state.group)).arg (names.join (" ")));
+}
+
+void MainWindow::pasteSounds (int pad)
+{
+    // Les sons gardent leur ecart : le 1er va sur ce pad, les autres a cote (hors 1-16 : ignores)
+    if (soundClips.empty())
+    {
+        toast ("Nothing to paste (Copy Sound first)");
+        return;
+    }
+    const int g = state.group, first = soundClips.front().first;
+    std::vector<std::pair<int, SoundCopy>> place;
+    QStringList replaced;
+    for (const auto& [p, s] : soundClips)
+    {
+        const int to = pad + p - first;
+        if (to < 1 || to > 16 || (g == soundClipGroup && to == p && ! soundClipCut))
+            continue;
+        place.push_back ({ to, s });
+        if (! soundIsEmpty (g, to))
+            replaced << QString ("%1 %2").arg (to, 2, 10, QChar ('0')).arg (padName (g, to));
+    }
+    const Transfer how = soundClipCut ? Transfer::Move : Transfer::Copy;
+    if (place.empty() || (! replaced.isEmpty()
+        && QMessageBox::question (this, tr ("Paste Sound"), tr ("%1 %2 sound(s) to group %3?\nIt replaces: %4.")
+                                      .arg (how == Transfer::Move ? tr ("Move") : tr ("Copy")).arg (place.size())
+                                      .arg (groupName (g)).arg (replaced.join (", "))) != QMessageBox::Yes))
+        return;
+    std::vector<std::pair<int, int>> touched;
+    for (const auto& [to, s] : place)
+        touched.push_back ({ g, to });
+    if (how == Transfer::Move)
+        for (const auto& [p, s] : soundClips)
+            touched.push_back ({ soundClipGroup, p });
+    rememberSounds (touched, {}, "Paste sound");
+    if (how == Transfer::Move)                       // d'abord vider l'origine (les pads peuvent se chevaucher)
+        for (const auto& [p, s] : soundClips)
+            emptySound (soundClipGroup, p);
+    for (const auto& [to, s] : place)
+        putSound (g, to, s);
+    if (how == Transfer::Move)
+        soundClips.clear();
+    syncSamples();
+    refreshAll();
+    toast (QString ("PASTE %1 sound(s) > %2 %3").arg (place.size()).arg (groupName (g)).arg (pad, 2, 10, QChar ('0')));
+}
+
+QList<int> MainWindow::groupTargets (int g) const
+{
+    if (! groupChosen.contains (g))
+        return { g };
+    QList<int> out (groupChosen.begin(), groupChosen.end());
+    std::sort (out.begin(), out.end());
+    return out;
+}
+
+void MainWindow::copyGroups (const QList<int>& list, bool cut)
+{
+    groupClips.assign (list.begin(), list.end());
+    groupClipCut = cut;
+    QStringList names;
+    for (int g : list)
+        names << groupName (g);
+    toast (QString ("%1 GROUP %2").arg (cut ? "CUT" : "COPY").arg (names.join (" ")));
+}
+
+void MainWindow::pasteGroups (int target)
+{
+    // Les groupes gardent leur ecart (A, C colles sur E -> E, G) ; tout est lu avant d'ecrire
+    if (groupClips.empty())
+    {
+        toast ("Nothing to paste (Copy Group first)");
+        return;
+    }
+    const int first = groupClips.front();
+    struct Save { int from, to; std::array<SoundCopy, 16> sounds; seq::Pattern pattern; int volume; };
+    std::vector<Save> saves;
+    QStringList what;
+    for (int from : groupClips)
+    {
+        const int to = target + from - first;
+        if (to < 0 || to >= kGroups || (to == from && ! groupClipCut))
+            continue;
+        Save s { from, to, {}, sequencer.pattern (from), state.groupVolume[(size_t) from].load() };
+        for (int p = 1; p <= 16; ++p)
+            s.sounds[(size_t) p - 1] = takeSound (from, p);
+        saves.push_back (s);
+        what << groupName (from) + " > " + groupName (to);
+    }
+    if (saves.empty())
+        return;
+    QMessageBox box (QMessageBox::Question, tr ("Paste Group"),
+                     tr ("%1: %2?\nThe 16 sounds, the pattern and the volume replace those of the target group(s).%3")
+                         .arg (groupClipCut ? tr ("Move") : tr ("Copy")).arg (what.join (", "))
+                         .arg (groupClipCut ? tr ("\nThe moved groups become empty.") : QString()),
+                     QMessageBox::Yes | QMessageBox::Cancel, this);
+    box.setDefaultButton (QMessageBox::Cancel);
+    if (box.exec() != QMessageBox::Yes)
+        return;
+    std::vector<int> involved;
+    for (const auto& s : saves)
+    {
+        involved.push_back (s.to);
+        if (groupClipCut)
+            involved.push_back (s.from);
+    }
+    std::sort (involved.begin(), involved.end());
+    involved.erase (std::unique (involved.begin(), involved.end()), involved.end());
+    rememberSounds ({}, involved, groupClipCut ? "Move group" : "Copy group");
+    if (groupClipCut)
+        for (const auto& s : saves)
+        {
+            for (int p = 1; p <= 16; ++p)
+                emptySound (s.from, p);
+            seq::Pattern blank;
+            blank.length = s.pattern.length;
+            sequencer.setPattern (s.from, blank);
+            state.groupVolume[(size_t) s.from] = 100;
+        }
+    for (const auto& s : saves)
+    {
+        for (int p = 1; p <= 16; ++p)
+            putSound (s.to, p, s.sounds[(size_t) p - 1]);
+        sequencer.setPattern (s.to, s.pattern);
+        state.groupVolume[(size_t) s.to] = s.volume;
+    }
+    if (groupClipCut)
+        groupClips.clear();
+    groupChosen.clear();
+    syncSamples();
+    refreshAll();
+    refreshMuteSolo();
+    showPatternState();
+    toast (QString ("PASTE GROUP %1").arg (what.join (", ")));
 }

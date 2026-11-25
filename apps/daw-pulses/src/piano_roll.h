@@ -41,6 +41,11 @@ public:
     // Selection (x = ligne, y = note) : Shift + clic, Shift + cadre, Cmd+A
     QList<QPoint> selection() const;
     void selectAll();
+    // Edit : le clic ajoute (double-clic / clic droit effacent) ; Select : cadre et Shift + clic
+    void setEditMode (bool on) { editOn = on; }
+    void setSelectMode (bool on) { selectOn = on; if (! on) clearSelection(); }
+    bool editMode() const { return editOn; }
+    bool selectMode() const { return selectOn; }
     void clearSelection() { sel.clear(); update(); }
     int deleteSelection();                           // renvoie le nombre de notes effacees
     int transpose (int semitones);                   // selection, sinon la derniere note touchee
@@ -103,4 +108,5 @@ private:
     QRectF bandRect;
     int lastNote = -1;                               // derniere note touchee (transposition sans selection)
     int shownGroup = -1;
+    bool editOn = true, selectOn = true;
 };

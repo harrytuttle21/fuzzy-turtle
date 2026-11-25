@@ -158,8 +158,19 @@ void Mk3Decoder::padReport (std::span<const uint8_t> r, std::vector<Event>& out)
         {
             const auto now = std::chrono::steady_clock::now();
             if (pads[(size_t) pad])                            // pad deja tenu : ecart mesure
-                maxGapMs = std::max (maxGapMs, (int) std::chrono::duration_cast<std::chrono::milliseconds> (
-                                                   now - padSeen[(size_t) pad]).count());
+            {
+                const int gap = (int) std::chrono::duration_cast<std::chrono::milliseconds> (now - padSeen[(size_t) pad]).count();
+                // Long silence puis de nouveau une pression : le relachement s'est perdu (jeu tres
+                // rapide) et c'est une nouvelle frappe -> fin de l'ancienne note, nouvelle note
+                if (gap > kLostGapMs)
+                {
+                    ++missed;
+                    out.push_back ({ Event::Type::PadOff, pad, 0, "missed" });
+                    pads[(size_t) pad] = false;
+                }
+                else
+                    maxGapMs = std::max (maxGapMs, gap);
+            }
             padSeen[(size_t) pad] = now;
             if (! pads[(size_t) pad])                          // pression continue : une seule frappe
             {

@@ -395,7 +395,7 @@ void PianoRollView::mousePressEvent (QMouseEvent* e)
     int row = 0, pitch = 0;
     bool edge = false;
     const bool shift = e->modifiers() & Qt::ShiftModifier;
-    if (noteAt (p, row, pitch, edge) && shift)       // Shift + clic : ajouter / retirer de la selection
+    if (noteAt (p, row, pitch, edge) && shift && selectOn)   // Shift + clic : ajouter / retirer de la selection
     {
         const int k = key (row, pitch);
         sel.contains (k) ? (void) sel.remove (k) : (void) sel.insert (k);
@@ -403,7 +403,7 @@ void PianoRollView::mousePressEvent (QMouseEvent* e)
         update();
         return;
     }
-    if (shift)                                       // Shift + glisser dans le vide : cadre de selection
+    if (selectOn && (shift || ! editOn) && ! noteAt (p, row, pitch, edge))   // glisser dans le vide : cadre
     {
         banding = true;
         bandBase = sel;
@@ -412,8 +412,12 @@ void PianoRollView::mousePressEvent (QMouseEvent* e)
     }
     if (noteAt (p, row, pitch, edge))
     {
-        if (! sel.contains (key (row, pitch)))
-            sel.clear();                             // autre note : la selection repart d'elle
+        if (! sel.contains (key (row, pitch)))       // autre note : la selection repart d'elle
+        {
+            sel.clear();
+            if (selectOn)
+                sel.insert (key (row, pitch));
+        }
         lastNote = key (row, pitch);
         dragRow = targetRow = row;
         dragPitch = targetPitch = pitch;
@@ -421,8 +425,13 @@ void PianoRollView::mousePressEvent (QMouseEvent* e)
         drag = edge ? Drag::Resize : Drag::Move;
         return;
     }
-    // Case vide (ou accord a completer) : nouvelle note ; tirer = sa duree
+    // Case vide (ou accord a completer) : nouvelle note ; tirer = sa duree (mode Edit)
     sel.clear();
+    if (! editOn)
+    {
+        update();
+        return;
+    }
     const int r = std::clamp ((int) rowAt (p.x()), 0, sequencer.patternLength (state.group) - 1);
     const int y = pitchAt (p.y());
     seq::Cell c = sequencer.pattern (state.group).rows[(size_t) r][(size_t) track()];
@@ -544,7 +553,7 @@ void PianoRollView::mouseDoubleClickEvent (QMouseEvent* e)
 {
     int row = 0, pitch = 0;
     bool edge = false;
-    if (e->button() == Qt::LeftButton && noteAt (e->position(), row, pitch, edge))
+    if (editOn && e->button() == Qt::LeftButton && noteAt (e->position(), row, pitch, edge))
     {
         emit aboutToEdit();
         removeNote (row, pitch);
@@ -558,7 +567,7 @@ void PianoRollView::contextMenuEvent (QContextMenuEvent* e)
 {
     int row = 0, pitch = 0;
     bool edge = false;
-    if (noteAt (e->pos(), row, pitch, edge))         // clic droit sur une note : l'effacer
+    if (editOn && noteAt (e->pos(), row, pitch, edge))   // clic droit sur une note : l'effacer (mode Edit)
     {
         emit aboutToEdit();
         removeNote (row, pitch);

@@ -112,6 +112,44 @@ int main (int argc, char** argv)
                          ok ? "OK    " : "ECHEC ", loopOn ? "boucle tenue    " : "sans boucle     ", late, jump, tail);
         }
     }
+    {   // Sustain automatique : sample de 1 s tenu 3 s (mode Gate) -> sonne encore, s'arrete au relachement ;
+        // le meme en One-shot s'arrete a la fin du fichier
+        for (const int mode : { 1, 0 })
+        {
+            EventQueue q; SampleBank bank; Engine eng (q, bank);
+            std::vector<float> L (128), R (128); float* outs[2] { L.data(), R.data() };
+            juce::AudioIODeviceCallbackContext ctx {};
+            auto smp = std::make_unique<Sample>();
+            smp->rate = 48000; smp->root = 60;
+            smp->data.setSize (1, 48001);
+            for (int i = 0; i <= 48000; ++i)     // un son qui decroit doucement, comme un piano
+                smp->data.setSample (0, i, (float) (std::sin (2 * juce::MathConstants<double>::pi * 220 * i / 48000.0) * std::exp (-i / 48000.0)));
+            bank.set (0, 1, std::move (smp));
+            PadEvent e { 1, 120, 60, 0 }; e.tag = 0; e.mode = mode; q.push (e);
+            float late = 0, jump = 0, prev = 0;
+            for (int b = 0; b < 1125; ++b)                        // 3 s
+            {
+                eng.audioDeviceIOCallbackWithContext (nullptr, 0, outs, 2, 128, ctx);
+                for (float v : L)
+                {
+                    if (b > 10) jump = std::max (jump, std::abs (v - prev));
+                    prev = v;
+                    if (b >= 1080) late = std::max (late, std::abs (v));
+                }
+            }
+            PadEvent off { 1, 0, 60, 0 }; off.tag = 0; off.off = true; q.push (off);
+            float tail = 0;
+            for (int b = 0; b < 200; ++b)
+            {
+                eng.audioDeviceIOCallbackWithContext (nullptr, 0, outs, 2, 128, ctx);
+                if (b > 150) for (float v : L) tail = std::max (tail, std::abs (v));
+            }
+            const bool ok = mode == 1 ? late > 0.05f && jump < 0.1f && tail < 0.0005f : late < 0.0005f;
+            fails += ! ok;
+            std::printf ("%s  %s : apres 3 s %.3f, plus grand saut %.3f, apres relachement %.6f\n",
+                         ok ? "OK    " : "ECHEC ", mode == 1 ? "sustain (Gate)   " : "one-shot         ", late, jump, tail);
+        }
+    }
     {   // Reverse : un sample muet au debut et fort a la fin ; a l'envers, ca sonne tout de suite
         for (const bool rev : { false, true })
         {

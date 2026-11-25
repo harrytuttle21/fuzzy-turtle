@@ -129,9 +129,10 @@ class Decoder:
                 out.append(('knob', i + 1, d))
         return out
 
-    def expire(self, timeout=1.2):
+    def expire(self, timeout=10.0):
         """Pads tenus dont la Maschine ne parle plus depuis `timeout` s : leur relachement
-        s'est perdu (jeu tres rapide). On les relache : ('pad_off', pad, 'missed')."""
+        s'est perdu. On les relache : ('pad_off', pad, 'missed'). 10 s (avant 1,2 s, qui
+        coupait les notes tenues sans bouger) : simple filet contre une note bloquee."""
         now, out = time.monotonic(), []
         for num in list(self.down):
             if now - self.seen.get(num, now) > timeout:
@@ -152,7 +153,12 @@ class Decoder:
                 # qu'a la premiere frappe, pas a chaque mise a jour.
                 now = time.monotonic()
                 if num in self.down:       # pad deja tenu : ecart mesure (pour regler la garde)
-                    self.max_gap = max(self.max_gap, now - self.seen.get(num, now))
+                    gap = now - self.seen.get(num, now)
+                    if gap > 0.4:          # long silence puis pression : relachement perdu, nouvelle frappe
+                        self.down.discard(num)
+                        out.append(('pad_off', num, 'missed'))
+                    else:
+                        self.max_gap = max(self.max_gap, gap)
                 self.seen[num] = now
                 if num not in self.down:
                     self.down.add(num)

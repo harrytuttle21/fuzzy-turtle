@@ -11,6 +11,8 @@
 
 #include <QHash>
 #include <QMainWindow>
+#include <QSet>
+#include <functional>
 #include <QTimer>
 
 #include <array>
@@ -138,6 +140,8 @@ private:
     QSpinBox* octaveSpin = nullptr;                  // onglet Keyboard : octave et velocite, comme le BPM
     QSpinBox* velocitySpin = nullptr;
     void showAbout();
+    void fixSeparators();                            // macOS : separateurs restes par-dessus un panneau
+    void showDisplayDiagnostics();                   // F12 : nommer un trait parasite
     void releaseAllKeys();                           // l'app perd la main : plus aucune note tenue
     void transposePattern (int semitones);           // selection (ou case du curseur) : demi-tons / octaves
     void transposeRoll (int semitones);              // piano roll : selection, sinon la derniere note
@@ -161,11 +165,21 @@ private:
     void pickPadDialog (int fromGroup, int fromPad, int toGroup, bool cut = false);   // pad lache sur un groupe
     bool confirmGroup (int from, int to, Transfer how);
     void groupDropped (int buttonIndex, const QMimeData* mime);
-    SoundCopy soundClip;                             // « Copy Sound » : son en attente de collage
-    int soundClipGroup = -1, soundClipPad = 0;       // d'ou il vient (« Cut » : a vider au collage)
+    std::vector<std::pair<int, SoundCopy>> soundClips;   // « Copy Sound » : pad d'origine -> son (un ou plusieurs)
+    int soundClipGroup = -1;                         // groupe d'origine (« Cut » : sons a vider au collage)
     bool soundClipCut = false;
-    int groupClip = -1;                              // « Copy Group »
+    std::vector<int> groupClips;                     // « Copy Group » : un ou plusieurs groupes
     bool groupClipCut = false;
+    QSet<int> groupChosen;                           // groupes choisis (Shift / Cmd + clic)
+    int groupAnchor = -1;
+    QList<int> groupTargets (int g) const;           // groupes choisis si g en fait partie, sinon g
+    void copySounds (const QList<int>& pads, bool cut);
+    void pasteSounds (int pad);
+    void copyGroups (const QList<int>& groups, bool cut);
+    void pasteGroups (int group);
+    // Ou agissent Cmd+C / X / V : la derniere zone cliquee
+    enum class Area { Pattern, Pads, Groups } lastArea = Area::Pattern;
+    int lastPad = 1;                                 // dernier pad clique (cible de Coller)
     int dupGroup = -1, dupPad = 0;                   // Maschine : DUPLICATE + source + cible
     std::atomic<bool> duplicateHeld { false };
     QPushButton *groupUnmute = nullptr, *groupUnsolo = nullptr;
@@ -173,6 +187,8 @@ private:
     int groupPressIndex = -1;
     bool editMode = false;                           // Pattern : Entree / Suppr ajoutent, effacent
     QPushButton* editButton = nullptr;
+    QPushButton *rollEditButton = nullptr, *rollSelectButton = nullptr;   // Piano Roll : Edit / Select
+    QPushButton* padModeButton = nullptr;            // sous les pads : Keyboard Mode / Pad Mode
     QCheckBox* reverseBox = nullptr;                 // onglet Sound : sample a l'envers
     std::array<int, session::kGroups * 16> sentReverse {};   // deja envoye au moteur (-1 = jamais)
     music::KeySettings keySettings;
@@ -189,6 +205,20 @@ private:
     void soundKnob (int index, int delta);           // encodeurs de la Maschine (1-8, comme le pilote)
     // Pads : PAD MODE (16 sons) ou KEYBOARD (le son choisi sur 16 notes, gamme et accords)
     std::atomic<bool> padKeyboard { false };
+    std::atomic<bool> padChords { false };           // mode CHORDS : chaque pad joue un accord (menu Chords)
+    int padChordKey (int pad) const;                 // touche jouee par un pad en mode CHORDS (-1 = aucun accord)
+    QString padChordLabel (int pad) const;           // nom de l'accord du pad
+    QString padLabel (int pad) const;                // texte d'un pad selon le mode (son, note, accord)
+    void setPadChords (bool on);
+    void useMelodicSound();                          // KEYBOARD / CHORDS : pas une batterie de synthese
+    void refreshPadModeButtons();
+    QPushButton* chordsModeButton = nullptr;
+    QPushButton* padsOnlyButton = nullptr;           // sous les pads : Pad Mode         // sous les pads : Chords Mode / Pad Mode
+    QPushButton* chordMenuButton = nullptr;          // onglet Keyboard : menu des accords
+    std::function<void()> saveKeySettings;           // enregistre gamme / accords et rafraichit
+    std::array<std::atomic<bool>, 17> padHeld {};     // pads tenus (souris ou Maschine)
+    bool rollKeyHeld = false;                        // clavier du Piano Roll tenu
+    void liveCheck();                                // plus rien de tenu : filet de securite du moteur
     std::array<std::atomic<int>, 17> padKey {};      // note jouee par chaque pad en mode KEYBOARD
     int padNote (int pad) const;                     // note d'un pad en mode KEYBOARD
     void setPadKeyboard (bool on);
@@ -204,7 +234,7 @@ private:
         std::array<QSlider*, 4> sliders {};          // Volume, Pan, Pitch, Cutoff
         std::array<QLabel*, 4> values {};
     } soundUi;
-    void playKey (int key, int velocity, bool down); // touche de clavier : note ou accord
+    void playKey (int key, int velocity, bool down, bool chords = true);   // touche de clavier : note ou accord
     std::atomic<bool> maschineShift { false };       // Shift tenu sur la Maschine (lu par la tache des pads)
     void shiftPad (int pad);                         // Shift + pad : fonctions de la serigraphie
     void switchBank();                               // A-H <-> A2-H2
@@ -248,7 +278,18 @@ private:
     void recordStart (RecNote& slot, int track, int note, int velocity);
 
     // Annuler / refaire : le pattern d'un groupe tel qu'il etait avant chaque modification
-    struct UndoStep { int group; seq::Pattern pattern; };
+    // Un pas d'annulation : un pattern, et / ou des sons (copier, deplacer, charger...) et des groupes
+    struct GroupSave { int group; seq::Pattern pattern; int volume; };
+    struct UndoStep
+    {
+        int group = -1;                              // pattern d'un groupe (-1 = aucun)
+        seq::Pattern pattern;
+        std::vector<std::pair<int, SoundCopy>> sounds;   // index groupe * 16 + pad - 1
+        std::vector<GroupSave> groups;               // groupes entiers (pattern + volume)
+        QString label;
+    };
+    void rememberSounds (const std::vector<std::pair<int, int>>& pads, const std::vector<int>& groups = {}, const QString& label = {});
+    UndoStep capture (const UndoStep& like) const;   // l'etat actuel des memes elements (pour refaire)
     std::mutex undoLock;                             // l'enregistrement vient aussi de la Maschine
     std::vector<UndoStep> undoStack, redoStack;
     std::array<std::atomic<bool>, 16> takeSaved {};  // une prise REC = une seule annulation par groupe
@@ -288,7 +329,7 @@ private:
     QString toastText;
     qint64 toastUntil = 0;
     std::optional<GenerateSettings> lastGenerate;   // derniers reglages de Generate
-    void setPadSample (int group, int sound, const QString& path);
+    void setPadSample (int group, int sound, const QString& path, bool undoable = true);
     void syncSamples (bool all = false);
     void loadSampleDialog (int pad);
     QString padName (int group, int sound) const;    // nom du fichier, sinon nom du son

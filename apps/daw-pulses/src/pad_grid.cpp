@@ -75,6 +75,12 @@ void PadGrid::paintEvent (QPaintEvent*)
                   : pad == selected ? QPen (Qt::white, 2) : QPen (color.darker (200), 1));
         g.setBrush (fill);
         g.drawRoundedRect (r, 8, 8);
+        if (chosen.contains (pad))                   // pad choisi : cadre orange en plus
+        {
+            g.setPen (QPen (QColor (252, 140, 40), 3));
+            g.setBrush (Qt::NoBrush);
+            g.drawRoundedRect (r.adjusted (3, 3, -3, -3), 6, 6);
+        }
         g.setPen (hit ? QColor (20, 20, 20) : QColor (230, 230, 230));
         g.drawText (r.adjusted (8, 6, -8, -6), Qt::AlignLeft | Qt::AlignTop, QString ("%1").arg (pad, 2, 10, QChar ('0')));
         if (tag == 'M' || tag == 'S')                    // M / S en haut a droite
@@ -105,14 +111,50 @@ void PadGrid::mousePressEvent (QMouseEvent* e)
     // par contextMenuEvent
     if (e->button() == Qt::RightButton || (e->modifiers() & Qt::MetaModifier))
         return;
-    mousePad = padAt (e->position());
+    const int at = padAt (e->position());
+    if (at && (e->modifiers() & (Qt::ShiftModifier | Qt::ControlModifier)))
+    {
+        // Selection (sans jouer) : Cmd + clic = ce pad ; Shift + clic = du dernier pad a celui-ci
+        if (chosen.isEmpty())                        // la selection part du dernier pad clique
+            chosen.insert (anchor ? anchor : selected);
+        if (e->modifiers() & Qt::ControlModifier)
+        {
+            chosen.contains (at) ? (void) chosen.remove (at) : (void) chosen.insert (at);
+            anchor = at;
+        }
+        else
+        {
+            const int from = anchor ? anchor : selected;
+            const int r0 = (from - 1) / 4, c0 = (from - 1) % 4, r1 = (at - 1) / 4, c1 = (at - 1) % 4;
+            for (int r = std::min (r0, r1); r <= std::max (r0, r1); ++r)
+                for (int c = std::min (c0, c1); c <= std::max (c0, c1); ++c)
+                    chosen.insert (r * 4 + c + 1);
+        }
+        update();
+        emit selectionChanged();
+        return;
+    }
+    mousePad = at;
     if (! mousePad)
         return;
+    if (! chosen.isEmpty())                          // clic simple : fin de la selection
+    {
+        chosen.clear();
+        emit selectionChanged();
+    }
+    anchor = mousePad;
     // Velocite selon la hauteur du clic dans le pad : en haut = fort
     const QRectF r = padRect (mousePad);
     const int vel = qBound (20, int (127 - (e->position().y() - r.top()) / r.height() * 90), 127);
     pressPos = e->position();
     emit pressed (mousePad, vel);
+}
+
+QList<int> PadGrid::selection() const
+{
+    QList<int> out (chosen.begin(), chosen.end());
+    std::sort (out.begin(), out.end());
+    return out;
 }
 
 void PadGrid::mouseReleaseEvent (QMouseEvent*)
