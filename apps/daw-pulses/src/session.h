@@ -137,6 +137,7 @@ struct State
     std::array<std::atomic<int>, kGroups * 16> soundPitch {};    // 64 = hauteur d'origine, 1 pas = 1 demi-ton
     std::array<std::atomic<int>, kGroups * 16> soundCutoff {};   // garde pour le filtre (pas encore dans le moteur)
     std::array<std::atomic<bool>, kGroups * 16> soundReverse {}; // sample joue a l'envers
+    std::array<std::atomic<int>, kGroups * 16> soundPoly {};     // polyphonie : notes en meme temps (1-16, 4 par defaut)
     int pitchSemitones (int g, int sound) const { return std::clamp (soundPitch[(size_t) index (g, sound)].load() - 64, -24, 24); }
     int pitched (int g, int sound, int note) const { return std::clamp (note + pitchSemitones (g, sound), 0, 127); }
     int pan (int g, int sound) const { return soundPan[(size_t) index (g, sound)]; }
@@ -152,7 +153,9 @@ struct State
         soundPitch[i] = 64;
         soundCutoff[i] = 90;
         soundReverse[i] = false;
+        soundPoly[i] = 4;
     }
+    int poly (int g, int sound) const { return std::clamp (soundPoly[(size_t) index (g, sound)].load(), 1, 16); }
     int mode (int g, int sound) const { return playMode[(size_t) index (g, sound)]; }
     bool held (int g, int sound) const { return mode (g, sound) != OneShot; }   // note tenue (ADSR)
     static int defaultMode (int sound) { return sound <= 4 ? OneShot : Gate; }  // batterie / notes

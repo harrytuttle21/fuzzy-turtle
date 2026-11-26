@@ -87,6 +87,15 @@ void StepView::paintEvent (QPaintEvent*)
             g.setPen (QPen (QColor (252, 140, 40), 2));
             g.drawRoundedRect (box.adjusted (1, 1, -1, -1), 4, 4);
         }
+        if (drag == Drag::Move && targetRow >= 0 && chosen.contains (r) && targetRow != pressRow)
+        {
+            const int to = r + targetRow - pressRow;    // place d'arrivee
+            if (to >= 0 && to < pat.length)
+            {
+                g.setPen (QPen (Qt::white, 1.5, Qt::DashLine));
+                g.drawRoundedRect (cellRect (to).adjusted (2, 2, -2, -2), 4, 4);
+            }
+        }
         if (r == cursor.selectedRow() && cursor.selectedTrack() == t)
         {
             g.setPen (QPen (Qt::white, 1.5));
@@ -113,10 +122,61 @@ void StepView::mousePressEvent (QMouseEvent* e)
         update();
         return;
     }
-    cursor.clearSelection();
+    pressPos = e->position();
+    pressRow = targetRow = r;
     cursor.setCurrentCell (r, t);
-    if (empty)
-        emit addRequested (r);
+    if (empty)                                       // clic = note ; glisser = cadre de selection
+    {
+        drag = Drag::Pending;
+        before = {};
+        update();
+        return;
+    }
+    if (! cursor.selection().contains (QPoint (t, r)))   // autre note : la selection repart d'elle
+        cursor.setSelection ({ QPoint (t, r) });
+    drag = Drag::Move;                               // glisser : deplacer (Option = copier)
+    update();
+}
+
+void StepView::mouseMoveEvent (QMouseEvent* e)
+{
+    if (drag == Drag::None)
+        return;
+    const QPointF p = e->position();
+    if (drag == Drag::Pending && (p - pressPos).manhattanLength() < 6)
+        return;
+    if (drag == Drag::Pending)
+        drag = Drag::Band;
+    if (drag == Drag::Band)                          // toutes les notes dont la case touche le cadre
+    {
+        const QRectF band = QRectF (pressPos, p).normalized().adjusted (-1, -1, 1, 1);   // jamais plat
+        const seq::Pattern pat = sequencer.pattern (state.group);
+        QList<QPoint> sel = before;
+        for (int r = 0; r < pat.length; ++r)
+            if (! pat.rows[(size_t) r][(size_t) track()].empty() && cellRect (r).intersects (band) && ! sel.contains (QPoint (track(), r)))
+                sel << QPoint (track(), r);
+        cursor.setSelection (sel);
+        update();
+        return;
+    }
+    const int r = rowAt (p);
+    if (r >= 0)
+        targetRow = r;
+    update();
+}
+
+void StepView::mouseReleaseEvent (QMouseEvent* e)
+{
+    const Drag was = drag;
+    drag = Drag::None;
+    if (was == Drag::Pending)                        // simple clic dans le vide : une note
+    {
+        cursor.clearSelection();
+        emit addRequested (pressRow);
+    }
+    else if (was == Drag::Move && targetRow >= 0 && targetRow != pressRow)
+        emit cellsMoved (cursor.selection(), targetRow - pressRow, 0, e->modifiers() & Qt::AltModifier);
+    targetRow = -1;
     update();
 }
 

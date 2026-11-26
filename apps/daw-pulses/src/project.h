@@ -2,12 +2,13 @@
 //
 // Meme format que le prototype (prototypes/maschine-hid/mk3_live.py, bouton FILE) : un projet
 // s'ouvre dans les deux. Le fichier entier est garde en memoire ; l'app n'y reecrit que ce
-// qu'elle sait deja modifier (nom, tempo, volumes, pattern en cours de chaque groupe). Le reste
-// (scenes, sons, autres patterns, arrangement...) est conserve tel quel. Licence : GPLv3.
+// qu'elle sait modifier (nom, tempo, volumes, sons, tous les patterns, scenes). Le reste
+// (arrangement...) est conserve tel quel. Licence : GPLv3.
 #pragma once
 #include "sequencer.h"
 #include "session.h"
 
+#include <QJsonArray>
 #include <QJsonObject>
 #include <QString>
 
@@ -34,6 +35,10 @@ public:
     static QString cleanName (const QString& name);   // A-Z 0-9 - _, 8 caracteres
     static QString folderFor (const QString& projectsDir, const QString& name);
     static QString defaultDir();                      // projets du prototype, sinon ~/Documents
+    // Une case de pattern en JSON ([ligne, piste, note(s), velocite, duree, decalage]) : aussi
+    // pour les fichiers de groupe (.fzgroup)
+    static QJsonArray cellToJson (int row, int track, const seq::Cell& c);
+    static bool cellFromJson (const QJsonArray& a, int& row, int& track, seq::Cell& c);
 
 private:
     QJsonObject data;

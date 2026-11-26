@@ -6,7 +6,31 @@
 
 namespace seq {
 
-std::vector<Hit> Sequencer::hitsForRow (int row, double rowMs) const
+Sequencer::Sequencer()
+{
+    reset();
+}
+
+void Sequencer::reset()
+{
+    std::lock_guard<std::mutex> g (lock);
+    for (auto& group : store)
+    {
+        for (auto& slot : group)
+            slot.reset();
+        group[0] = std::make_unique<Pattern>();       // chaque groupe a au moins son pattern 1
+    }
+    for (auto& group : names)
+        group.fill ({});
+    current.fill (0);
+    queue.fill (kNoQueue);
+    start.fill (0);
+    off.fill (true);                                 // aucun pattern actif au depart : on active en jouant
+    scenes.fill (Scene());
+    sceneNow = -1;
+}
+
+std::vector<Hit> Sequencer::hitsForRow (int row, double rowMs)
 {
     std::vector<Hit> out;
     std::lock_guard<std::mutex> g (lock);
@@ -21,10 +45,25 @@ std::vector<Hit> Sequencer::hitsForRow (int row, double rowMs) const
     };
     for (int grp = 0; grp < session::kGroups; ++grp)
     {
-        if (off[(size_t) grp])
+        const size_t gi = (size_t) grp;
+        // Debut du pattern : le pattern demande (ou le silence) prend la place
+        if (queue[gi] != kNoQueue && ((row - start[gi]) % cur (grp).length + cur (grp).length) % cur (grp).length == 0)
+        {
+            if (queue[gi] == kOff)
+                off[gi] = true;
+            else
+            {
+                current[gi] = queue[gi];
+                off[gi] = false;
+            }
+            start[gi] = row;
+            queue[gi] = kNoQueue;
+        }
+        if (off[gi])
             continue;
-        const Pattern& p = patterns[(size_t) grp];
-        const int r = row % p.length, next = (row + 1) % p.length;
+        const Pattern& p = cur (grp);
+        const int local = ((row - start[gi]) % p.length + p.length) % p.length;
+        const int r = local, next = (local + 1) % p.length;
         for (int t = 0; t < kTracks; ++t)
         {
             const Cell& c = p.rows[(size_t) r][(size_t) t];        // a l'heure ou en retard
@@ -41,7 +80,8 @@ std::vector<Hit> Sequencer::hitsForRow (int row, double rowMs) const
 Sequencer::Written Sequencer::record (int group, int track, int note, int velocity, double rowPos, bool merge)
 {
     std::lock_guard<std::mutex> g (lock);
-    Pattern& p = patterns[(size_t) group];
+    Pattern& p = cur (group);
+    rowPos -= start[(size_t) group];                 // position dans le pattern du groupe
     // Ligne la plus proche : 2e moitie d'une ligne -> ligne suivante, en avance
     int row = (int) std::floor (rowPos);
     int offset = (int) std::lround ((rowPos - row) * kTiming);
@@ -69,6 +109,8 @@ Sequencer::Written Sequencer::record (int group, int track, int note, int veloci
         return { group, row, track };
     }
     c = { note, velocity, 1, offset };
+    if (off[(size_t) group] && queue[(size_t) group] == kNoQueue)
+        off[(size_t) group] = false;                 // enregistrement : le pattern s'active
     return { group, row, track };
 }
 
@@ -77,7 +119,7 @@ void Sequencer::setLength (const Written& w, double rows)
     if (w.group < 0)
         return;
     std::lock_guard<std::mutex> g (lock);
-    Cell& c = patterns[(size_t) w.group].rows[(size_t) w.row][(size_t) w.track];
+    Cell& c = cur (w.group).rows[(size_t) w.row][(size_t) w.track];
     if (! c.empty())
         c.length = std::clamp ((int) std::lround (rows), 1, kMaxRows);
 }
@@ -85,31 +127,33 @@ void Sequencer::setLength (const Written& w, double rows)
 Pattern Sequencer::pattern (int group) const
 {
     std::lock_guard<std::mutex> g (lock);
-    return patterns[(size_t) group];
+    return cur (group);
 }
 
 void Sequencer::setCell (int group, int row, int track, const Cell& c)
 {
     std::lock_guard<std::mutex> g (lock);
-    patterns[(size_t) group].rows[(size_t) row][(size_t) track] = c;
+    cur (group).rows[(size_t) row][(size_t) track] = c;
+    if (! c.empty() && off[(size_t) group] && queue[(size_t) group] == kNoQueue)
+        off[(size_t) group] = false;                 // une note ecrite : le pattern s'active
 }
 
 void Sequencer::setPatternLength (int group, int length)
 {
     std::lock_guard<std::mutex> g (lock);
-    patterns[(size_t) group].length = std::clamp (length, 1, kMaxRows);
+    cur (group).length = std::clamp (length, 1, kMaxRows);
 }
 
 int Sequencer::patternLength (int group) const
 {
     std::lock_guard<std::mutex> g (lock);
-    return patterns[(size_t) group].length;
+    return cur (group).length;
 }
 
 void Sequencer::clear (int group)
 {
     std::lock_guard<std::mutex> g (lock);
-    for (auto& row : patterns[(size_t) group].rows)
+    for (auto& row : cur (group).rows)
         row.fill ({});
 }
 
@@ -128,7 +172,230 @@ bool Sequencer::groupOff (int group) const
 void Sequencer::setPattern (int group, const Pattern& p)
 {
     std::lock_guard<std::mutex> g (lock);
-    patterns[(size_t) group] = p;
+    cur (group) = p;
+}
+
+// ------------------------------------------------------------ patterns
+
+int Sequencer::currentPattern (int group) const
+{
+    std::lock_guard<std::mutex> g (lock);
+    return current[(size_t) group];
+}
+
+bool Sequencer::hasPattern (int group, int index) const
+{
+    std::lock_guard<std::mutex> g (lock);
+    return index >= 0 && index < kPatternSlots && store[(size_t) group][(size_t) index] != nullptr;
+}
+
+Pattern Sequencer::patternAt (int group, int index) const
+{
+    std::lock_guard<std::mutex> g (lock);
+    if (index < 0 || index >= kPatternSlots || ! store[(size_t) group][(size_t) index])
+        return {};
+    return *store[(size_t) group][(size_t) index];
+}
+
+void Sequencer::setPatternAt (int group, int index, const Pattern& p)
+{
+    if (index < 0 || index >= kPatternSlots)
+        return;
+    std::lock_guard<std::mutex> g (lock);
+    auto& slot = store[(size_t) group][(size_t) index];
+    if (! slot)
+        slot = std::make_unique<Pattern>();
+    *slot = p;
+}
+
+void Sequencer::removePattern (int group, int index)
+{
+    if (index < 0 || index >= kPatternSlots)
+        return;
+    std::lock_guard<std::mutex> g (lock);
+    auto& slot = store[(size_t) group][(size_t) index];
+    names[(size_t) group][(size_t) index].clear();
+    if (index == current[(size_t) group])            // le pattern choisi reste, vide
+    {
+        const int length = slot->length;
+        *slot = Pattern();
+        slot->length = length;
+        return;
+    }
+    slot.reset();
+    if (queue[(size_t) group] == index)
+        queue[(size_t) group] = kNoQueue;
+}
+
+std::string Sequencer::patternName (int group, int index) const
+{
+    std::lock_guard<std::mutex> g (lock);
+    return index >= 0 && index < kPatternSlots ? names[(size_t) group][(size_t) index] : std::string();
+}
+
+void Sequencer::setPatternName (int group, int index, const std::string& name)
+{
+    if (index < 0 || index >= kPatternSlots)
+        return;
+    std::lock_guard<std::mutex> g (lock);
+    names[(size_t) group][(size_t) index] = name;
+}
+
+void Sequencer::choose (int group, int index, bool playing)
+{
+    const size_t gi = (size_t) group;
+    if (index != kOff)
+    {
+        if (index < 0 || index >= kPatternSlots)
+            return;
+        if (! store[gi][(size_t) index])                 // emplacement vide : un pattern vide
+        {
+            store[gi][(size_t) index] = std::make_unique<Pattern>();
+            store[gi][(size_t) index]->length = cur (group).length;
+        }
+    }
+    const bool same = index == kOff ? off[gi] : (index == current[gi] && ! off[gi]);
+    if (playing && ! same)
+        queue[gi] = index;                           // a la fin du pattern en cours
+    else
+    {
+        queue[gi] = kNoQueue;
+        if (index == kOff)
+            off[gi] = true;
+        else
+        {
+            current[gi] = index;
+            off[gi] = false;
+        }
+    }
+}
+
+void Sequencer::selectPattern (int group, int index, bool playing)
+{
+    std::lock_guard<std::mutex> g (lock);
+    choose (group, index, playing);
+}
+
+int Sequencer::queuedPattern (int group) const
+{
+    std::lock_guard<std::mutex> g (lock);
+    return queue[(size_t) group];
+}
+
+int Sequencer::localRow (int group, int row) const
+{
+    std::lock_guard<std::mutex> g (lock);
+    const int length = cur (group).length;
+    return ((row - start[(size_t) group]) % length + length) % length;
+}
+
+void Sequencer::resetPlayback()
+{
+    std::lock_guard<std::mutex> g (lock);
+    for (int grp = 0; grp < session::kGroups; ++grp)
+    {
+        const size_t gi = (size_t) grp;
+        if (queue[gi] != kNoQueue)
+            choose (grp, queue[gi], false);
+        start[gi] = 0;
+    }
+}
+
+GroupPatterns Sequencer::groupPatterns (int group) const
+{
+    std::lock_guard<std::mutex> g (lock);
+    GroupPatterns gp;
+    const size_t gi = (size_t) group;
+    for (int i = 0; i < kPatternSlots; ++i)
+        if (store[gi][(size_t) i])
+        {
+            gp.patterns.push_back ({ i, *store[gi][(size_t) i] });
+            if (! names[gi][(size_t) i].empty())
+                gp.names.push_back ({ i, names[gi][(size_t) i] });
+        }
+    gp.current = current[gi];
+    gp.off = off[gi];
+    return gp;
+}
+
+void Sequencer::setGroupPatterns (int group, const GroupPatterns& gp)
+{
+    std::lock_guard<std::mutex> g (lock);
+    const size_t gi = (size_t) group;
+    for (auto& slot : store[gi])
+        slot.reset();
+    names[gi].fill ({});
+    for (const auto& [i, p] : gp.patterns)
+        if (i >= 0 && i < kPatternSlots)
+            store[gi][(size_t) i] = std::make_unique<Pattern> (p);
+    for (const auto& [i, n] : gp.names)
+        if (i >= 0 && i < kPatternSlots)
+            names[gi][(size_t) i] = n;
+    current[gi] = std::clamp (gp.current, 0, kPatternSlots - 1);
+    if (! store[gi][(size_t) current[gi]])
+        store[gi][(size_t) current[gi]] = std::make_unique<Pattern>();
+    off[gi] = gp.off;
+    queue[gi] = kNoQueue;
+}
+
+void Sequencer::clearGroupPatterns (int group, int length)
+{
+    GroupPatterns gp;
+    Pattern p;
+    p.length = std::clamp (length, 1, kMaxRows);
+    gp.patterns.push_back ({ 0, p });
+    setGroupPatterns (group, gp);
+}
+
+// ------------------------------------------------------------ scenes
+
+Scene Sequencer::scene (int index) const
+{
+    std::lock_guard<std::mutex> g (lock);
+    return index >= 0 && index < kPatternSlots ? scenes[(size_t) index] : Scene();
+}
+
+void Sequencer::setScene (int index, const Scene& s)
+{
+    if (index < 0 || index >= kPatternSlots)
+        return;
+    std::lock_guard<std::mutex> g (lock);
+    scenes[(size_t) index] = s;
+    if (! s.used && sceneNow == index)
+        sceneNow = -1;
+}
+
+std::array<int, session::kGroups> Sequencer::currentCombo() const
+{
+    std::lock_guard<std::mutex> g (lock);
+    std::array<int, session::kGroups> out {};
+    for (size_t gi = 0; gi < out.size(); ++gi)
+        out[gi] = queue[gi] != kNoQueue ? queue[gi] : off[gi] ? kOff : current[gi];
+    return out;
+}
+
+void Sequencer::launchScene (int index, bool playing)
+{
+    std::lock_guard<std::mutex> g (lock);
+    if (index < 0 || index >= kPatternSlots || ! scenes[(size_t) index].used)
+        return;
+    const Scene& s = scenes[(size_t) index];
+    for (int grp = 0; grp < session::kGroups; ++grp)
+        if (s.pattern[(size_t) grp] != kFree)        // groupe libre : il garde son pattern
+            choose (grp, s.pattern[(size_t) grp], playing);
+    sceneNow = index;
+}
+
+int Sequencer::currentScene() const
+{
+    std::lock_guard<std::mutex> g (lock);
+    return sceneNow;
+}
+
+void Sequencer::setCurrentScene (int index)
+{
+    std::lock_guard<std::mutex> g (lock);
+    sceneNow = index;
 }
 
 } // namespace seq

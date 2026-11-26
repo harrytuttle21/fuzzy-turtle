@@ -87,8 +87,7 @@ QJsonObject build (QJsonObject d, const QString& name, const seq::Sequencer& seq
     for (int g = 0; g < session::kGroups; ++g)
     {
         QJsonObject gd = groups[key (g)].toObject();
-        const int current = gd["current"].toInt (0);
-        gd["current"] = current;
+        gd["current"] = sequencer.currentPattern (g);
         gd["volume"] = state.groupVolume[(size_t) g].load();
         gd["off"] = sequencer.groupOff (g);
         if (! gd.contains ("pan"))
@@ -96,28 +95,25 @@ QJsonObject build (QJsonObject d, const QString& name, const seq::Sequencer& seq
         if (! gd.contains ("name"))
             gd["name"] = "";
 
-        const seq::Pattern p = sequencer.pattern (g);
-        QJsonArray cells;
-        for (int r = 0; r < seq::kMaxRows; ++r)
-            for (int t = 0; t < seq::kTracks; ++t)
-                if (! p.rows[(size_t) r][(size_t) t].empty())
-                    cells.append (cellToJson (r, t, p.rows[(size_t) r][(size_t) t]));
-
-        QJsonArray patterns = gd["patterns"].toArray();
-        bool found = false;
-        for (int i = 0; i < patterns.size(); ++i)
+        // Tous les patterns du groupe (emplacement, nom, longueur, notes)
+        QJsonArray patterns;
+        for (int idx = 0; idx < seq::kPatternSlots; ++idx)
         {
-            QJsonObject pd = patterns[i].toObject();
-            if (pd["index"].toInt (-1) != current)
+            if (! sequencer.hasPattern (g, idx))
                 continue;
-            pd["length"] = p.length;
-            pd["cells"] = cells;
-            patterns[i] = pd;
-            found = true;
-        }
-        if (! found && (! cells.isEmpty() || p.length != 16))
-            patterns.append (QJsonObject { { "index", current }, { "name", "" },
+            const seq::Pattern p = sequencer.patternAt (g, idx);
+            QJsonArray cells;
+            for (int r = 0; r < seq::kMaxRows; ++r)
+                for (int t = 0; t < seq::kTracks; ++t)
+                    if (! p.rows[(size_t) r][(size_t) t].empty())
+                        cells.append (cellToJson (r, t, p.rows[(size_t) r][(size_t) t]));
+            // pattern 1 vide et de 16 lignes : rien a ecrire (comme avant)
+            if (idx == 0 && cells.isEmpty() && p.length == 16 && sequencer.patternName (g, idx).empty()
+                && sequencer.currentPattern (g) == 0)
+                continue;
+            patterns.append (QJsonObject { { "index", idx }, { "name", QString::fromStdString (sequencer.patternName (g, idx)) },
                                            { "length", p.length }, { "cells", cells } });
+        }
         gd["patterns"] = patterns;
 
         // Samples des sons (le reste des reglages de chaque son est garde tel quel)
@@ -153,6 +149,10 @@ QJsonObject build (QJsonObject d, const QString& name, const seq::Sequencer& seq
                 sd["reverse"] = true;
             else
                 sd.remove ("reverse");
+            if (state.poly (g, s) != 4)                   // polyphonie (4 par defaut : pas ecrite)
+                sd["polyphony"] = state.poly (g, s);
+            else
+                sd.remove ("polyphony");
             // Synthe comme le pilote : nom, « None » = son vide, sans cle = celui du pad
             static const QStringList synthNames { "Kick", "Snare", "Closed HH", "Open HH", "Tone" };
             const int syn = state.synth[i];
@@ -175,6 +175,19 @@ QJsonObject build (QJsonObject d, const QString& name, const seq::Sequencer& seq
         groups[key (g)] = gd;
     }
     d["groups"] = groups;
+    // Scenes : le pattern de chaque groupe (null = groupe libre, -1 = silence), comme le pilote
+    QJsonArray scenes;
+    for (int i = 0; i < seq::kPatternSlots; ++i)
+    {
+        const seq::Scene sc = sequencer.scene (i);
+        if (! sc.used)
+            continue;
+        QJsonObject combo;
+        for (int g = 0; g < session::kGroups; ++g)
+            combo[key (g)] = sc.pattern[(size_t) g] == seq::kFree ? QJsonValue (QJsonValue::Null) : QJsonValue (sc.pattern[(size_t) g]);
+        scenes.append (QJsonObject { { "index", i }, { "name", QString::fromStdString (sc.name) }, { "groups", combo } });
+    }
+    d["scenes"] = scenes;
     return d;
 }
 
@@ -230,6 +243,7 @@ void Project::toApp (seq::Sequencer& sequencer, session::State& state, int& bpm)
             const QString syn = sd["synth"].toString();
             state.synth[i] = syn == "None" ? 0 : synthNames.contains (syn) ? (int) synthNames.indexOf (syn) + 1 : -1;
             state.soundReverse[i] = sd["reverse"].toBool (false);
+            state.soundPoly[i] = std::clamp (sd["polyphony"].toInt (4), 1, 16);
             const QJsonArray params = sd["params"].toArray();
             state.soundVolume[i] = std::clamp (sd["volume"].toInt (params.size() > 0 ? params[0].toInt (100) : 100), 0, 127);
             state.soundPan[i] = std::clamp (params.size() > 1 ? params[1].toInt (64) : 64, 0, 127);
@@ -244,24 +258,54 @@ void Project::toApp (seq::Sequencer& sequencer, session::State& state, int& bpm)
             state.loopStart[i] = (float) std::clamp (loop["start"].toDouble (0), 0.0, 1.0);
             state.loopEnd[i] = (float) std::clamp (loop["end"].toDouble (1), 0.0, 1.0);
         }
-        sequencer.clear (g);
+        // Tous les patterns du groupe ; le pattern choisi (« current ») existe toujours
+        sequencer.selectPattern (g, 0, false);         // on repart de rien
+        for (int idx = 1; idx < seq::kPatternSlots; ++idx)
+            sequencer.removePattern (g, idx);
+        sequencer.removePattern (g, 0);
         sequencer.setPatternLength (g, 16);
-        sequencer.setGroupOff (g, gd["off"].toBool (false));
-        const int current = gd["current"].toInt (0);
+        const int current = std::clamp (gd["current"].toInt (0), 0, seq::kPatternSlots - 1);
         for (const auto& pv : gd["patterns"].toArray())
         {
             const QJsonObject pd = pv.toObject();
-            if (pd["index"].toInt (-1) != current)
+            const int idx = pd["index"].toInt (-1);
+            if (idx < 0 || idx >= seq::kPatternSlots)
                 continue;
-            sequencer.setPatternLength (g, pd["length"].toInt (16));
+            seq::Pattern p;
+            p.length = std::clamp (pd["length"].toInt (16), 1, seq::kMaxRows);
             for (const auto& cv : pd["cells"].toArray())
             {
                 int row = 0, track = 0;
                 seq::Cell c;
                 if (cellFromJson (cv.toArray(), row, track, c))
-                    sequencer.setCell (g, row, track, c);
+                    p.rows[(size_t) row][(size_t) track] = c;
             }
+            sequencer.setPatternAt (g, idx, p);
+            sequencer.setPatternName (g, idx, pd["name"].toString().toStdString());
         }
+        sequencer.selectPattern (g, current, false);   // cree un pattern vide s'il manque
+        sequencer.setGroupOff (g, gd["off"].toBool (true));   // pas d'info : eteint (actif des qu'on ecrit)
+    }
+    // Scenes
+    for (int i = 0; i < seq::kPatternSlots; ++i)
+        sequencer.setScene (i, seq::Scene());
+    sequencer.setCurrentScene (-1);
+    for (const auto& sv : data["scenes"].toArray())
+    {
+        const QJsonObject sd = sv.toObject();
+        const int i = sd["index"].toInt (-1);
+        if (i < 0 || i >= seq::kPatternSlots)
+            continue;
+        seq::Scene sc;
+        sc.used = true;
+        sc.name = sd["name"].toString().toStdString();
+        const QJsonObject combo = sd["groups"].toObject();
+        for (int g = 0; g < session::kGroups; ++g)
+        {
+            const QJsonValue v = combo[key (g)];
+            sc.pattern[(size_t) g] = v.isDouble() ? std::clamp (v.toInt(), -1, seq::kPatternSlots - 1) : seq::kFree;
+        }
+        sequencer.setScene (i, sc);
     }
 }
 
@@ -335,3 +379,6 @@ QString Project::defaultDir()
     }
     return QStandardPaths::writableLocation (QStandardPaths::DocumentsLocation) + "/Fuzzy Projects";
 }
+
+QJsonArray Project::cellToJson (int row, int track, const seq::Cell& c) { return ::cellToJson (row, track, c); }
+bool Project::cellFromJson (const QJsonArray& a, int& row, int& track, seq::Cell& c) { return ::cellFromJson (a, row, track, c); }

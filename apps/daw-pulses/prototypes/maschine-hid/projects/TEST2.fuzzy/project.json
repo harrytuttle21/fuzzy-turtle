@@ -302,6 +302,13 @@
                     "index": 0,
                     "length": 32,
                     "name": ""
+                },
+                {
+                    "cells": [
+                    ],
+                    "index": 1,
+                    "length": 32,
+                    "name": ""
                 }
             ],
             "sounds": {
@@ -343,7 +350,7 @@
         "A2": {
             "current": 0,
             "name": "",
-            "off": false,
+            "off": true,
             "pan": 64,
             "patterns": [
             ],
@@ -523,6 +530,13 @@
                     "index": 0,
                     "length": 64,
                     "name": ""
+                },
+                {
+                    "cells": [
+                    ],
+                    "index": 1,
+                    "length": 64,
+                    "name": ""
                 }
             ],
             "sounds": {
@@ -568,7 +582,7 @@
         "B2": {
             "current": 0,
             "name": "",
-            "off": false,
+            "off": true,
             "pan": 64,
             "patterns": [
             ],
@@ -697,7 +711,7 @@
         "C2": {
             "current": 0,
             "name": "",
-            "off": false,
+            "off": true,
             "pan": 64,
             "patterns": [
             ],
@@ -743,63 +757,132 @@
             "off": false,
             "pan": 64,
             "patterns": [
+                {
+                    "cells": [
+                        [
+                            0,
+                            0,
+                            60,
+                            103,
+                            1,
+                            -2
+                        ],
+                        [
+                            11,
+                            3,
+                            60,
+                            100,
+                            1,
+                            8
+                        ],
+                        [
+                            32,
+                            3,
+                            60,
+                            100
+                        ]
+                    ],
+                    "index": 0,
+                    "length": 64,
+                    "name": ""
+                }
             ],
             "sounds": {
                 "1": {
+                    "sample": "/Volumes/Nvme4TO/Samples1/SAMPLESWAP-SELECTION/VOCALS/verby-indian-male-chant.wav"
                 },
                 "10": {
+                    "envelope": {
+                        "mode": "ONE-SHOT",
+                        "release": 150
+                    },
+                    "synth": "None"
                 },
                 "11": {
+                    "envelope": {
+                        "mode": "ONE-SHOT",
+                        "release": 150
+                    },
+                    "synth": "None"
                 },
                 "12": {
+                    "envelope": {
+                        "mode": "ONE-SHOT",
+                        "release": 150
+                    },
+                    "synth": "None"
                 },
                 "13": {
                     "envelope": {
                         "mode": "ONE-SHOT",
                         "release": 150
                     },
-                    "synth": "Kick"
+                    "synth": "None"
                 },
                 "14": {
                     "envelope": {
                         "mode": "ONE-SHOT",
                         "release": 150
                     },
-                    "synth": "Snare"
+                    "synth": "None"
                 },
                 "15": {
                     "envelope": {
                         "mode": "ONE-SHOT",
                         "release": 150
                     },
-                    "synth": "Closed HH"
+                    "synth": "None"
                 },
                 "16": {
                     "envelope": {
                         "mode": "ONE-SHOT",
                         "release": 150
                     },
-                    "synth": "Open HH"
+                    "synth": "None"
                 },
                 "2": {
+                    "sample": "/Volumes/Nvme4TO/Samples1/SAMPLESWAP-SELECTION/VOCALS/chant-mantra-pitchcorrected-1.wav"
                 },
                 "3": {
+                    "sample": "/Volumes/Nvme4TO/Samples1/SAMPLESWAP-SELECTION/VOCALS/big-layered-male-vocal-one-note.wav"
                 },
                 "4": {
+                    "sample": "/Volumes/Nvme4TO/Samples1/SAMPLESWAP-SELECTION/VOCALS/bie-zelda-1988-singing-lofi.wav"
                 },
                 "5": {
+                    "envelope": {
+                        "mode": "ONE-SHOT",
+                        "release": 150
+                    },
+                    "synth": "None"
                 },
                 "6": {
                     "envelope": {
                         "mode": "ONE-SHOT",
                         "release": 150
-                    }
+                    },
+                    "synth": "None"
                 },
                 "7": {
+                    "envelope": {
+                        "mode": "ONE-SHOT",
+                        "release": 150
+                    },
+                    "synth": "None"
                 },
                 "8": {
+                    "envelope": {
+                        "mode": "ONE-SHOT",
+                        "release": 150
+                    },
+                    "synth": "None"
                 },
                 "9": {
+                    "envelope": {
+                        "mode": "ONE-SHOT",
+                        "release": 150
+                    },
+                    "synth": "None"
                 }
             },
             "volume": 105
@@ -807,7 +890,7 @@
         "D2": {
             "current": 0,
             "name": "",
-            "off": false,
+            "off": true,
             "pan": 64,
             "patterns": [
             ],
@@ -850,42 +933,169 @@
         "E": {
             "current": 0,
             "name": "",
-            "off": false,
+            "off": true,
             "pan": 64,
             "patterns": [
+                {
+                    "cells": [
+                        [
+                            0,
+                            3,
+                            60,
+                            98,
+                            1,
+                            -1
+                        ],
+                        [
+                            2,
+                            3,
+                            60,
+                            43,
+                            1,
+                            3
+                        ],
+                        [
+                            4,
+                            0,
+                            60,
+                            89,
+                            1,
+                            4
+                        ],
+                        [
+                            4,
+                            2,
+                            60,
+                            31,
+                            1,
+                            6
+                        ],
+                        [
+                            6,
+                            3,
+                            60,
+                            64,
+                            1,
+                            3
+                        ],
+                        [
+                            7,
+                            0,
+                            60,
+                            87,
+                            1,
+                            7
+                        ],
+                        [
+                            8,
+                            2,
+                            60,
+                            31,
+                            1,
+                            -7
+                        ],
+                        [
+                            10,
+                            0,
+                            60,
+                            61,
+                            1,
+                            -6
+                        ],
+                        [
+                            10,
+                            3,
+                            60,
+                            63,
+                            1,
+                            -2
+                        ],
+                        [
+                            11,
+                            2,
+                            60,
+                            31,
+                            1,
+                            -4
+                        ],
+                        [
+                            12,
+                            0,
+                            60,
+                            81,
+                            1,
+                            -3
+                        ],
+                        [
+                            12,
+                            3,
+                            60,
+                            70,
+                            1,
+                            -3
+                        ],
+                        [
+                            14,
+                            2,
+                            60,
+                            32,
+                            1,
+                            -4
+                        ]
+                    ],
+                    "index": 0,
+                    "length": 16,
+                    "name": ""
+                }
             ],
             "sounds": {
                 "1": {
+                    "sample": "/Volumes/Nvme4TO/Samples1/SAMPLESWAP-SELECTION/DRUM KITS/standard 808 drumkit/kick1.aif"
                 },
                 "10": {
+                    "sample": "/Volumes/Nvme4TO/Samples1/SAMPLESWAP-SELECTION/DRUM KITS/standard 808 drumkit/rimshot.aif"
                 },
                 "11": {
+                    "sample": "/Volumes/Nvme4TO/Samples1/SAMPLESWAP-SELECTION/DRUM KITS/standard 808 drumkit/claves.aif"
                 },
                 "12": {
+                    "sample": "/Volumes/Nvme4TO/Samples1/SAMPLESWAP-SELECTION/DRUM KITS/standard 808 drumkit/maracas.aif"
                 },
                 "13": {
+                    "sample": "/Volumes/Nvme4TO/Samples1/SAMPLESWAP-SELECTION/DRUM KITS/standard 808 drumkit/hightom.aif"
                 },
                 "14": {
+                    "sample": "/Volumes/Nvme4TO/Samples1/SAMPLESWAP-SELECTION/DRUM KITS/standard 808 drumkit/tom1.aif"
                 },
                 "15": {
+                    "sample": "/Volumes/Nvme4TO/Samples1/SAMPLESWAP-SELECTION/DRUM KITS/standard 808 drumkit/conga1.aif"
                 },
                 "16": {
+                    "synth": "None"
                 },
                 "2": {
+                    "sample": "/Volumes/Nvme4TO/Samples1/SAMPLESWAP-SELECTION/DRUM KITS/standard 808 drumkit/snare.aif"
                 },
                 "3": {
+                    "sample": "/Volumes/Nvme4TO/Samples1/SAMPLESWAP-SELECTION/DRUM KITS/standard 808 drumkit/cl_hihat.aif"
                 },
                 "4": {
+                    "sample": "/Volumes/Nvme4TO/Samples1/SAMPLESWAP-SELECTION/DRUM KITS/standard 808 drumkit/open_hh.aif"
                 },
                 "5": {
+                    "sample": "/Volumes/Nvme4TO/Samples1/SAMPLESWAP-SELECTION/DRUM KITS/standard 808 drumkit/kick2.aif"
                 },
                 "6": {
+                    "sample": "/Volumes/Nvme4TO/Samples1/SAMPLESWAP-SELECTION/DRUM KITS/standard 808 drumkit/handclap.aif"
                 },
                 "7": {
+                    "sample": "/Volumes/Nvme4TO/Samples1/SAMPLESWAP-SELECTION/DRUM KITS/standard 808 drumkit/cowbell.aif"
                 },
                 "8": {
+                    "sample": "/Volumes/Nvme4TO/Samples1/SAMPLESWAP-SELECTION/DRUM KITS/standard 808 drumkit/crashcym.aif"
                 },
                 "9": {
+                    "synth": "None"
                 }
             },
             "volume": 100
@@ -893,7 +1103,7 @@
         "E2": {
             "current": 0,
             "name": "",
-            "off": false,
+            "off": true,
             "pan": 64,
             "patterns": [
             ],
@@ -936,7 +1146,7 @@
         "F": {
             "current": 0,
             "name": "",
-            "off": false,
+            "off": true,
             "pan": 64,
             "patterns": [
             ],
@@ -979,7 +1189,7 @@
         "F2": {
             "current": 0,
             "name": "",
-            "off": false,
+            "off": true,
             "pan": 64,
             "patterns": [
             ],
@@ -1022,7 +1232,7 @@
         "G": {
             "current": 0,
             "name": "",
-            "off": false,
+            "off": true,
             "pan": 64,
             "patterns": [
             ],
@@ -1065,7 +1275,7 @@
         "G2": {
             "current": 0,
             "name": "",
-            "off": false,
+            "off": true,
             "pan": 64,
             "patterns": [
             ],
@@ -1108,54 +1318,129 @@
         "H": {
             "current": 0,
             "name": "",
-            "off": false,
+            "off": true,
             "pan": 64,
             "patterns": [
+                {
+                    "cells": [
+                        [
+                            0,
+                            0,
+                            60,
+                            103,
+                            1,
+                            -2
+                        ]
+                    ],
+                    "index": 0,
+                    "length": 64,
+                    "name": ""
+                }
             ],
             "sounds": {
                 "1": {
-                    "synth": "None"
+                    "sample": "/Volumes/Nvme4TO/Samples1/SAMPLESWAP-SELECTION/VOCALS/verby-indian-male-chant.wav"
                 },
                 "10": {
+                    "envelope": {
+                        "mode": "ONE-SHOT",
+                        "release": 150
+                    },
+                    "synth": "None"
                 },
                 "11": {
+                    "envelope": {
+                        "mode": "ONE-SHOT",
+                        "release": 150
+                    },
+                    "synth": "None"
                 },
                 "12": {
+                    "envelope": {
+                        "mode": "ONE-SHOT",
+                        "release": 150
+                    },
+                    "synth": "None"
                 },
                 "13": {
+                    "envelope": {
+                        "mode": "ONE-SHOT",
+                        "release": 150
+                    },
+                    "synth": "None"
                 },
                 "14": {
+                    "envelope": {
+                        "mode": "ONE-SHOT",
+                        "release": 150
+                    },
+                    "synth": "None"
                 },
                 "15": {
+                    "envelope": {
+                        "mode": "ONE-SHOT",
+                        "release": 150
+                    },
+                    "synth": "None"
                 },
                 "16": {
+                    "envelope": {
+                        "mode": "ONE-SHOT",
+                        "release": 150
+                    },
+                    "synth": "None"
                 },
                 "2": {
-                    "synth": "None"
+                    "sample": "/Volumes/Nvme4TO/Samples1/SAMPLESWAP-SELECTION/VOCALS/chant-mantra-pitchcorrected-1.wav"
                 },
                 "3": {
-                    "synth": "None"
+                    "sample": "/Volumes/Nvme4TO/Samples1/SAMPLESWAP-SELECTION/VOCALS/big-layered-male-vocal-one-note.wav"
                 },
                 "4": {
-                    "synth": "None"
+                    "sample": "/Volumes/Nvme4TO/Samples1/SAMPLESWAP-SELECTION/VOCALS/bie-zelda-1988-singing-lofi.wav"
                 },
                 "5": {
+                    "envelope": {
+                        "mode": "ONE-SHOT",
+                        "release": 150
+                    },
+                    "synth": "None"
                 },
                 "6": {
+                    "envelope": {
+                        "mode": "ONE-SHOT",
+                        "release": 150
+                    },
+                    "synth": "None"
                 },
                 "7": {
+                    "envelope": {
+                        "mode": "ONE-SHOT",
+                        "release": 150
+                    },
+                    "synth": "None"
                 },
                 "8": {
+                    "envelope": {
+                        "mode": "ONE-SHOT",
+                        "release": 150
+                    },
+                    "synth": "None"
                 },
                 "9": {
+                    "envelope": {
+                        "mode": "ONE-SHOT",
+                        "release": 150
+                    },
+                    "synth": "None"
                 }
             },
-            "volume": 100
+            "volume": 105
         },
         "H2": {
             "current": 0,
             "name": "",
-            "off": false,
+            "off": true,
             "pan": 64,
             "patterns": [
             ],
@@ -1198,5 +1483,139 @@
     },
     "master": 100,
     "name": "TEST2",
+    "scenes": [
+        {
+            "groups": {
+                "A": 0,
+                "A2": -1,
+                "B": -1,
+                "B2": -1,
+                "C": 0,
+                "C2": -1,
+                "D": -1,
+                "D2": -1,
+                "E": -1,
+                "E2": -1,
+                "F": -1,
+                "F2": -1,
+                "G": -1,
+                "G2": -1,
+                "H": -1,
+                "H2": -1
+            },
+            "index": 0,
+            "name": ""
+        },
+        {
+            "groups": {
+                "A": 0,
+                "A2": -1,
+                "B": 0,
+                "B2": -1,
+                "C": 0,
+                "C2": -1,
+                "D": -1,
+                "D2": -1,
+                "E": -1,
+                "E2": -1,
+                "F": -1,
+                "F2": -1,
+                "G": -1,
+                "G2": -1,
+                "H": -1,
+                "H2": -1
+            },
+            "index": 1,
+            "name": ""
+        },
+        {
+            "groups": {
+                "A": -1,
+                "A2": -1,
+                "B": 0,
+                "B2": -1,
+                "C": -1,
+                "C2": -1,
+                "D": 0,
+                "D2": -1,
+                "E": -1,
+                "E2": -1,
+                "F": -1,
+                "F2": -1,
+                "G": -1,
+                "G2": -1,
+                "H": -1,
+                "H2": -1
+            },
+            "index": 2,
+            "name": ""
+        },
+        {
+            "groups": {
+                "A": 0,
+                "A2": -1,
+                "B": 0,
+                "B2": -1,
+                "C": 0,
+                "C2": -1,
+                "D": 0,
+                "D2": -1,
+                "E": -1,
+                "E2": -1,
+                "F": -1,
+                "F2": -1,
+                "G": -1,
+                "G2": -1,
+                "H": -1,
+                "H2": -1
+            },
+            "index": 3,
+            "name": ""
+        },
+        {
+            "groups": {
+                "A": -1,
+                "A2": -1,
+                "B": -1,
+                "B2": -1,
+                "C": 0,
+                "C2": -1,
+                "D": -1,
+                "D2": -1,
+                "E": -1,
+                "E2": -1,
+                "F": -1,
+                "F2": -1,
+                "G": -1,
+                "G2": -1,
+                "H": -1,
+                "H2": -1
+            },
+            "index": 4,
+            "name": ""
+        },
+        {
+            "groups": {
+                "A": 0,
+                "A2": -1,
+                "B": -1,
+                "B2": -1,
+                "C": -1,
+                "C2": -1,
+                "D": -1,
+                "D2": -1,
+                "E": -1,
+                "E2": -1,
+                "F": -1,
+                "F2": -1,
+                "G": -1,
+                "G2": -1,
+                "H": -1,
+                "H2": -1
+            },
+            "index": 5,
+            "name": ""
+        }
+    ],
     "version": 1
 }

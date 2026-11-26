@@ -62,6 +62,7 @@ struct PadEvent
     bool off = false;     // fin de note (ADSR)
     int synth = 0;        // synthe : 1 Kick, 2 Snare, 3 Closed HH, 4 Open HH, 5 Tone, 6 Click (0 = celui du pad)
     int pan = 64;         // stereo : 0 gauche, 64 centre, 127 droite
+    int poly = 4;         // polyphonie du son : notes en meme temps (1 = mono, comme Polyphony de Maschine)
 };
 
 class EventQueue
@@ -518,10 +519,23 @@ private:
 
     void trigger (const PadEvent& e)
     {
-        // Meme pad ET meme note : on eteint l'ancienne (un accord garde toutes ses notes)
-        const int wanted = e.note >= 0 ? e.note : defaultNote (e.pad);
-        for (auto& v : voices)
-            if (v.active && v.pad == e.pad && v.tag == e.tag && v.note == wanted) v.release (sampleRate);
+        // Polyphonie du son (pad + groupe) : au-dela de `poly` notes, les plus anciennes
+        // s'eteignent (10 ms, sans clic). poly = 1 : mono, la note d'avant s'arrete.
+        const int poly = juce::jlimit (1, 16, e.poly);
+        for (;;)
+        {
+            int count = 0;
+            Voice* oldest = nullptr;
+            for (auto& v : voices)
+                if (v.active && v.pad == e.pad && v.tag == e.tag && v.fadeStep <= 0)
+                {
+                    ++count;
+                    if (oldest == nullptr || v.time > oldest->time) oldest = &v;
+                }
+            if (count < poly || oldest == nullptr)
+                break;
+            oldest->release (sampleRate);
+        }
         Voice* chosen = nullptr;
         for (auto& v : voices)
             if (! v.active) { chosen = &v; break; }
@@ -694,7 +708,8 @@ private:
             return;
         }
         if (address != "/fuzzy/proto/hit") return;
-        // son, velocite, note [, groupe, mode (0 ONE-SHOT / 1 ADSR), relachement ms, duree ms]
+        // son, velocite, note [, groupe, mode (0 ONE-SHOT / 1 ADSR), relachement ms, duree ms,
+        //                      synthe, pan, polyphonie]
         if (m.size() < 3 || ! m[0].isInt32() || ! m[1].isInt32() || ! m[2].isInt32()) return;
         const int pad = m[0].getInt32();
         if (pad < 1 || pad > 16) return;
@@ -711,6 +726,8 @@ private:
             e.synth = num (7);
         if (m.size() >= 9)
             e.pan = num (8);
+        if (m.size() >= 10)                          // polyphonie du son (sinon 4)
+            e.poly = num (9);
         queue.push (e);
     }
     EventQueue& queue;

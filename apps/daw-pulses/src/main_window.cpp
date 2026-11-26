@@ -7,6 +7,8 @@
 #include "pattern_view.h"
 #include "tracker_view.h"
 #include "step_view.h"
+#include "pattern_bar.h"
+#include "scene_view.h"
 #include "loop_dialog.h"
 #include "piano_roll.h"
 #include "generate_dialog.h"
@@ -58,6 +60,9 @@
 #include <QDir>
 #include <QDrag>
 #include <QShortcut>
+#include <QSaveFile>
+#include <QJsonDocument>
+#include <QJsonArray>
 #include <QButtonGroup>
 #include <QTabBar>
 #include <QAbstractButton>
@@ -114,6 +119,18 @@ MainWindow::MainWindow (const Options& options, QWidget* parent) : QMainWindow (
     top->toggleViewAction()->setVisible (false);
     top->addWidget (buildTopBar());
     addToolBar (Qt::TopToolBarArea, top);
+    // Barre PATTERNS / SCENES, sous la barre du haut (View > Patterns / Scenes pour la masquer)
+    addToolBarBreak (Qt::TopToolBarArea);
+    patternsToolBar = new QToolBar (tr ("Patterns / Scenes"));
+    patternsToolBar->setObjectName ("patternsBar");
+    patternsToolBar->setMovable (false);
+    patternBar = new PatternBar (sequencer, state);
+    patternBar->isPlaying = [this] { return transport && transport->playing(); };
+    patternsToolBar->addWidget (patternBar);
+    addToolBar (Qt::TopToolBarArea, patternsToolBar);
+    connect (patternBar, &PatternBar::message, this, [this] (const QString& t) { toast (t); });
+    connect (patternBar, &PatternBar::aboutToChange, this, [this] (int g) { remember (g); });
+    connect (patternBar, &PatternBar::changed, this, &MainWindow::patternsChanged);
 
     // Tout est en panneaux (pas de zone centrale fixe) : Pattern et Mixer en onglets
     // Sans animation des panneaux : sur macOS, les separateurs animes laissaient un trait fin noir
@@ -134,6 +151,8 @@ MainWindow::MainWindow (const Options& options, QWidget* parent) : QMainWindow (
     tabifyDockWidget (patternDock, rollDock);       // onglets : Pattern, Piano Roll, Tracker, Mixer
     tabifyDockWidget (rollDock, trackerDock);
     tabifyDockWidget (trackerDock, mixerDock);
+    sceneDock = makeDock (tr ("Scenes"), "scenesDock", buildScenes());
+    tabifyDockWidget (mixerDock, sceneDock);        // onglet Scenes, apres le Mixer
     groupsDock = makeDock (tr ("Groups"), "groupsDock", buildGroupBlock());
     keysTabDock = makeDock (tr ("Keyboard"), "keyboardTabDock", buildKeyboardTab());
     soundDock = makeDock (tr ("Sound"), "soundDock", buildSoundTab());
@@ -227,6 +246,10 @@ MainWindow::MainWindow (const Options& options, QWidget* parent) : QMainWindow (
     addFile (tr ("Save"), QKeySequence::Save, [this] { saveProject(); });
     addFile (tr ("Save As..."), QKeySequence::SaveAs, [this] { saveProjectAs(); });
     fileMenu->addAction (tr ("Save With Samples..."), this, [this] { saveProjectAs (true); });
+    fileMenu->addSeparator();
+    fileMenu->addAction (tr ("Export Group..."), this, [this] { exportGroup(); });   // un groupe entier dans un fichier
+    fileMenu->addAction (tr ("Import Group..."), this, [this] { importGroup(); });
+    fileMenu->addSeparator();
     fileMenu->addSeparator();
     fileMenu->addAction (tr ("Import MIDI..."), this, [this]
     {
@@ -523,11 +546,14 @@ MainWindow::MainWindow (const Options& options, QWidget* parent) : QMainWindow (
     });
     connect (transport, &Transport::row, this, [this] (int r)
     {
-        patternView->setPlayRow (r);
-        pianoRoll->setPlayRow (r);
-        tracker->setPlayRow (r);
-        rollTracker->setPlayRow (r);
-        stepView->setPlayRow (r);
+        const int local = sequencer.localRow (state.group, r);   // ligne dans le pattern du groupe
+        patternView->setPlayRow (local);
+        pianoRoll->setPlayRow (local);
+        tracker->setPlayRow (local);
+        rollTracker->setPlayRow (local);
+        stepView->setPlayRow (local);
+        if (patternBar)
+            patternBar->refresh();                   // pattern en attente : il vient de commencer ?
     });
     connect (transport, &Transport::playingChanged, this, [this] (bool on)
     {
@@ -617,7 +643,14 @@ MainWindow::MainWindow (const Options& options, QWidget* parent) : QMainWindow (
         l.setButton ("solo", soloHeld ? fc::Shade::Bright : fc::Shade::Dim);
         // Vues de l'app et nouveautes : vif = la vue affichee
         auto shown = [] (QWidget* w) { return w && ! w->visibleRegion().isEmpty(); };
-        l.setButton ("pattern", shown (patternView) ? fc::Shade::Bright : fc::Shade::Dim);
+        l.setButton ("pattern", patternHeld || shown (patternView) ? fc::Shade::Bright : fc::Shade::Dim);
+        {
+            bool anyScene = false;                   // SCENE : vif tenu ou scene en cours, doux s'il y en a
+            for (int i = 0; i < seq::kPatternSlots && ! anyScene; ++i)
+                anyScene = sequencer.scene (i).used;
+            l.setButton ("scene", sceneHeld || sequencer.currentScene() >= 0 ? fc::Shade::Bright
+                                  : anyScene ? fc::Shade::Dim : fc::Shade::Off);
+        }
         l.setButton ("events", shown (pianoRoll) ? fc::Shade::Bright : fc::Shade::Dim);
         l.setButton ("mixer", shown (mixer) ? fc::Shade::Bright : fc::Shade::Dim);
         l.setButton ("keyboard", padKeyboard && ! padChords ? fc::Shade::Bright : fc::Shade::Dim);
@@ -649,8 +682,28 @@ MainWindow::MainWindow (const Options& options, QWidget* parent) : QMainWindow (
             const bool chosen = p == state.sound;
             left.fillRect (x, y, 110, 50, chosen ? rgb (acc) : fc::Rgb { 26, 26, 34 });
             left.frameRect (x, y, 110, 50, rgb (acc.darker (150)));
-            const auto name = QString ("%1 %2").arg (p, 2, 10, QChar ('0')).arg (padLabel (p)).left (13).toStdString();
-            left.text (x + 4, y + 17, name, chosen ? fc::kBlack : fc::kWhite);
+            // Numero du pad petit, en haut a gauche (gris) ; nom du sample centre, sur 2 lignes s'il le faut
+            const fc::Rgb ink = chosen ? fc::kBlack : fc::kWhite;
+            left.text (x + 3, y + 2, QString ("%1").arg (p, 2, 10, QChar ('0')).toStdString(),
+                       chosen ? fc::Rgb { 40, 40, 40 } : fc::Rgb { 120, 120, 130 });
+            const int perLine = 13;                      // 13 caracteres de 8 px dans 110 px
+            QString name = padLabel (p).simplified();
+            QStringList lines;
+            if (name.size() <= perLine)
+                lines << name;
+            else
+            {
+                int cut = (int) name.left (perLine + 1).lastIndexOf (' ');   // couper a un espace si possible
+                if (cut <= 0)
+                    cut = perLine;
+                lines << name.left (cut).trimmed() << name.mid (cut).trimmed().left (perLine);
+            }
+            const int top = lines.size() == 1 ? y + 21 : y + 15;
+            for (int k = 0; k < lines.size(); ++k)
+            {
+                const std::string t = lines[k].toStdString();
+                left.text (x + (110 - fc::Canvas::textWidth (t)) / 2, top + k * 14, t, ink);
+            }
         }
         // Ecran droit : transport
         right.fill (fc::kBlack);
@@ -1026,7 +1079,7 @@ void MainWindow::showLeftTab (int index)
 {
     // 0 = Mixer, 1 = Pattern : le panneau s'affiche et passe devant
     QDockWidget* dock = index == 0 ? mixerDock : index == 2 ? rollDock : index == 3 ? keysTabDock
-                      : index == 4 ? soundDock : index == 5 ? trackerDock : patternDock;
+                      : index == 4 ? soundDock : index == 5 ? trackerDock : index == 6 ? sceneDock : patternDock;
     dock->show();
     dock->raise();
     QTimer::singleShot (0, this, [this] { refreshMaschine(); });
@@ -1050,6 +1103,11 @@ void MainWindow::placeTracker()
     {
         tabifyDockWidget (rollDock, trackerDock);
         trackerDock->show();
+    }
+    if (! sceneDock->isVisible() && ! sceneDock->isFloating())   // disposition d'avant l'onglet Scenes
+    {
+        tabifyDockWidget (mixerDock, sceneDock);
+        sceneDock->show();
     }
     for (auto* bar : findChildren<QTabBar*>())
     {
@@ -1304,6 +1362,17 @@ void MainWindow::playPad (int pad, int velocity, bool down)
             QMetaObject::invokeMethod (this, [this, pad] { shiftPad (pad); }, Qt::QueuedConnection);
             return;
         }
+        if (patternHeld || sceneHeld)                // PATTERN / SCENE + pad : pattern ou scene de la banque
+        {
+            holdUsed = true;
+            const bool scene = sceneHeld;
+            QMetaObject::invokeMethod (this, [this, pad, scene]
+            {
+                scene ? patternBar->chooseScene (patternBar->sceneBank * seq::kSlotsPerBank + pad - 1)
+                      : patternBar->choosePattern (patternBar->patternBank * seq::kSlotsPerBank + pad - 1);
+            }, Qt::QueuedConnection);
+            return;
+        }
         if (duplicateHeld)                           // DUPLICATE + pad + pad : copie du son
         {
             QMetaObject::invokeMethod (this, [this, g, pad]
@@ -1341,7 +1410,7 @@ void MainWindow::playPad (int pad, int velocity, bool down)
         padSent[(size_t) pad] = state.pitched (g, pad, defaultNote (pad));   // la fin de note coupera celle-ci
         if (v > 0 && state.audible (g, pad) && state.hasInstrument[(size_t) state.index (g, pad)])
             engine->hit (pad, v, padSent[(size_t) pad], g, state.held (g, pad), state.releaseMs[(size_t) state.index (g, pad)],
-                         0, state.effSynth (g, pad), state.pan (g, pad));
+                         0, state.effSynth (g, pad), state.pan (g, pad), state.poly (g, pad));
         std::lock_guard<std::mutex> lk (recLock);
         recordStart (padRec[(size_t) pad], pad - 1, defaultNote (pad), velocity);
     }
@@ -1373,7 +1442,7 @@ void MainWindow::playNote (int note, int velocity, bool down)
         liveNotes.insert (note, live);                // le relachement coupera exactement cette note
         if (v > 0 && state.audible (state.group, snd) && state.hasInstrument[(size_t) state.index (state.group, snd)])
             engine->hit (snd, v, live.sent, state.group, state.held (state.group, snd), state.releaseMs[(size_t) state.index (state.group, snd)],
-                         0, state.effSynth (state.group, snd), state.pan (state.group, snd));
+                         0, state.effSynth (state.group, snd), state.pan (state.group, snd), state.poly (state.group, snd));
         if (keyboardView)
             keyboardView->setActive (note, true);
         std::lock_guard<std::mutex> lk (recLock);
@@ -1420,6 +1489,8 @@ void MainWindow::recordEnd (RecNote& slot)
 void MainWindow::selectGroup (int group)
 {
     state.group = qBound (0, group, kGroups - 1);
+    if (patternBar)
+        patternBar->refresh();
     QSettings().setValue ("group", state.group.load());
     refreshGroups();
     refreshAll();
@@ -1442,6 +1513,8 @@ void MainWindow::setOctave (int octave)
 
 void MainWindow::refreshAll()
 {
+    if (patternBar)
+        patternBar->refresh();                       // patterns / scenes du groupe
     refreshSoundPanel();
     if (rollTitle)                                   // Piano Roll : le son choisi
         rollTitle->setText (tr ("SOUND %1 — %2").arg (state.sound.load(), 2, 10, QChar ('0')).arg (padName (state.group, state.sound)));
@@ -1578,6 +1651,21 @@ void MainWindow::onMaschineButton (const QString& name, bool down)
         refreshMaschine();
         return;
     }
+    if (name == "pattern" || name == "scene")        // tenus + pad : choisir un pattern / une scene
+    {
+        std::atomic<bool>& held = name == "pattern" ? patternHeld : sceneHeld;
+        held = down;
+        if (down)
+        {
+            holdUsed = false;
+            toast (name == "pattern" ? QString ("PATTERN + pad (bank %1)").arg (patternBar->patternBank + 1)
+                                     : QString ("SCENE + pad (bank %1)").arg (patternBar->sceneBank + 1));
+        }
+        else if (! holdUsed && name == "pattern")    // PATTERN seul : vue Pattern (comme avant)
+            toggleView (1, "PATTERN");
+        refreshMaschine();                           // lumieres PATTERN / SCENE
+        return;
+    }
     if (name == "duplicate")                         // DUPLICATE tenu + source + cible (pad ou groupe)
     {
         duplicateHeld = down;
@@ -1645,8 +1733,6 @@ void MainWindow::onMaschineButton (const QString& name, bool down)
     else if (name == "nav_up" || name == "nav_down")
         setOctave (state.octave + (name == "nav_up" ? 1 : -1));
     // Vues de l'app (comme PATTERN / EVENTS / MIXER du prototype)
-    else if (name == "pattern")                      // 2e appui : retour a la vue d'avant
-        toggleView (1, "PATTERN");
     else if (name == "events")
         toggleView (2, "PIANO ROLL");
     else if (name == "keyboard")                     // pads : le son choisi sur 16 notes (bascule)
@@ -1675,7 +1761,15 @@ void MainWindow::onMaschineButton (const QString& name, bool down)
     else if (name == "variation")                    // nouveau tirage ; Shift = la fenetre Generate
         shift ? openGenerate() : quickVariation();
     else if (name == "sampling")                     // mode du son ; Shift = Edit Loop
-        shift ? editLoop (state.sound) : cyclePlayMode();
+    {
+        if (openLoopDialog)                          // fenetre Edit Loop ouverte : SAMPLING la ferme (reglages gardes)
+        {
+            openLoopDialog->accept();
+            toast ("EDIT LOOP closed");
+        }
+        else
+            shift ? editLoop (state.sound) : cyclePlayMode();
+    }
     else if (name == "nav_left" || name == "nav_right")   // case du pattern : ligne (Shift = piste)
     {
         const int step = name == "nav_right" ? 1 : -1;
@@ -1996,13 +2090,9 @@ void MainWindow::newProject()
         return;
     transport->stop();
     project.reset();
+    sequencer.reset();                               // patterns, scenes : tout repart de zero
     for (int g = 0; g < kGroups; ++g)
-    {
-        sequencer.clear (g);
-        sequencer.setPatternLength (g, 16);
-        sequencer.setGroupOff (g, false);
         state.groupVolume[(size_t) g] = 100;
-    }
     state.resetSounds();
     syncSamples();
     state.masterVolume = 100;
@@ -2195,12 +2285,15 @@ void MainWindow::buildViewMenu (QMenu* menu)
     }
     menu->addAction (transportBar->toggleViewAction());
     menu->addSeparator();
+    menu->addAction (patternsToolBar->toggleViewAction());   // barre Patterns / Scenes
     menu->addAction (tr ("Display Diagnostics (F12)"), this, [this] { showDisplayDiagnostics(); });
     menu->addSeparator();
     auto* mixerAction = menu->addAction (tr ("Mixer"), this, [this] { showLeftTab (0); });
     mixerAction->setShortcut (QKeySequence ("Ctrl+M"));
     auto* patternAction = menu->addAction (tr ("Pattern"), this, [this] { showLeftTab (1); });
     patternAction->setShortcut (QKeySequence ("Ctrl+P"));
+    auto* scenesAction = menu->addAction (tr ("Scenes"), this, [this] { showLeftTab (6); });
+    scenesAction->setShortcut (QKeySequence ("Ctrl+Shift+S"));
     auto* trackerAction = menu->addAction (tr ("Tracker"), this, [this] { showLeftTab (5); });
     trackerAction->setShortcut (QKeySequence ("Ctrl+T"));
     auto* rollAction = menu->addAction (tr ("Piano Roll"), this, [this] { showLeftTab (2); });
@@ -2298,6 +2391,7 @@ void MainWindow::remember (int group)
     std::lock_guard<std::mutex> lk (undoLock);
     UndoStep step;
     step.group = group;
+    step.patternIndex = sequencer.currentPattern (group);
     step.pattern = sequencer.pattern (group);
     undoStack.push_back (std::move (step));
     if (undoStack.size() > 100)                       // 100 pas en arriere (patterns de 256 lignes)
@@ -2311,9 +2405,9 @@ MainWindow::UndoStep MainWindow::capture (const UndoStep& like) const
     now.label = like.label;
     now.group = like.group;
     if (like.group >= 0)
-        now.pattern = sequencer.pattern (like.group);
+        now.pattern = sequencer.patternAt (like.group, like.patternIndex);
     for (const auto& gs : like.groups)
-        now.groups.push_back ({ gs.group, sequencer.pattern (gs.group), state.groupVolume[(size_t) gs.group].load() });
+        now.groups.push_back ({ gs.group, sequencer.groupPatterns (gs.group), state.groupVolume[(size_t) gs.group].load() });
     for (const auto& entry : like.sounds)
         now.sounds.push_back ({ entry.first, takeSound (entry.first / 16, entry.first % 16 + 1) });
     return now;
@@ -2328,7 +2422,7 @@ void MainWindow::rememberSounds (const std::vector<std::pair<int, int>>& pads, c
         step.sounds.push_back ({ state.index (g, p), takeSound (g, p) });
     for (int g : groups)
     {
-        step.groups.push_back ({ g, sequencer.pattern (g), state.groupVolume[(size_t) g].load() });
+        step.groups.push_back ({ g, sequencer.groupPatterns (g), state.groupVolume[(size_t) g].load() });
         for (int p = 1; p <= 16; ++p)
             step.sounds.push_back ({ state.index (g, p), takeSound (g, p) });
     }
@@ -2363,10 +2457,15 @@ void MainWindow::undo (bool redoIt)
         to.push_back (capture (step));
     }
     if (step.group >= 0)
-        sequencer.setPattern (step.group, step.pattern);
+    {
+        // Le pattern ou la modification a eu lieu (il peut ne plus etre celui qui joue)
+        sequencer.setPatternAt (step.group, step.patternIndex, step.pattern);
+        if (sequencer.currentPattern (step.group) != step.patternIndex && ! transport->playing())
+            sequencer.selectPattern (step.group, step.patternIndex, false);
+    }
     for (const auto& gs : step.groups)
     {
-        sequencer.setPattern (gs.group, gs.pattern);
+        sequencer.setGroupPatterns (gs.group, gs.patterns);
         state.groupVolume[(size_t) gs.group] = gs.volume;
     }
     for (const auto& [i, s] : step.sounds)
@@ -2381,6 +2480,7 @@ void MainWindow::undo (bool redoIt)
     if (shown != state.group)                         // on montre le groupe concerne
         selectGroup (shown);
     showPatternState();
+    patternBar->refresh();
     statusBar()->showMessage (QString ("%1 (%2)").arg (redoIt ? tr ("Redo") : tr ("Undo"),
                                                        step.label.isEmpty() ? groupName (shown) : step.label), 1500);
 }
@@ -2672,7 +2772,9 @@ void MainWindow::loadSampleDialog (int pad)
 void MainWindow::editLoop (int pad)
 {
     LoopDialog dialog (*engine, state, state.group, pad, padName (state.group, pad), groupColor (state.group), this);
+    openLoopDialog = &dialog;                        // SAMPLING (Maschine) la ferme
     dialog.exec();
+    openLoopDialog = nullptr;
     // Ce que la fenetre a envoye au moteur est maintenant la reference
     const size_t i = (size_t) session::State::index (state.group, pad);
     sentLoops[i] = QString ("%1;%2;%3").arg (state.playMode[i] == session::State::Loop)
@@ -2921,6 +3023,11 @@ QWidget* MainWindow::buildPianoRoll()
         QTimer::singleShot (150, this, [this, note] { playNote (note, 0, false); });
     });
     connect (stepView, &StepView::cellMenu, this, &MainWindow::patternMenu);
+    connect (stepView, &StepView::cellsMoved, this, [this] (const QList<QPoint>& cells, int dr, int dt, bool copy)
+    {
+        moveCells (cells, dr, dt, copy);             // comme dans la vue Pattern (annulable)
+        stepView->update();
+    });
     connect (stepView, &StepView::cellDoubleClicked, this, &MainWindow::noteOptions);
     connect (stepView, &StepView::valueWheel, this, [this] (int row, int steps)
     {
@@ -3625,6 +3732,19 @@ QWidget* MainWindow::buildSoundTab()
     play->addSpacing (10);
     play->addWidget (label (tr ("Release")));
     play->addWidget (soundUi.release);
+    play->addSpacing (10);
+    // Polyphonie (comme Polyphony de Maschine) : le meme son joue plusieurs fois en meme temps
+    polyBox = new QSpinBox;
+    polyBox->setRange (1, 16);
+    polyBox->setFocusPolicy (Qt::ClickFocus);
+    polyBox->setToolTip (tr ("Polyphony: notes of this sound at the same time (1 = mono: a new note stops the previous one)"));
+    connect (polyBox, &QSpinBox::valueChanged, this, [this] (int v)
+    {
+        state.soundPoly[(size_t) state.index (state.group, state.sound)] = v;
+    });
+    connect (polyBox, &QSpinBox::editingFinished, polyBox, [this] { polyBox->clearFocus(); });
+    play->addWidget (label (tr ("Polyphony")));
+    play->addWidget (polyBox);
     play->addStretch();
     form->addWidget (label (tr ("Play")), row, 0);
     form->addLayout (play, row++, 1, 1, 2);
@@ -3699,6 +3819,8 @@ void MainWindow::refreshSoundPanel()
     {
         const QSignalBlocker b (reverseBox);
         reverseBox->setChecked (state.soundReverse[i]);
+        const QSignalBlocker bp (polyBox);
+        polyBox->setValue (state.poly (state.group, state.sound));
         reverseBox->setEnabled (! path.isEmpty());   // a l'envers : samples seulement
     }
     {
@@ -4030,6 +4152,7 @@ MainWindow::SoundCopy MainWindow::takeSound (int g, int p) const
     s.loopStart = state.loopStart[i];
     s.loopEnd = state.loopEnd[i];
     s.reverse = state.soundReverse[i];
+    s.poly = state.poly (g, p);
     return s;
 }
 
@@ -4049,6 +4172,7 @@ void MainWindow::putSound (int g, int p, const SoundCopy& s)
     state.loopStart[i] = s.loopStart;
     state.loopEnd[i] = s.loopEnd;
     state.soundReverse[i] = s.reverse;
+    state.soundPoly[i] = s.poly;
 }
 
 void MainWindow::emptySound (int g, int p)
@@ -4089,7 +4213,7 @@ void MainWindow::transferSound (int fg, int fp, int tg, int tp, Transfer how)
 
 void MainWindow::transferGroup (int from, int to, Transfer how)
 {
-    // Tout le groupe : ses 16 sons, son pattern, son volume (mute / solo non)
+    // Tout le groupe : ses 16 sons, tous ses patterns, son volume (mute / solo non)
     if (from == to || from < 0 || to < 0)
         return;
     std::array<SoundCopy, 16> a, b;
@@ -4098,21 +4222,22 @@ void MainWindow::transferGroup (int from, int to, Transfer how)
         a[(size_t) p - 1] = takeSound (from, p);
         b[(size_t) p - 1] = takeSound (to, p);
     }
-    const seq::Pattern pa = sequencer.pattern (from), pb = sequencer.pattern (to);
+    const seq::GroupPatterns pa = sequencer.groupPatterns (from), pb = sequencer.groupPatterns (to);   // tous les patterns
     const int va = state.groupVolume[(size_t) from], vb = state.groupVolume[(size_t) to];
     rememberSounds ({}, how == Transfer::Copy ? std::vector<int> { to } : std::vector<int> { from, to },
                     how == Transfer::Copy ? "Copy group" : how == Transfer::Move ? "Move group" : "Swap groups");
     for (int p = 1; p <= 16; ++p)
         putSound (to, p, a[(size_t) p - 1]);
-    sequencer.setPattern (to, pa);
+    sequencer.setGroupPatterns (to, pa);
     state.groupVolume[(size_t) to] = va;
     if (how != Transfer::Copy)
     {
-        seq::Pattern blank;
-        blank.length = pa.length;
         for (int p = 1; p <= 16; ++p)
             how == Transfer::Swap ? putSound (from, p, b[(size_t) p - 1]) : emptySound (from, p);
-        sequencer.setPattern (from, how == Transfer::Swap ? pb : blank);
+        if (how == Transfer::Swap)
+            sequencer.setGroupPatterns (from, pb);
+        else
+            sequencer.clearGroupPatterns (from, sequencer.patternLength (from));
         state.groupVolume[(size_t) from] = how == Transfer::Swap ? vb : 100;
     }
     syncSamples();
@@ -4125,7 +4250,7 @@ void MainWindow::transferGroup (int from, int to, Transfer how)
 bool MainWindow::confirmGroup (int from, int to, Transfer how)
 {
     QMessageBox box (QMessageBox::Question, tr ("Group %1 > %2").arg (groupName (from)).arg (groupName (to)),
-                     tr ("%1 group %2 to group %3?\nIts 16 sounds, its pattern and its volume replace those of group %3.%4")
+                     tr ("%1 group %2 to group %3?\nIts 16 sounds, all its patterns and its volume replace those of group %3.%4")
                          .arg (how == Transfer::Move ? tr ("Move") : tr ("Copy"))
                          .arg (groupName (from)).arg (groupName (to))
                          .arg (how == Transfer::Move ? tr ("\nGroup %1 becomes empty.").arg (groupName (from)) : QString()),
@@ -4388,7 +4513,7 @@ void MainWindow::pasteGroups (int target)
         return;
     }
     const int first = groupClips.front();
-    struct Save { int from, to; std::array<SoundCopy, 16> sounds; seq::Pattern pattern; int volume; };
+    struct Save { int from, to; std::array<SoundCopy, 16> sounds; seq::GroupPatterns patterns; int volume; };
     std::vector<Save> saves;
     QStringList what;
     for (int from : groupClips)
@@ -4396,7 +4521,7 @@ void MainWindow::pasteGroups (int target)
         const int to = target + from - first;
         if (to < 0 || to >= kGroups || (to == from && ! groupClipCut))
             continue;
-        Save s { from, to, {}, sequencer.pattern (from), state.groupVolume[(size_t) from].load() };
+        Save s { from, to, {}, sequencer.groupPatterns (from), state.groupVolume[(size_t) from].load() };
         for (int p = 1; p <= 16; ++p)
             s.sounds[(size_t) p - 1] = takeSound (from, p);
         saves.push_back (s);
@@ -4405,7 +4530,7 @@ void MainWindow::pasteGroups (int target)
     if (saves.empty())
         return;
     QMessageBox box (QMessageBox::Question, tr ("Paste Group"),
-                     tr ("%1: %2?\nThe 16 sounds, the pattern and the volume replace those of the target group(s).%3")
+                     tr ("%1: %2?\nThe 16 sounds, all the patterns and the volume replace those of the target group(s).%3")
                          .arg (groupClipCut ? tr ("Move") : tr ("Copy")).arg (what.join (", "))
                          .arg (groupClipCut ? tr ("\nThe moved groups become empty.") : QString()),
                      QMessageBox::Yes | QMessageBox::Cancel, this);
@@ -4427,16 +4552,14 @@ void MainWindow::pasteGroups (int target)
         {
             for (int p = 1; p <= 16; ++p)
                 emptySound (s.from, p);
-            seq::Pattern blank;
-            blank.length = s.pattern.length;
-            sequencer.setPattern (s.from, blank);
+            sequencer.clearGroupPatterns (s.from, sequencer.patternLength (s.from));
             state.groupVolume[(size_t) s.from] = 100;
         }
     for (const auto& s : saves)
     {
         for (int p = 1; p <= 16; ++p)
             putSound (s.to, p, s.sounds[(size_t) p - 1]);
-        sequencer.setPattern (s.to, s.pattern);
+        sequencer.setGroupPatterns (s.to, s.patterns);
         state.groupVolume[(size_t) s.to] = s.volume;
     }
     if (groupClipCut)
@@ -4597,7 +4720,7 @@ QWidget* MainWindow::buildTracker()
     auto* timer = new QTimer (tracker);
     connect (timer, &QTimer::timeout, this, [this]
     {
-        for (QWidget* v : { (QWidget*) rollTracker, (QWidget*) stepView })   // affichages du Piano Roll
+        for (QWidget* v : { (QWidget*) rollTracker, (QWidget*) stepView, (QWidget*) sceneView })   // Piano Roll, Scenes
             if (v && ! v->visibleRegion().isEmpty())
                 v->update();
         if (rollLength && ! rollLength->hasFocus() && rollLength->value() != sequencer.patternLength (state.group))
@@ -4817,4 +4940,247 @@ bool MainWindow::trackerKey (QKeyEvent* e)
     piano->setHeld (note, true);
     advance();
     return true;
+}
+
+// ------------------------------------------------------------ vue SCENES
+
+void MainWindow::patternsChanged()
+{
+    // Un pattern ou une scene a change : toutes les vues suivent
+    showPatternState();                              // longueur, selection
+    refreshAll();
+    patternView->update();
+    pianoRoll->update();
+    tracker->update();
+    if (sceneView)
+        sceneView->update();
+}
+
+QWidget* MainWindow::buildScenes()
+{
+    auto* panel = new QFrame;
+    panel->setObjectName ("panel");
+    auto* col = new QVBoxLayout (panel);
+    auto* head = new QHBoxLayout;
+    auto* title = new QLabel (tr ("SCENES"));
+    title->setObjectName ("section");
+    head->addWidget (title);
+    auto* store = new QPushButton (tr ("Store playing as new scene"));
+    store->setFocusPolicy (Qt::NoFocus);
+    store->setToolTip (tr ("The patterns playing now go into the next empty scene"));
+    connect (store, &QPushButton::clicked, this, [this]
+    {
+        for (int i = 0; i < seq::kPatternSlots; ++i)
+            if (! sequencer.scene (i).used)
+            {
+                patternBar->storeScene (i);          // la prochaine scene vide : ce qui joue
+                return;
+            }
+        toast ("No empty scene");
+    });
+    head->addWidget (store);
+    auto* rotate = new QPushButton (tr ("Rotate"));
+    rotate->setCheckable (true);
+    rotate->setFocusPolicy (Qt::NoFocus);
+    rotate->setObjectName ("keys");
+    rotate->setToolTip (tr ("Scenes in columns, groups in rows (or back)"));
+    head->addWidget (rotate);
+    auto* hint = new QLabel (tr ("scene: click = launch, double-click = rename, right-click = more · cell: click = on / off, "
+                                 "right-click = choose pattern / free / rename · NOW PLAYING: same · wheel = more scenes"));
+    hint->setObjectName ("hint");
+    hint->setSizePolicy (QSizePolicy::Ignored, QSizePolicy::Preferred);
+    hint->setMinimumWidth (0);
+    hint->setAlignment (Qt::AlignRight | Qt::AlignVCenter);
+    head->addWidget (hint, 1);
+    col->addLayout (head);
+    sceneView = new SceneView (sequencer, state);
+    sceneView->isPlaying = [this] { return transport && transport->playing(); };
+    rotate->setChecked (QSettings().value ("scenes/rotated", false).toBool());
+    sceneView->setRotated (rotate->isChecked());
+    connect (rotate, &QPushButton::toggled, this, [this] (bool on)
+    {
+        sceneView->setRotated (on);
+        QSettings().setValue ("scenes/rotated", on);
+    });
+    col->addWidget (sceneView, 1);
+    connect (sceneView, &SceneView::sceneClicked, this, [this] (int i) { patternBar->chooseScene (i); });
+    connect (sceneView, &SceneView::sceneMenu, this, [this] (int i, const QPoint& at) { patternBar->sceneMenu (i, at); });
+    connect (sceneView, &SceneView::changed, this, [this] { patternBar->refresh (true); patternsChanged(); });
+    connect (sceneView, &SceneView::groupChosen, this, [this] (int g) { if (g != state.group) selectGroup (g); });
+    connect (sceneView, &SceneView::renameScene, this, [this] (int i) { patternBar->renameScene (i); });
+    connect (sceneView, &SceneView::renamePattern, this, [this] (int g, int i) { patternBar->renamePattern (g, i); });
+    return panel;
+}
+
+// ------------------------------------------------------------ groupe entier : exporter / importer
+
+void MainWindow::exportGroup()
+{
+    // Fichier .fzgroup (JSON) : les 16 sons (samples, synthes, reglages), tous les patterns, le volume
+    const int g = state.group;
+    QSettings settings;
+    const QString start = settings.value ("groupDir", Project::defaultDir()).toString() + "/Group_" + groupName (g) + "_.fzgroup";
+    QString path = QFileDialog::getSaveFileName (this, tr ("Export Group %1").arg (groupName (g)), start, tr ("Fuzzy group (*.fzgroup)"));
+    if (path.isEmpty())
+        return;
+    if (! path.endsWith (".fzgroup"))
+        path += ".fzgroup";
+    settings.setValue ("groupDir", QFileInfo (path).absolutePath());
+    bool hasSamples = false;
+    for (int p = 1; p <= 16; ++p)
+        hasSamples |= ! state.samples[(size_t) state.index (g, p)].isEmpty();
+    // Samples copies a cote du fichier (dossier « NOM samples ») : le groupe voyage complet
+    const bool copy = hasSamples && QMessageBox::question (this, tr ("Export Group"),
+        tr ("Copy the samples next to the file (folder \"%1 samples\")?\nThen the group can go to another computer.")
+            .arg (QFileInfo (path).completeBaseName())) == QMessageBox::Yes;
+    exportGroupTo (path, copy);
+}
+
+bool MainWindow::exportGroupTo (const QString& path, bool copy)
+{
+    const int g = state.group;
+    const QString sampleDir = QFileInfo (path).completeBaseName() + " samples";
+    QJsonObject sounds;
+    int failed = 0;
+    for (int p = 1; p <= 16; ++p)
+    {
+        const SoundCopy s = takeSound (g, p);
+        QJsonObject sd { { "mode", s.mode }, { "release", s.release }, { "synth", s.synth }, { "volume", s.volume },
+                         { "pan", s.pan }, { "pitch", s.pitch }, { "cutoff", s.cutoff }, { "reverse", s.reverse }, { "polyphony", s.poly },
+                         { "loop", QJsonObject { { "start", s.loopStart }, { "end", s.loopEnd } } },
+                         { "name", padName (g, p) } };
+        if (! s.sample.isEmpty())
+        {
+            QString where = s.sample;
+            if (copy)
+            {
+                const QString dir = QFileInfo (path).absolutePath() + "/" + sampleDir;
+                QDir().mkpath (dir);
+                const QString target = dir + "/" + QString ("%1-").arg (p, 2, 10, QChar ('0')) + QFileInfo (s.sample).fileName();
+                QFile::remove (target);
+                if (QFile::copy (s.sample, target))
+                    where = sampleDir + "/" + QFileInfo (target).fileName();   // chemin relatif au fichier
+                else
+                    ++failed;
+            }
+            sd["sample"] = where;
+        }
+        sounds[QString::number (p)] = sd;
+    }
+    QJsonArray patterns;
+    for (int idx = 0; idx < seq::kPatternSlots; ++idx)
+    {
+        if (! sequencer.hasPattern (g, idx))
+            continue;
+        const seq::Pattern pat = sequencer.patternAt (g, idx);
+        QJsonArray cells;
+        for (int r = 0; r < seq::kMaxRows; ++r)
+            for (int t = 0; t < seq::kTracks; ++t)
+                if (! pat.rows[(size_t) r][(size_t) t].empty())
+                    cells.append (Project::cellToJson (r, t, pat.rows[(size_t) r][(size_t) t]));
+        patterns.append (QJsonObject { { "index", idx }, { "name", QString::fromStdString (sequencer.patternName (g, idx)) },
+                                       { "length", pat.length }, { "cells", cells } });
+    }
+    const QJsonObject doc { { "format", "fuzzy-group" }, { "version", 1 }, { "group", groupName (g) },
+                            { "volume", state.groupVolume[(size_t) g].load() }, { "current", sequencer.currentPattern (g) },
+                            { "sounds", sounds }, { "patterns", patterns } };
+    QSaveFile out (path);
+    if (! out.open (QIODevice::WriteOnly) || out.write (QJsonDocument (doc).toJson (QJsonDocument::Indented)) < 0 || ! out.commit())
+    {
+        QMessageBox::warning (this, tr ("Export Group"), tr ("Cannot write %1").arg (path));
+        return false;
+    }
+    if (failed)
+        QMessageBox::warning (this, tr ("Export Group"), tr ("%1 sample(s) could not be copied (missing file?).").arg (failed));
+    toast (QString ("GROUP %1 exported").arg (groupName (g)));
+    return true;
+}
+
+void MainWindow::importGroup()
+{
+    // Remplace le groupe choisi par celui du fichier (sons, patterns, volume) ; Cmd+Z annule les sons
+    const int g = state.group;
+    QSettings settings;
+    const QString path = QFileDialog::getOpenFileName (this, tr ("Import Group into %1").arg (groupName (g)),
+                                                       settings.value ("groupDir", Project::defaultDir()).toString(),
+                                                       tr ("Fuzzy group (*.fzgroup)"));
+    if (path.isEmpty())
+        return;
+    settings.setValue ("groupDir", QFileInfo (path).absolutePath());
+    QFile f (path);
+    const QJsonObject doc = f.open (QIODevice::ReadOnly) ? QJsonDocument::fromJson (f.readAll()).object() : QJsonObject();
+    if (doc["format"].toString() != "fuzzy-group")
+    {
+        QMessageBox::warning (this, tr ("Import Group"), tr ("%1 is not a Fuzzy group file.").arg (QFileInfo (path).fileName()));
+        return;
+    }
+    if (QMessageBox::question (this, tr ("Import Group"),
+            tr ("Replace group %1 with \"%2\"?\nIts 16 sounds, all its patterns and its volume are replaced.")
+                .arg (groupName (g), QFileInfo (path).completeBaseName())) != QMessageBox::Yes)
+        return;
+    importGroupFrom (path, doc);
+}
+
+void MainWindow::importGroupFrom (const QString& path, const QJsonObject& doc)
+{
+    const int g = state.group;
+    rememberSounds ({}, { g }, "Import group");
+    const QDir base = QFileInfo (path).absoluteDir();
+    const QJsonObject sounds = doc["sounds"].toObject();
+    int missing = 0;
+    for (int p = 1; p <= 16; ++p)
+    {
+        const QJsonObject sd = sounds[QString::number (p)].toObject();
+        SoundCopy s;
+        s.valid = true;
+        s.mode = std::clamp (sd["mode"].toInt (session::State::defaultMode (p)), 0, 2);
+        s.release = std::clamp (sd["release"].toInt (150), 5, 5000);
+        s.synth = std::clamp (sd["synth"].toInt (-1), -1, 5);
+        s.volume = std::clamp (sd["volume"].toInt (100), 0, 127);
+        s.pan = std::clamp (sd["pan"].toInt (64), 0, 127);
+        s.pitch = std::clamp (sd["pitch"].toInt (64), 0, 127);
+        s.cutoff = std::clamp (sd["cutoff"].toInt (90), 0, 127);
+        s.reverse = sd["reverse"].toBool();
+        s.poly = std::clamp (sd["polyphony"].toInt (4), 1, 16);
+        s.loopStart = (float) std::clamp (sd["loop"].toObject()["start"].toDouble (0), 0.0, 1.0);
+        s.loopEnd = (float) std::clamp (sd["loop"].toObject()["end"].toDouble (1), 0.0, 1.0);
+        QString sample = sd["sample"].toString();
+        if (! sample.isEmpty() && QFileInfo (sample).isRelative())
+            sample = base.filePath (sample);          // samples copies a cote du fichier
+        if (! sample.isEmpty() && ! QFileInfo::exists (sample))
+            ++missing;
+        s.sample = sample;
+        putSound (g, p, s);
+    }
+    // Patterns : ceux du fichier remplacent tous ceux du groupe
+    seq::GroupPatterns gp;
+    gp.current = std::clamp (doc["current"].toInt (0), 0, seq::kPatternSlots - 1);
+    gp.off = sequencer.groupOff (g);
+    for (const auto& pv : doc["patterns"].toArray())
+    {
+        const QJsonObject pd = pv.toObject();
+        const int idx = pd["index"].toInt (-1);
+        if (idx < 0 || idx >= seq::kPatternSlots)
+            continue;
+        seq::Pattern pat;
+        pat.length = std::clamp (pd["length"].toInt (16), 1, seq::kMaxRows);
+        for (const auto& cv : pd["cells"].toArray())
+        {
+            int row = 0, track = 0;
+            seq::Cell c;
+            if (Project::cellFromJson (cv.toArray(), row, track, c))
+                pat.rows[(size_t) row][(size_t) track] = c;
+        }
+        gp.patterns.push_back ({ idx, pat });
+        if (! pd["name"].toString().isEmpty())
+            gp.names.push_back ({ idx, pd["name"].toString().toStdString() });
+    }
+    sequencer.setGroupPatterns (g, gp);
+    state.groupVolume[(size_t) g] = std::clamp (doc["volume"].toInt (100), 0, 127);
+    syncSamples();
+    patternsChanged();
+    refreshMuteSolo();
+    if (missing)
+        QMessageBox::warning (this, tr ("Import Group"), tr ("%1 sample(s) not found: those pads stay without sample.").arg (missing));
+    toast (QString ("GROUP %1 imported").arg (groupName (g)));
 }

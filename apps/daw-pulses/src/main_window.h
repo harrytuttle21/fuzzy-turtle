@@ -10,6 +10,7 @@
 #include "system_stats.h"
 
 #include <QHash>
+#include <QJsonObject>
 #include <QMainWindow>
 #include <QSet>
 #include <functional>
@@ -38,6 +39,7 @@ class QFrame;
 class QLabel;
 class QPushButton;
 class QMimeData;
+class QDialog;
 class QSlider;
 class QSpinBox;
 
@@ -154,6 +156,7 @@ private:
         int mode = 0, release = 150, synth = -1, volume = 100, pan = 64, pitch = 64, cutoff = 90;
         float loopStart = 0.0f, loopEnd = 1.0f;
         bool reverse = false;
+        int poly = 4;
     };
     SoundCopy takeSound (int group, int pad) const;
     void putSound (int group, int pad, const SoundCopy& s);
@@ -254,6 +257,20 @@ private:
     bool trackerShown() const;
     void placeTracker();                             // ajoute le Tracker aux dispositions d'avant
     class TrackerView* tracker = nullptr;
+    class PatternBar* patternBar = nullptr;          // barre PATTERNS / SCENES
+    class SceneView* sceneView = nullptr;            // onglet Scenes
+    QDockWidget* sceneDock = nullptr;
+    QWidget* buildScenes();
+    void patternsChanged();                          // pattern / scene change : les vues suivent
+    void exportGroup();                              // File > Export Group (.fzgroup)
+    void importGroup();                              // File > Import Group : remplace le groupe choisi
+    bool exportGroupTo (const QString& path, bool copySamples);
+    void importGroupFrom (const QString& path, const QJsonObject& doc);
+    QToolBar* patternsToolBar = nullptr;
+    std::atomic<bool> patternHeld { false }, sceneHeld { false };   // Maschine : PATTERN / SCENE tenus
+    bool holdUsed = false;                           // un pad a ete tape pendant l'appui
+    QDialog* openLoopDialog = nullptr;
+    QSpinBox* polyBox = nullptr;                     // onglet Sound : polyphonie               // fenetre Edit Loop ouverte (SAMPLING la ferme)
     class TrackerView* rollTracker = nullptr;        // Piano Roll, affichage Tracker (une piste)
     class StepView* stepView = nullptr;              // Piano Roll, affichage Steps
     class QStackedWidget* rollStack = nullptr;       // Roll / Steps / Tracker
@@ -298,10 +315,11 @@ private:
 
     // Annuler / refaire : le pattern d'un groupe tel qu'il etait avant chaque modification
     // Un pas d'annulation : un pattern, et / ou des sons (copier, deplacer, charger...) et des groupes
-    struct GroupSave { int group; seq::Pattern pattern; int volume; };
+    struct GroupSave { int group; seq::GroupPatterns patterns; int volume; };   // tous ses patterns
     struct UndoStep
     {
         int group = -1;                              // pattern d'un groupe (-1 = aucun)
+        int patternIndex = 0;                        // lequel de ses patterns
         seq::Pattern pattern;
         std::vector<std::pair<int, SoundCopy>> sounds;   // index groupe * 16 + pad - 1
         std::vector<GroupSave> groups;               // groupes entiers (pattern + volume)

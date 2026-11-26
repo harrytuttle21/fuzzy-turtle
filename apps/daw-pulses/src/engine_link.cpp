@@ -125,10 +125,10 @@ void EngineLink::send (const QByteArray& packet) const
 }
 
 void EngineLink::hit (int sound, int velocity, int note, int group, bool adsr, int releaseMs,
-                      int gateMs, int synth, int pan) const
+                      int gateMs, int synth, int pan, int poly) const
 {
     send (fuzzy::osc::message ("/fuzzy/proto/hit",
-                               { sound, velocity, note, group, adsr ? 1 : 0, releaseMs, gateMs, synth, pan }));
+                               { sound, velocity, note, group, adsr ? 1 : 0, releaseMs, gateMs, synth, pan, poly }));
 }
 
 void EngineLink::noteOff (int sound, int note, int group) const

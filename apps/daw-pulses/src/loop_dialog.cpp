@@ -168,7 +168,7 @@ LoopDialog::LoopDialog (EngineLink& e, session::State& s, int g, int snd, const 
     {
         previewNote = state.pitched (group, sound, session::defaultNote (sound));
         engine.hit (sound, 110, previewNote, group, state.held (group, sound), state.releaseMs[slot],
-                    0, state.effSynth (group, sound), state.pan (group, sound));
+                    0, state.effSynth (group, sound), state.pan (group, sound), state.poly (group, sound));
     });
     connect (preview, &QPushButton::released, this, [this]
     {

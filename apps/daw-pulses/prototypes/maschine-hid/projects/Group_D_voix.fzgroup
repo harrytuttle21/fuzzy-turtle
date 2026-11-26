@@ -1,0 +1,270 @@
+{
+    "current": 0,
+    "format": "fuzzy-group",
+    "group": "D",
+    "patterns": [
+        {
+            "cells": [
+                [
+                    0,
+                    0,
+                    60,
+                    103,
+                    1,
+                    -2
+                ]
+            ],
+            "index": 0,
+            "length": 64,
+            "name": ""
+        }
+    ],
+    "sounds": {
+        "1": {
+            "cutoff": 90,
+            "loop": {
+                "end": 1,
+                "start": 0
+            },
+            "mode": 0,
+            "name": "verby-indian-male-chant",
+            "pan": 64,
+            "pitch": 64,
+            "release": 150,
+            "reverse": false,
+            "sample": "/Volumes/Nvme4TO/Samples1/SAMPLESWAP-SELECTION/VOCALS/verby-indian-male-chant.wav",
+            "synth": 1,
+            "volume": 100
+        },
+        "10": {
+            "cutoff": 90,
+            "loop": {
+                "end": 1,
+                "start": 0
+            },
+            "mode": 0,
+            "name": "(empty)",
+            "pan": 64,
+            "pitch": 64,
+            "release": 150,
+            "reverse": false,
+            "synth": 0,
+            "volume": 100
+        },
+        "11": {
+            "cutoff": 90,
+            "loop": {
+                "end": 1,
+                "start": 0
+            },
+            "mode": 0,
+            "name": "(empty)",
+            "pan": 64,
+            "pitch": 64,
+            "release": 150,
+            "reverse": false,
+            "synth": 0,
+            "volume": 100
+        },
+        "12": {
+            "cutoff": 90,
+            "loop": {
+                "end": 1,
+                "start": 0
+            },
+            "mode": 0,
+            "name": "(empty)",
+            "pan": 64,
+            "pitch": 64,
+            "release": 150,
+            "reverse": false,
+            "synth": 0,
+            "volume": 100
+        },
+        "13": {
+            "cutoff": 90,
+            "loop": {
+                "end": 1,
+                "start": 0
+            },
+            "mode": 0,
+            "name": "(empty)",
+            "pan": 64,
+            "pitch": 64,
+            "release": 150,
+            "reverse": false,
+            "synth": 0,
+            "volume": 100
+        },
+        "14": {
+            "cutoff": 90,
+            "loop": {
+                "end": 1,
+                "start": 0
+            },
+            "mode": 0,
+            "name": "(empty)",
+            "pan": 64,
+            "pitch": 64,
+            "release": 150,
+            "reverse": false,
+            "synth": 0,
+            "volume": 100
+        },
+        "15": {
+            "cutoff": 90,
+            "loop": {
+                "end": 1,
+                "start": 0
+            },
+            "mode": 0,
+            "name": "(empty)",
+            "pan": 64,
+            "pitch": 64,
+            "release": 150,
+            "reverse": false,
+            "synth": 0,
+            "volume": 100
+        },
+        "16": {
+            "cutoff": 90,
+            "loop": {
+                "end": 1,
+                "start": 0
+            },
+            "mode": 0,
+            "name": "(empty)",
+            "pan": 64,
+            "pitch": 64,
+            "release": 150,
+            "reverse": false,
+            "synth": 0,
+            "volume": 100
+        },
+        "2": {
+            "cutoff": 90,
+            "loop": {
+                "end": 1,
+                "start": 0
+            },
+            "mode": 0,
+            "name": "chant-mantra-pitchcorrected-1",
+            "pan": 64,
+            "pitch": 64,
+            "release": 150,
+            "reverse": false,
+            "sample": "/Volumes/Nvme4TO/Samples1/SAMPLESWAP-SELECTION/VOCALS/chant-mantra-pitchcorrected-1.wav",
+            "synth": 2,
+            "volume": 100
+        },
+        "3": {
+            "cutoff": 90,
+            "loop": {
+                "end": 1,
+                "start": 0
+            },
+            "mode": 0,
+            "name": "big-layered-male-vocal-one-note",
+            "pan": 64,
+            "pitch": 64,
+            "release": 150,
+            "reverse": false,
+            "sample": "/Volumes/Nvme4TO/Samples1/SAMPLESWAP-SELECTION/VOCALS/big-layered-male-vocal-one-note.wav",
+            "synth": 3,
+            "volume": 100
+        },
+        "4": {
+            "cutoff": 90,
+            "loop": {
+                "end": 1,
+                "start": 0
+            },
+            "mode": 0,
+            "name": "bie-zelda-1988-singing-lofi",
+            "pan": 64,
+            "pitch": 64,
+            "release": 150,
+            "reverse": false,
+            "sample": "/Volumes/Nvme4TO/Samples1/SAMPLESWAP-SELECTION/VOCALS/bie-zelda-1988-singing-lofi.wav",
+            "synth": 4,
+            "volume": 100
+        },
+        "5": {
+            "cutoff": 90,
+            "loop": {
+                "end": 1,
+                "start": 0
+            },
+            "mode": 0,
+            "name": "(empty)",
+            "pan": 64,
+            "pitch": 64,
+            "release": 150,
+            "reverse": false,
+            "synth": 0,
+            "volume": 100
+        },
+        "6": {
+            "cutoff": 90,
+            "loop": {
+                "end": 1,
+                "start": 0
+            },
+            "mode": 0,
+            "name": "(empty)",
+            "pan": 64,
+            "pitch": 64,
+            "release": 150,
+            "reverse": false,
+            "synth": 0,
+            "volume": 100
+        },
+        "7": {
+            "cutoff": 90,
+            "loop": {
+                "end": 1,
+                "start": 0
+            },
+            "mode": 0,
+            "name": "(empty)",
+            "pan": 64,
+            "pitch": 64,
+            "release": 150,
+            "reverse": false,
+            "synth": 0,
+            "volume": 100
+        },
+        "8": {
+            "cutoff": 90,
+            "loop": {
+                "end": 1,
+                "start": 0
+            },
+            "mode": 0,
+            "name": "(empty)",
+            "pan": 64,
+            "pitch": 64,
+            "release": 150,
+            "reverse": false,
+            "synth": 0,
+            "volume": 100
+        },
+        "9": {
+            "cutoff": 90,
+            "loop": {
+                "end": 1,
+                "start": 0
+            },
+            "mode": 0,
+            "name": "(empty)",
+            "pan": 64,
+            "pitch": 64,
+            "release": 150,
+            "reverse": false,
+            "synth": 0,
+            "volume": 100
+        }
+    },
+    "version": 1,
+    "volume": 105
+}

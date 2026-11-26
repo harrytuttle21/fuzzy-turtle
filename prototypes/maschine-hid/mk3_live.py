@@ -196,11 +196,11 @@ class Sound:
         return b + b'\0' * (4 - len(b) % 4)
 
     def hit(self, sound: int, velocity: int, note: int, tag: int = -1, mode: int = 0,
-            release_ms: int = 150, gate_ms: int = 0, synth: int = 0, pan: int = 64) -> None:
+            release_ms: int = 150, gate_ms: int = 0, synth: int = 0, pan: int = 64, poly: int = 4) -> None:
         """Joue un son. tag = groupe (0-15) ; mode 0 ONE-SHOT, 1 ADSR (la note tient gate_ms,
-        ou jusqu'a /off si 0, puis relache en release_ms)."""
-        msg = (self._pad4(b'/fuzzy/proto/hit') + self._pad4(b',iiiiiiiii')
-               + struct.pack('>iiiiiiiii', sound, velocity, note, tag, mode, release_ms, gate_ms, synth, pan))
+        ou jusqu'a /off si 0, puis relache en release_ms) ; poly = polyphonie du son (1-16)."""
+        msg = (self._pad4(b'/fuzzy/proto/hit') + self._pad4(b',iiiiiiiiii')
+               + struct.pack('>iiiiiiiiii', sound, velocity, note, tag, mode, release_ms, gate_ms, synth, pan, poly))
         self._sendto(msg)
 
 
@@ -521,6 +521,7 @@ class State:
         self.sent_samples: dict = {}           # ce que le moteur a deja recu
         self.loops: dict = {}                  # (groupe, son) -> boucle {'on', 'start', 'end'} (reglee dans DAW Pulses)
         self.reverse: set = set()              # (groupe, son) joues a l'envers (regle dans DAW Pulses)
+        self.poly: dict = {}                   # (groupe, son) -> polyphonie 1-16 (reglee dans DAW Pulses ; 4 sinon)
         self.sent_reverse: dict = {}
         self.sent_loops: dict = {}             # boucles deja envoyees au moteur
         self.browse = None                     # PLUG-IN : liste ouverte ('kit' / 'synth' / None)
@@ -1822,7 +1823,8 @@ def play_note(st: State, group: str, snd: int, vel: int, note: int, gate: float 
         env = st.env[(group, snd)]
         SOUND.hit(snd, vel, note, GROUPS.index(group), ENV_MODES.index(env['mode']),
                   int(env['release']), int(gate * 1000), st.synth.get((group, snd), 0),
-                  max(0, min(127, st.params[(group, snd)][1] + st.group_pan[group] - 64)))   # Pan son + groupe
+                  max(0, min(127, st.params[(group, snd)][1] + st.group_pan[group] - 64)),   # Pan son + groupe
+                  st.poly.get((group, snd), 4))                                             # polyphonie (DAW Pulses)
 
 
 def release_notes(st: State, group: str, notes: list) -> None:
@@ -1998,8 +2000,13 @@ def draw_left(st: State) -> Image.Image:
                     outline=acc if pad == st.sound else (70, 70, 70), width=2)
         silent = not st.sound_audible(st.group, pad) or not st.instrument(st.group, pad)
         tag = ' M' if (st.group, pad) in st.sound_muted else ' S' if (st.group, pad) in st.sound_solo else ''
-        label = f'{pad:02d} {st.sound_name(pad)[:10 - len(tag)]}{tag}'
-        d.text((x + 55 - d.textlength(label, font=f) / 2, y + 7), label, font=f,   # centre dans la case
+        # Numero du pad petit en haut a gauche ; nom du sample centre, sur toute la case
+        d.text((x + 3, y + 1), f'{pad:02d}', font=font(9), fill=(60, 60, 60) if chosen else (120, 120, 130))
+        label = st.sound_name(pad)
+        while label and d.textlength(label + tag, font=f) > 88:
+            label = label[:-1]
+        label += tag
+        d.text((x + 58 - d.textlength(label, font=f) / 2, y + 8), label, font=f,
                fill='black' if chosen else (110, 110, 110) if silent else 'white')
     vals = st.params[(st.group, st.sound)]
     for i, name in enumerate(PARAMS):
@@ -3807,6 +3814,9 @@ def copy_sound(st: State, src: tuple, dst: tuple) -> None:
     st.reverse.discard(dst)
     if src in st.reverse:
         st.reverse.add(dst)
+    st.poly.pop(dst, None)
+    if src in st.poly:
+        st.poly[dst] = st.poly[src]
     eff = st.eff_synth(*src)                         # le synthe reel (celui du pad depend du pad)
     st.synth.pop(dst, None)
     if st.eff_synth(*dst) != eff:
@@ -3989,6 +3999,7 @@ def project_data(st: State) -> dict:
                                          **({'sample': st.samples[(g, s)]} if (g, s) in st.samples else {}),
                                          **({'loop': st.loops[(g, s)]} if (g, s) in st.loops else {}),
                                          **({'reverse': True} if (g, s) in st.reverse else {}),
+                                         **({'polyphony': st.poly[(g, s)]} if st.poly.get((g, s), 4) != 4 else {}),
                                          **({'synth': SYNTHS[st.synth[(g, s)] - 1] if st.synth[(g, s)] else 'None'}
                                             if (g, s) in st.synth else {})}
                                 for s in range(1, 17)}}
@@ -4098,6 +4109,7 @@ def load_project(st: State, name: str) -> None:
             st.synth.pop((g, snd), None)
             st.loops.pop((g, snd), None)
             st.reverse.discard((g, snd))
+            st.poly.pop((g, snd), None)
         if gd.get('key'):
             st.keys[g].update(gd['key'])
         for s, sd in gd.get('sounds', {}).items():
@@ -4110,6 +4122,8 @@ def load_project(st: State, name: str) -> None:
                 st.samples[(g, int(s))] = sd['sample']
             if sd.get('reverse'):                         # a l'envers (DAW Pulses)
                 st.reverse.add((g, int(s)))
+            if sd.get('polyphony'):                       # polyphonie (DAW Pulses)
+                st.poly[(g, int(s))] = max(1, min(16, int(sd['polyphony'])))
             if isinstance(sd.get('loop'), dict):         # boucle reglee dans DAW Pulses
                 st.loops[(g, int(s))] = {'on': bool(sd['loop'].get('on')),
                                          'start': float(sd['loop'].get('start', 0)),

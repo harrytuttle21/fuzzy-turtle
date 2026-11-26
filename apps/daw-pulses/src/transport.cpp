@@ -16,7 +16,11 @@ Transport::Transport (const EngineLink& e, seq::Sequencer& s, session::State& st
 
 Transport::~Transport()
 {
-    stop();
+    // Fermeture : seulement arreter l'horloge, sans prevenir personne (la fenetre et le
+    // sequenceur sont peut-etre deja detruits)
+    quit = true;
+    if (clock.joinable())
+        clock.join();
 }
 
 void Transport::setBpm (double bpm)
@@ -63,6 +67,7 @@ void Transport::stop()
     pause();
     rowIndex = 0;
     currentRow = 0;
+    sequencer.resetPlayback();                       // patterns en attente : maintenant ; tout repart du debut
     QMetaObject::invokeMethod (this, [this] { emit row (0); }, Qt::QueuedConnection);
 }
 
@@ -86,7 +91,7 @@ void Transport::run()
         {
             engine.hit (sound, v, state.pitched (h.group, sound, h.note), h.group, state.held (h.group, sound),
                         state.releaseMs[(size_t) state.index (h.group, sound)], std::max (10, h.gateMs),
-                        state.effSynth (h.group, sound), state.pan (h.group, sound));
+                        state.effSynth (h.group, sound), state.pan (h.group, sound), state.poly (h.group, sound));
             emit played (h.group, sound, h.note, h.gateMs);
         }
     };
