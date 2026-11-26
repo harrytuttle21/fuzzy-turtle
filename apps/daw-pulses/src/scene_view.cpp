@@ -10,7 +10,6 @@
 using namespace session;
 
 namespace {
-QString groupKey (int g) { return g < 8 ? QString (QChar ('A' + g)) : QString (QChar ('A' + g - 8)) + "2"; }
 constexpr int kNothing = -9;
 }
 
@@ -23,7 +22,7 @@ SceneView::SceneView (seq::Sequencer& seqr, const session::State& st, QWidget* p
 QString SceneView::patternText (int g, int index) const
 {
     if (index == seq::kOff)
-        return "off";
+        return {};                                   // eteint : case vide (moins charge)
     if (index == seq::kFree)
         return QString::fromUtf8 ("·");
     const QString name = QString::fromStdString (sequencer.patternName (g, index));
@@ -102,7 +101,7 @@ void SceneView::paintEvent (QPaintEvent*)
         p.setBrush (g == state.group ? c : c.darker (260));
         p.drawRoundedRect (r, 4, 4);
         p.setPen (g == state.group ? QColor (15, 15, 18) : c.lighter (130));
-        p.drawText (r, Qt::AlignCenter, groupKey (g));
+        p.drawText (r, Qt::AlignCenter, p.fontMetrics().elidedText (session::groupTitle (state, g), Qt::ElideRight, (int) r.width() - 4));
     }
     // Ce qui joue (cadre orange : en attente de la fin du pattern)
     for (int g = 0; g < kGroups; ++g)
@@ -114,7 +113,7 @@ void SceneView::paintEvent (QPaintEvent*)
         p.setBrush (silent ? QColor (30, 30, 36) : groupColor (g).darker (150));
         p.drawRoundedRect (r, 4, 4);
         p.setPen (silent ? QColor (110, 110, 120) : QColor (240, 240, 245));
-        p.drawText (r, Qt::AlignCenter, silent ? QString ("off") : patternText (g, combo[(size_t) g]));
+        p.drawText (r, Qt::AlignCenter, silent ? QString() : patternText (g, combo[(size_t) g]));
     }
     // Scenes
     const int vis = visibleScenes();
@@ -141,7 +140,7 @@ void SceneView::paintEvent (QPaintEvent*)
             const QRectF r = sceneCell (k, g);
             const int v = sc.pattern[(size_t) g];
             p.setPen (Qt::NoPen);
-            p.setBrush (v == seq::kFree ? QColor (22, 22, 27) : v == seq::kOff ? QColor (60, 28, 28) : groupColor (g).darker (220));
+            p.setBrush (v == seq::kFree ? QColor (22, 22, 27) : v == seq::kOff ? QColor (30, 30, 36) : groupColor (g).darker (220));
             p.drawRoundedRect (r, 4, 4);
             p.setPen (v == seq::kFree ? QColor (90, 90, 100) : v == seq::kOff ? QColor (230, 110, 110) : QColor (230, 230, 238));
             p.drawText (r, Qt::AlignCenter, patternText (g, v));
@@ -160,7 +159,7 @@ int SceneView::pickPattern (int g, const QPoint& at, bool allowFree, int current
 {
     // Menu : les patterns du groupe, un nouveau, silence (et « libre » dans une scene)
     QMenu menu (this);
-    auto* title = menu.addAction (tr ("Group %1").arg (groupKey (g)));
+    auto* title = menu.addAction (tr ("Group %1").arg (session::groupTitle (state, g)));
     title->setEnabled (false);
     menu.addSeparator();
     QList<QPair<QAction*, int>> choices;

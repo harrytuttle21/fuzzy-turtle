@@ -674,7 +674,7 @@ MainWindow::MainWindow (const Options& options, QWidget* parent) : QMainWindow (
         left.fill (fc::kBlack);
         left.fillRect (0, 0, 480, 26, rgb (acc));
         left.text (8, 5, "FUZZY JOHN  DAW PULSES", fc::kBlack);
-        const std::string groupText = ("Group " + groupName (state.group)).toStdString();
+        const std::string groupText = ("Group " + groupTitle (state, state.group)).toStdString();
         left.text (480 - 8 - fc::Canvas::textWidth (groupText), 5, groupText, fc::kBlack);
         for (int p = 1; p <= 16; ++p)
         {
@@ -900,6 +900,10 @@ QWidget* MainWindow::buildGroupBlock()
             auto* pasteGroup = menu.addAction (groupClips.empty() ? tr ("Paste Group")
                                                : groupClips.size() > 1 ? tr ("Paste %1 groups here").arg (groupClips.size()) : tr ("Paste Group %1 here").arg (clipNames.join (" ")));
             pasteGroup->setEnabled (! groupClips.empty() && ! (groupClips.size() == 1 && groupClips[0] == g));
+            menu.addSeparator();
+            auto* renameAction = menu.addAction (tr ("Rename Group %1...").arg (groupName (g)));
+            auto* exportAction = menu.addAction (tr ("Export Group %1...").arg (groupName (g)));
+            auto* importAction = menu.addAction (tr ("Import Group into %1...").arg (groupName (g)));
             auto* picked = menu.exec (b->mapToGlobal (p));
             if (chosen)
             {
@@ -914,6 +918,14 @@ QWidget* MainWindow::buildGroupBlock()
                 copyGroups (targets, picked == cutGroup);
             else if (picked == pasteGroup)
                 pasteGroups (g);
+            else if (picked == renameAction)
+                renameGroup (g);
+            else if (picked == exportAction || picked == importAction)
+            {
+                if (g != state.group)                    // le groupe du clic devient le groupe choisi
+                    selectGroup (g);
+                picked == exportAction ? exportGroup() : importGroup();
+            }
         });
         grid->addWidget (b, i / 4, i % 4);
         groupButtons[(size_t) i] = b;
@@ -1299,6 +1311,7 @@ void MainWindow::applyTheme()
     const QString accent = css (kAccent);
     qApp->setStyleSheet (QString (R"(
         QWidget { background: #101014; color: #e6e6e6; font-size: 13px; }
+        QToolTip { color: #f0f0f5; background: #202028; border: 1px solid #555; padding: 3px; }
         #topBar, #panel { background: #17171c; border: 1px solid #26262e; border-radius: 8px; }
         QDockWidget { color: #8a8a92; font-size: 11px; }
         QDockWidget::title { background: #121216; padding: 3px 8px; text-align: left; }
@@ -1570,7 +1583,7 @@ void MainWindow::refreshGroups()
         auto* b = groupButtons[(size_t) i];
         const int g = bank + i;
         const QString tag = state.groupMute[(size_t) g] ? " M" : state.groupSolo[(size_t) g] ? " S" : "";
-        b->setText (groupName (g) + tag);
+        b->setText (state.groupLabel[(size_t) g].isEmpty() ? groupName (g) + tag : groupName (g) + tag + "\n" + state.groupLabel[(size_t) g]);
         b->setChecked (g == state.group);
         const QColor c = state.groupAudible (g) ? groupColor (g) : QColor (90, 90, 98);   // muet : gris
         b->setStyleSheet (QString ("QPushButton { color: %1; border: 2px solid %1; background: #17171c; font-size: 16px; font-weight: bold; }"
@@ -2092,7 +2105,10 @@ void MainWindow::newProject()
     project.reset();
     sequencer.reset();                               // patterns, scenes : tout repart de zero
     for (int g = 0; g < kGroups; ++g)
+    {
         state.groupVolume[(size_t) g] = 100;
+        state.groupLabel[(size_t) g].clear();
+    }
     state.resetSounds();
     syncSamples();
     state.masterVolume = 100;
@@ -2407,7 +2423,7 @@ MainWindow::UndoStep MainWindow::capture (const UndoStep& like) const
     if (like.group >= 0)
         now.pattern = sequencer.patternAt (like.group, like.patternIndex);
     for (const auto& gs : like.groups)
-        now.groups.push_back ({ gs.group, sequencer.groupPatterns (gs.group), state.groupVolume[(size_t) gs.group].load() });
+        now.groups.push_back ({ gs.group, sequencer.groupPatterns (gs.group), state.groupVolume[(size_t) gs.group].load(), state.groupLabel[(size_t) gs.group] });
     for (const auto& entry : like.sounds)
         now.sounds.push_back ({ entry.first, takeSound (entry.first / 16, entry.first % 16 + 1) });
     return now;
@@ -2422,7 +2438,7 @@ void MainWindow::rememberSounds (const std::vector<std::pair<int, int>>& pads, c
         step.sounds.push_back ({ state.index (g, p), takeSound (g, p) });
     for (int g : groups)
     {
-        step.groups.push_back ({ g, sequencer.groupPatterns (g), state.groupVolume[(size_t) g].load() });
+        step.groups.push_back ({ g, sequencer.groupPatterns (g), state.groupVolume[(size_t) g].load(), state.groupLabel[(size_t) g] });
         for (int p = 1; p <= 16; ++p)
             step.sounds.push_back ({ state.index (g, p), takeSound (g, p) });
     }
@@ -2467,6 +2483,7 @@ void MainWindow::undo (bool redoIt)
     {
         sequencer.setGroupPatterns (gs.group, gs.patterns);
         state.groupVolume[(size_t) gs.group] = gs.volume;
+        state.groupLabel[(size_t) gs.group] = gs.label;
     }
     for (const auto& [i, s] : step.sounds)
         putSound (i / 16, i % 16 + 1, s);
@@ -2648,7 +2665,7 @@ void MainWindow::refreshMuteSolo()
     {
         const int g = bank + i;
         const QString tag = state.groupMute[(size_t) g] ? " M" : state.groupSolo[(size_t) g] ? " S" : "";
-        groupButtons[(size_t) i]->setText (groupName (g) + tag);
+        groupButtons[(size_t) i]->setText (state.groupLabel[(size_t) g].isEmpty() ? groupName (g) + tag : groupName (g) + tag + "\n" + state.groupLabel[(size_t) g]);
         const QColor c = state.groupAudible (g) ? groupColor (g) : QColor (90, 90, 98);
         const QString frame = groupChosen.contains (g) ? QString ("3px dashed #fc8c28") : QString ("2px solid %1").arg (css (c));
         groupButtons[(size_t) i]->setStyleSheet (QString ("QPushButton { color: %1; border: %2; background: #17171c; font-size: 16px; font-weight: bold; }"
@@ -3001,7 +3018,7 @@ QWidget* MainWindow::buildPianoRoll()
         for (auto* w : trackOnly)
             w->setVisible (id == 2);
         hint->setText (id == 0 ? tr ("click = note \u00B7 drag in empty space = select \u00B7 drag a note = move (%1 copy) \u00B7 double-click = erase \u00B7 bottom bars = velocity").arg (PatternView::copyKey())
-                     : id == 1 ? tr ("click = note \u00B7 Shift / Cmd + click = select \u00B7 double-click = options \u00B7 wheel = velocity \u00B7 Del = erase")
+                     : id == 1 ? tr ("click = note \u00B7 drag = frame \u00B7 Cmd + click = add \u00B7 Shift + click = range \u00B7 drag a note = move (Option = copy) \u00B7 double-click = options \u00B7 wheel = velocity \u00B7 Del = erase")
                                : tr ("keys = notes \u00B7 digits = velocity / length \u00B7 Del = erase \u00B7 %1 + wheel = value").arg (PatternView::copyKey()));
     };
     connect (modes, &QButtonGroup::idClicked, this, [showMode] (int id)
@@ -3027,6 +3044,13 @@ QWidget* MainWindow::buildPianoRoll()
     {
         moveCells (cells, dr, dt, copy);             // comme dans la vue Pattern (annulable)
         stepView->update();
+    });
+    connect (stepView, &StepView::selectionShown, this, [this] (int n)
+    {
+        if (n > 1)
+            statusBar()->showMessage (tr ("%1 notes selected").arg (n), 2000);
+        else if (n == 1)
+            statusBar()->showMessage (tr ("1 note selected"), 2000);
     });
     connect (stepView, &StepView::cellDoubleClicked, this, &MainWindow::noteOptions);
     connect (stepView, &StepView::valueWheel, this, [this] (int row, int steps)
@@ -3423,8 +3447,8 @@ void MainWindow::patternMenu (int row, int track, const QPoint& at)
 {
     QMenu menu (this);
     const bool full = ! sequencer.pattern (state.group).rows[(size_t) row][(size_t) track].empty();
-    auto* cut = menu.addAction (tr ("Cut"));
     auto* copy = menu.addAction (tr ("Copy"));
+    auto* cut = menu.addAction (tr ("Cut"));
     auto* pasteAction = menu.addAction (tr ("Paste here"));
     pasteAction->setEnabled (! clipboard.empty());
     auto* erase = menu.addAction (tr ("Delete"));
@@ -3801,7 +3825,7 @@ void MainWindow::refreshSoundPanel()
         return;
     const int g = state.group, snd = state.sound;
     const size_t i = (size_t) state.index (g, snd);
-    soundUi.title->setText (tr ("SOUND %1 — %2   (group %3)").arg (snd, 2, 10, QChar ('0')).arg (padName (g, snd), groupName (g)));
+    soundUi.title->setText (tr ("SOUND %1 — %2   (group %3)").arg (snd, 2, 10, QChar ('0')).arg (padName (g, snd), groupTitle (state, g)));
     {
         const QSignalBlocker b (soundUi.synth);
         const int syn = state.synth[i];
@@ -4224,12 +4248,14 @@ void MainWindow::transferGroup (int from, int to, Transfer how)
     }
     const seq::GroupPatterns pa = sequencer.groupPatterns (from), pb = sequencer.groupPatterns (to);   // tous les patterns
     const int va = state.groupVolume[(size_t) from], vb = state.groupVolume[(size_t) to];
+    const QString la = state.groupLabel[(size_t) from], lb = state.groupLabel[(size_t) to];   // noms des groupes
     rememberSounds ({}, how == Transfer::Copy ? std::vector<int> { to } : std::vector<int> { from, to },
                     how == Transfer::Copy ? "Copy group" : how == Transfer::Move ? "Move group" : "Swap groups");
     for (int p = 1; p <= 16; ++p)
         putSound (to, p, a[(size_t) p - 1]);
     sequencer.setGroupPatterns (to, pa);
     state.groupVolume[(size_t) to] = va;
+    state.groupLabel[(size_t) to] = la;
     if (how != Transfer::Copy)
     {
         for (int p = 1; p <= 16; ++p)
@@ -4239,6 +4265,7 @@ void MainWindow::transferGroup (int from, int to, Transfer how)
         else
             sequencer.clearGroupPatterns (from, sequencer.patternLength (from));
         state.groupVolume[(size_t) from] = how == Transfer::Swap ? vb : 100;
+        state.groupLabel[(size_t) from] = how == Transfer::Swap ? lb : QString();
     }
     syncSamples();
     refreshAll();
@@ -4513,7 +4540,7 @@ void MainWindow::pasteGroups (int target)
         return;
     }
     const int first = groupClips.front();
-    struct Save { int from, to; std::array<SoundCopy, 16> sounds; seq::GroupPatterns patterns; int volume; };
+    struct Save { int from, to; std::array<SoundCopy, 16> sounds; seq::GroupPatterns patterns; int volume; QString label; };
     std::vector<Save> saves;
     QStringList what;
     for (int from : groupClips)
@@ -4521,7 +4548,7 @@ void MainWindow::pasteGroups (int target)
         const int to = target + from - first;
         if (to < 0 || to >= kGroups || (to == from && ! groupClipCut))
             continue;
-        Save s { from, to, {}, sequencer.groupPatterns (from), state.groupVolume[(size_t) from].load() };
+        Save s { from, to, {}, sequencer.groupPatterns (from), state.groupVolume[(size_t) from].load(), state.groupLabel[(size_t) from] };
         for (int p = 1; p <= 16; ++p)
             s.sounds[(size_t) p - 1] = takeSound (from, p);
         saves.push_back (s);
@@ -4554,6 +4581,7 @@ void MainWindow::pasteGroups (int target)
                 emptySound (s.from, p);
             sequencer.clearGroupPatterns (s.from, sequencer.patternLength (s.from));
             state.groupVolume[(size_t) s.from] = 100;
+            state.groupLabel[(size_t) s.from].clear();
         }
     for (const auto& s : saves)
     {
@@ -4561,6 +4589,7 @@ void MainWindow::pasteGroups (int target)
             putSound (s.to, p, s.sounds[(size_t) p - 1]);
         sequencer.setGroupPatterns (s.to, s.patterns);
         state.groupVolume[(size_t) s.to] = s.volume;
+        state.groupLabel[(size_t) s.to] = s.label;
     }
     if (groupClipCut)
         groupClips.clear();
@@ -5014,6 +5043,34 @@ QWidget* MainWindow::buildScenes()
 
 // ------------------------------------------------------------ groupe entier : exporter / importer
 
+void MainWindow::renameGroup (int g)
+{
+    // La lettre reste (A, B... A2) ; on ajoute un nom court, lisible sur l'ecran de la Maschine
+    bool ok = false;
+    const QString text = QInputDialog::getText (this, tr ("Group name"),
+                                                tr ("Name of group %1 (8 characters: A-Z, 0-9, -, space; empty = letter only):").arg (groupName (g)),
+                                                QLineEdit::Normal, state.groupLabel[(size_t) g], &ok);
+    if (! ok)
+        return;
+    QString clean;
+    for (const QChar c : text.toUpper())             // les memes lettres que l'editeur de la Maschine
+        if ((c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == ' ')
+            clean += c;
+    clean = clean.simplified().left (8).trimmed();
+    if (clean == state.groupLabel[(size_t) g])
+        return;
+    rememberSounds ({}, { g }, tr ("Rename group"));
+    state.groupLabel[(size_t) g] = clean;
+    refreshAll();
+    refreshMuteSolo();
+    if (patternBar)
+        patternBar->refresh (true);
+    if (sceneView)
+        sceneView->update();
+    maschine->updateScreens();
+    toast (QString ("GROUP %1").arg (groupTitle (state, g)));
+}
+
 void MainWindow::exportGroup()
 {
     // Fichier .fzgroup (JSON) : les 16 sons (samples, synthes, reglages), tous les patterns, le volume
@@ -5081,7 +5138,7 @@ bool MainWindow::exportGroupTo (const QString& path, bool copy)
         patterns.append (QJsonObject { { "index", idx }, { "name", QString::fromStdString (sequencer.patternName (g, idx)) },
                                        { "length", pat.length }, { "cells", cells } });
     }
-    const QJsonObject doc { { "format", "fuzzy-group" }, { "version", 1 }, { "group", groupName (g) },
+    const QJsonObject doc { { "format", "fuzzy-group" }, { "version", 1 }, { "group", groupName (g) }, { "name", state.groupLabel[(size_t) g] },
                             { "volume", state.groupVolume[(size_t) g].load() }, { "current", sequencer.currentPattern (g) },
                             { "sounds", sounds }, { "patterns", patterns } };
     QSaveFile out (path);
@@ -5177,6 +5234,7 @@ void MainWindow::importGroupFrom (const QString& path, const QJsonObject& doc)
     }
     sequencer.setGroupPatterns (g, gp);
     state.groupVolume[(size_t) g] = std::clamp (doc["volume"].toInt (100), 0, 127);
+    state.groupLabel[(size_t) g] = doc["name"].toString().trimmed().left (8).toUpper();
     syncSamples();
     patternsChanged();
     refreshMuteSolo();

@@ -264,6 +264,7 @@ private:
     void patternsChanged();                          // pattern / scene change : les vues suivent
     void exportGroup();                              // File > Export Group (.fzgroup)
     void importGroup();                              // File > Import Group : remplace le groupe choisi
+    void renameGroup (int g);                        // nom du groupe (la lettre reste)
     bool exportGroupTo (const QString& path, bool copySamples);
     void importGroupFrom (const QString& path, const QJsonObject& doc);
     QToolBar* patternsToolBar = nullptr;
@@ -315,7 +316,7 @@ private:
 
     // Annuler / refaire : le pattern d'un groupe tel qu'il etait avant chaque modification
     // Un pas d'annulation : un pattern, et / ou des sons (copier, deplacer, charger...) et des groupes
-    struct GroupSave { int group; seq::GroupPatterns patterns; int volume; };   // tous ses patterns
+    struct GroupSave { int group; seq::GroupPatterns patterns; int volume; QString label; };   // tous ses patterns
     struct UndoStep
     {
         int group = -1;                              // pattern d'un groupe (-1 = aucun)

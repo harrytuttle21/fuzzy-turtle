@@ -90,6 +90,7 @@ QJsonObject build (QJsonObject d, const QString& name, const seq::Sequencer& seq
         gd["current"] = sequencer.currentPattern (g);
         gd["volume"] = state.groupVolume[(size_t) g].load();
         gd["off"] = sequencer.groupOff (g);
+        gd["name"] = state.groupLabel[(size_t) g];     // meme cle que la Maschine
         if (! gd.contains ("pan"))
             gd["pan"] = 64;
         if (! gd.contains ("name"))
@@ -233,6 +234,7 @@ void Project::toApp (seq::Sequencer& sequencer, session::State& state, int& bpm)
     {
         const QJsonObject gd = groups[key (g)].toObject();
         state.groupVolume[(size_t) g] = std::clamp (gd["volume"].toInt (100), 0, 127);
+        state.groupLabel[(size_t) g] = gd["name"].toString().trimmed().left (8).toUpper();
         const QJsonObject sounds = gd["sounds"].toObject();
         for (int s = 1; s <= 16; ++s)
         {

@@ -224,8 +224,8 @@ void PatternBar::refresh (bool force)
     lastKey = keyText;
 
     const QColor color = groupColor (g);
-    patTitle->setText (tr ("PATTERNS %1").arg (groupKey (g)));
-    patTitle->setStyleSheet (QString ("color: %1;").arg (css (color)));
+    patTitle->setText (tr ("PATTERNS %1").arg (session::groupTitle (state, g)));
+    patTitle->setStyleSheet (QString ("QLabel { color: %1; } QToolTip { color: #f0f0f5; background: #202028; border: 1px solid #555; }").arg (css (color)));
     for (int k = 0; k < seq::kSlotsPerBank; ++k)
     {
         const int i = patternBank * seq::kSlotsPerBank + k;
@@ -236,11 +236,12 @@ void PatternBar::refresh (bool force)
         b->setText (exists ? patternLabel (g, i) : QString::number (i + 1));
         // Choisi mais eteint (silence) : seulement un cadre de la couleur du groupe
         const bool chosenOff = exists && i == cur && silent;
-        QString style = playingNow ? QString ("QPushButton { background: %1; color: #111; font-weight: bold; border: 2px solid %1; }").arg (css (color))
+        QString style = playingNow ? QString ("QPushButton { background: %1; color: #ffffff; font-weight: bold; border: 2px solid %1; }").arg (css (color.darker (115)))
                       : chosenOff ? QString ("QPushButton { background: #1c1c22; color: %1; font-weight: bold; border: 2px solid %1; }").arg (css (color))
                       : exists ? QString ("QPushButton { background: #24242c; color: %1; border: 2px solid %2; }").arg (css (color.lighter (120)), css (color.darker (180)))
                                : QString ("QPushButton { background: #16161b; color: #555; border: 1px solid #2a2a32; }");
-        style += "QPushButton { padding: 0px 2px; }";
+        style += "QPushButton { padding: 0px 2px; }"
+                 "QToolTip { color: #f0f0f5; background: #202028; border: 1px solid #555; }";   // infobulle lisible
         if (waiting)                                 // en attente de la fin du pattern
             style += "QPushButton { border: 2px dashed #fc8c28; }";
         b->setStyleSheet (style);
@@ -287,7 +288,8 @@ void PatternBar::refresh (bool force)
                                  : i == sceneNow ? "QPushButton { background: #2c2c36; color: #e8e8f0; border: 2px solid #e8e8f0; }"
                                  : sc.used ? "QPushButton { background: #2c2c36; color: #e8e8f0; border: 1px solid #555; }"
                                            : "QPushButton { background: #16161b; color: #555; border: 1px solid #2a2a32; }")
-                          + "QPushButton { padding: 0px 2px; }");
+                          + "QPushButton { padding: 0px 2px; }"
+                            "QToolTip { color: #f0f0f5; background: #202028; border: 1px solid #555; }");
         QString tip;
         if (sc.used)
             for (int gg = 0; gg < session::kGroups; ++gg)

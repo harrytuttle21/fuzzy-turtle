@@ -63,6 +63,8 @@ void StepView::paintEvent (QPaintEvent*)
         QColor back = (r / 4) % 2 ? QColor (30, 30, 38) : QColor (40, 40, 50);   // temps alternes
         if (! c.empty())
             back = color.darker (100 + (127 - c.velocity));   // plus fort = plus vif
+        if (! c.empty() && chosen.contains (r))     // note choisie : remplie d'orange
+            back = QColor (252, 140, 40);
         g.setPen (Qt::NoPen);
         g.setBrush (back);
         g.drawRoundedRect (box, 4, 4);
@@ -82,9 +84,9 @@ void StepView::paintEvent (QPaintEvent*)
             g.drawText (box, Qt::AlignCenter, text);
         }
         g.setBrush (Qt::NoBrush);
-        if (chosen.contains (r))
+        if (chosen.contains (r))                     // note choisie : remplie d'orange
         {
-            g.setPen (QPen (QColor (252, 140, 40), 2));
+            g.setPen (QPen (QColor (255, 220, 160), 2));
             g.drawRoundedRect (box.adjusted (1, 1, -1, -1), 4, 4);
         }
         if (drag == Drag::Move && targetRow >= 0 && chosen.contains (r) && targetRow != pressRow)
@@ -102,29 +104,68 @@ void StepView::paintEvent (QPaintEvent*)
             g.drawRoundedRect (box.adjusted (-1, -1, 1, 1), 5, 5);
         }
     }
+    if (! bandRect.isNull())                         // le cadre de selection
+    {
+        g.setPen (QPen (QColor (252, 140, 40), 1, Qt::DashLine));
+        g.setBrush (QColor (252, 140, 40, 40));
+        g.drawRect (bandRect);
+    }
+}
+
+void StepView::publish()
+{
+    int n = 0;
+    for (const QPoint& c : cursor.selection())
+        if (c.x() == track())
+            ++n;
+    emit selectionShown (n);
+    update();
 }
 
 void StepView::mousePressEvent (QMouseEvent* e)
 {
     const int r = rowAt (e->position());
-    if (r < 0 || e->button() != Qt::LeftButton)
+    if (e->button() != Qt::LeftButton)
         return;
     const int t = track();
-    const bool empty = sequencer.pattern (state.group).rows[(size_t) r][(size_t) t].empty();
-    if (e->modifiers() & (Qt::ShiftModifier | Qt::ControlModifier))   // choisir des notes
+    pressPos = e->position();
+    const Qt::KeyboardModifiers mods = e->modifiers();
+    const bool cmd = mods & Qt::ControlModifier;      // Cmd sur Mac
+    const bool shift = mods & Qt::ShiftModifier;
+    if (r < 0)                                       // hors des cases : cadre seulement
+    {
+        before = (cmd || shift) ? cursor.selection() : QList<QPoint> {};
+        if (! cmd && ! shift)
+            cursor.clearSelection();
+        pressRow = targetRow = -1;
+        drag = Drag::PendingAdd;
+        publish();
+        return;
+    }
+    const seq::Pattern pat = sequencer.pattern (state.group);
+    const bool empty = pat.rows[(size_t) r][(size_t) t].empty();
+    pressRow = targetRow = r;
+    cursor.setCurrentCell (r, t);
+    if (cmd || shift)                                // choisir des notes (et glisser = cadre en plus)
     {
         QList<QPoint> sel = cursor.selection();
         const QPoint p (t, r);
-        if (! empty)
+        if (shift && anchorRow >= 0 && ! empty)      // Shift : toute la plage depuis la derniere note
+        {
+            for (int k = std::min (anchorRow, r); k <= std::max (anchorRow, r) && k < pat.length; ++k)
+                if (! pat.rows[(size_t) k][(size_t) t].empty() && ! sel.contains (QPoint (t, k)))
+                    sel << QPoint (t, k);
+        }
+        else if (! empty)                            // Cmd : ajouter / enlever cette note
             sel.contains (p) ? (void) sel.removeAll (p) : (void) sel.append (p);
+        if (! empty)
+            anchorRow = r;
         cursor.setSelection (sel);
-        cursor.setCurrentCell (r, t);
-        update();
+        before = sel;
+        drag = Drag::PendingAdd;
+        publish();
         return;
     }
-    pressPos = e->position();
-    pressRow = targetRow = r;
-    cursor.setCurrentCell (r, t);
     if (empty)                                       // clic = note ; glisser = cadre de selection
     {
         drag = Drag::Pending;
@@ -132,10 +173,11 @@ void StepView::mousePressEvent (QMouseEvent* e)
         update();
         return;
     }
+    anchorRow = r;
     if (! cursor.selection().contains (QPoint (t, r)))   // autre note : la selection repart d'elle
         cursor.setSelection ({ QPoint (t, r) });
     drag = Drag::Move;                               // glisser : deplacer (Option = copier)
-    update();
+    publish();
 }
 
 void StepView::mouseMoveEvent (QMouseEvent* e)
@@ -143,20 +185,20 @@ void StepView::mouseMoveEvent (QMouseEvent* e)
     if (drag == Drag::None)
         return;
     const QPointF p = e->position();
-    if (drag == Drag::Pending && (p - pressPos).manhattanLength() < 6)
+    if ((drag == Drag::Pending || drag == Drag::PendingAdd) && (p - pressPos).manhattanLength() < 6)
         return;
-    if (drag == Drag::Pending)
+    if (drag == Drag::Pending || drag == Drag::PendingAdd)
         drag = Drag::Band;
     if (drag == Drag::Band)                          // toutes les notes dont la case touche le cadre
     {
-        const QRectF band = QRectF (pressPos, p).normalized().adjusted (-1, -1, 1, 1);   // jamais plat
+        bandRect = QRectF (pressPos, p).normalized().adjusted (-1, -1, 1, 1);   // jamais plat
         const seq::Pattern pat = sequencer.pattern (state.group);
         QList<QPoint> sel = before;
         for (int r = 0; r < pat.length; ++r)
-            if (! pat.rows[(size_t) r][(size_t) track()].empty() && cellRect (r).intersects (band) && ! sel.contains (QPoint (track(), r)))
+            if (! pat.rows[(size_t) r][(size_t) track()].empty() && cellRect (r).intersects (bandRect) && ! sel.contains (QPoint (track(), r)))
                 sel << QPoint (track(), r);
         cursor.setSelection (sel);
-        update();
+        publish();
         return;
     }
     const int r = rowAt (p);
@@ -169,10 +211,12 @@ void StepView::mouseReleaseEvent (QMouseEvent* e)
 {
     const Drag was = drag;
     drag = Drag::None;
+    bandRect = {};
     if (was == Drag::Pending)                        // simple clic dans le vide : une note
     {
         cursor.clearSelection();
         emit addRequested (pressRow);
+        publish();
     }
     else if (was == Drag::Move && targetRow >= 0 && targetRow != pressRow)
         emit cellsMoved (cursor.selection(), targetRow - pressRow, 0, e->modifiers() & Qt::AltModifier);

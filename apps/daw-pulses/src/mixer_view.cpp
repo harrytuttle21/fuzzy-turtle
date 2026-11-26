@@ -109,7 +109,8 @@ void MixerView::paintEvent (QPaintEvent*)
         const QRectF r = meterRect (s);
         // Nom au-dessus, centre
         g.setPen (grp == st.group ? QColor (Qt::white) : color);
-        g.drawText (QRectF (r.center().x() - 30, 2, 60, 16), Qt::AlignCenter, grp < 0 ? "MASTER" : groupName (grp));
+        g.drawText (QRectF (r.center().x() - 34, 2, 68, 16), Qt::AlignCenter,
+                    grp < 0 ? QString ("MASTER") : g.fontMetrics().elidedText (session::groupTitle (st, grp), Qt::ElideRight, 68));
         // Fond du vumetre
         g.setPen (QColor (40, 40, 48));
         g.setBrush (QColor (14, 14, 18));

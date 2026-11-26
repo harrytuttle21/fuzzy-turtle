@@ -77,6 +77,7 @@ struct State
     // Mute / solo, comme le prototype : un groupe joue s'il n'est pas coupe et, si un solo
     // existe, s'il en fait partie ; un son pareil, mais le solo d'un son vaut dans son groupe.
     std::array<std::atomic<bool>, kGroups> groupMute {}, groupSolo {};
+    std::array<QString, kGroups> groupLabel {};   // nom du groupe (8 lettres max, comme la Maschine)
     std::array<std::atomic<bool>, kGroups * 16> soundMute {}, soundSolo {};   // groupe * 16 + son - 1
 
     bool groupAudible (int g) const
@@ -196,5 +197,12 @@ struct State
         return v < 0.5 ? 0 : std::min (127, (int) (v + 0.5));
     }
 };
+
+// « A » ou « A DRUMS » : la lettre reste, le nom s'ajoute
+inline QString groupTitle (const State& s, int g)
+{
+    const QString& l = s.groupLabel[(size_t) g];
+    return l.isEmpty() ? groupName (g) : groupName (g) + " " + l;
+}
 
 } // namespace session

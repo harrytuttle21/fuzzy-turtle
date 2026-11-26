@@ -1989,7 +1989,7 @@ def draw_left(st: State) -> Image.Image:
     d = ImageDraw.Draw(img)
     info = (f'SOLO {"".join(sorted(st.solo))}  ' if st.solo else '') + \
            (f'MUTE {"".join(sorted(st.muted))}  ' if st.muted else '')
-    left_header(d, st, f'FUZZY TURTLE  {st.group}', f'{st.bpm} BPM')
+    left_header(d, st, f'FUZZY TURTLE  {st.group} {st.group_names[st.group]}'.rstrip(), f'{st.bpm} BPM')
     f = font(13)
     for i in range(16):
         pad = 13 + i % 4 - 4 * (i // 4)            # pad 13 en haut a gauche, comme sur la Maschine

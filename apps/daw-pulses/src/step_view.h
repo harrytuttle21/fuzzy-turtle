@@ -23,6 +23,7 @@ signals:
     void cellDoubleClicked (int row, int track);      // double-clic sur une note : ses options
     void valueWheel (int row, int steps);             // molette sur une note : velocite
     void cellsMoved (const QList<QPoint>& cells, int rows, int tracks, bool copy);   // glisser la selection
+    void selectionShown (int count);                  // nombre de notes choisies (barre d'etat)
 
 protected:
     void paintEvent (QPaintEvent*) override;
@@ -44,9 +45,12 @@ private:
     PatternView& cursor;
     int playRow = 0;
     // Souris : clic dans le vide = note ; glisser dans le vide = cadre ; glisser une note = deplacer
-    enum class Drag { None, Pending, Band, Move } drag = Drag::None;
+    enum class Drag { None, Pending, PendingAdd, Band, Move } drag = Drag::None;
     QPointF pressPos;
     int pressRow = -1, targetRow = -1;
-    QList<QPoint> before;                            // selection avant un cadre (Shift)
+    QList<QPoint> before;                            // selection avant un cadre (Shift / Cmd)
+    QRectF bandRect;                                 // cadre dessine pendant le glisser
+    int anchorRow = -1;                              // derniere note cliquee (Shift + clic = plage)
+    void publish();                                  // selection changee : redessiner + compter
     bool playing = false;
 };
