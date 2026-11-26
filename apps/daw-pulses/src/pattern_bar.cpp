@@ -190,6 +190,11 @@ void PatternBar::renameScene (int index)
     seq::Scene sc = sequencer.scene (index);
     if (! sc.used)
         return;
+    if (sc.locked)
+    {
+        emit message (QString ("SCENE %1 is locked").arg (index + 1));
+        return;
+    }
     bool ok = false;
     const QString name = QInputDialog::getText (this, tr ("Scene name"), tr ("Name of scene %1 (8 letters):").arg (index + 1),
                                                 QLineEdit::Normal, QString::fromStdString (sc.name), &ok);
@@ -311,7 +316,7 @@ void PatternBar::refresh (bool force)
                     continue;
                 tip += QString ("%1:%2 ").arg (groupKey (gg), p == seq::kOff ? QString ("off") : QString::number (p + 1));
             }
-        b->setToolTip (sc.used ? tr ("Scene %1: %2").arg (i + 1).arg (tip.trimmed()) : tr ("Empty: click = new empty scene"));
+        b->setToolTip (sc.used ? tr ("Scene %1%3: %2").arg (i + 1).arg (tip.trimmed()).arg (sc.locked ? QString (" (locked)") : QString()) : tr ("Empty: click = new empty scene"));
     }
 }
 
@@ -421,19 +426,22 @@ void PatternBar::sceneMenu (int index, const QPoint& at)
     menu.addSeparator();
     auto* launch = menu.addAction (sc.used ? tr ("Launch") : tr ("New empty scene"));
     auto* store = menu.addAction (sc.used ? tr ("Replace with the patterns playing now") : tr ("Store the patterns playing now"));
+    store->setEnabled (! sc.locked);
     // Groupe choisi : libre (garde son pattern quand on lance la scene) ou fixe
     const int g = state.group;
     auto* freeGroup = menu.addAction (sc.used && sc.pattern[(size_t) g] == seq::kFree
                                           ? tr ("Group %1: fixed (pattern playing now)").arg (groupKey (g))
                                           : tr ("Group %1: free (keeps its pattern)").arg (groupKey (g)));
-    freeGroup->setEnabled (sc.used);
+    freeGroup->setEnabled (sc.used && ! sc.locked);
     auto* dupNext = menu.addAction (tr ("Duplicate to the next free slot"));
     dupNext->setEnabled (sc.used);
     auto* rename = menu.addAction (tr ("Rename..."));
-    rename->setEnabled (sc.used);
+    rename->setEnabled (sc.used && ! sc.locked);
+    auto* lock = menu.addAction (sc.locked ? tr ("Unlock") : tr ("Lock (no more changes)"));
+    lock->setEnabled (sc.used);
     menu.addSeparator();
     auto* erase = menu.addAction (tr ("Delete"));
-    erase->setEnabled (sc.used);
+    erase->setEnabled (sc.used && ! sc.locked);
     auto* picked = menu.exec (at);
     if (! picked)
         return;
@@ -464,7 +472,9 @@ void PatternBar::sceneMenu (int index, const QPoint& at)
             const int to = (index + k) % seq::kPatternSlots;
             if (! sequencer.scene (to).used)
             {
-                sequencer.setScene (to, sc);
+                seq::Scene copy = sc;
+                copy.locked = false;                 // la copie se modifie
+                sequencer.setScene (to, copy);
                 emit message (QString ("SCENE %1 > %2").arg (index + 1).arg (to + 1));
                 break;
             }
@@ -474,6 +484,12 @@ void PatternBar::sceneMenu (int index, const QPoint& at)
     {
         renameScene (index);
         return;
+    }
+    else if (picked == lock)
+    {
+        edit.locked = ! sc.locked;
+        sequencer.setScene (index, edit);
+        emit message (QString ("SCENE %1 %2").arg (index + 1).arg (edit.locked ? "LOCKED" : "UNLOCKED"));
     }
     else if (picked == erase)
         sequencer.setScene (index, seq::Scene());

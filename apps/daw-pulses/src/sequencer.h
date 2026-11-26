@@ -46,6 +46,7 @@ struct Pattern
 struct Scene
 {
     bool used = false;
+    bool locked = false;                             // cadenas : se lance, ne se modifie plus
     std::string name;
     std::array<int, session::kGroups> pattern {};
     Scene() { pattern.fill (kFree); }

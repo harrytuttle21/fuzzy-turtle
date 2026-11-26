@@ -36,17 +36,28 @@ int SceneView::visibleScenes() const
     return std::max (1, (height() - 2 * rowH() - 8) / rowH());
 }
 
+int SceneView::visibleGroups() const
+{
+    return std::clamp ((int) ((height() - rowH() - 6) / groupH()), 1, kGroups);
+}
+
+QRectF SceneView::lockBox (int k) const
+{
+    const QRectF r = sceneNameCell (k);
+    return QRectF (r.right() - 18, r.center().y() - 8, 16, 16);
+}
+
 QRectF SceneView::groupCell (int g) const
 {
     if (rotated)
-        return QRectF (2, rowH() + 4 + g * groupH() + 1, nameW() - 4, groupH() - 3);
+        return QRectF (2, rowH() + 4 + (g - firstGroup) * groupH() + 1, nameW() - 4, groupH() - 3);
     return QRectF (nameW() + g * cellW() + 1, 2, cellW() - 2, rowH() - 3);
 }
 
 QRectF SceneView::nowCell (int g) const
 {
     if (rotated)
-        return QRectF (nameW() + 2, rowH() + 4 + g * groupH() + 1, nowW() - 4, groupH() - 3);
+        return QRectF (nameW() + 2, rowH() + 4 + (g - firstGroup) * groupH() + 1, nowW() - 4, groupH() - 3);
     return QRectF (nameW() + g * cellW() + 1, rowH() + 2, cellW() - 2, rowH() - 3);
 }
 
@@ -60,7 +71,7 @@ QRectF SceneView::sceneNameCell (int k) const
 QRectF SceneView::sceneCell (int k, int g) const
 {
     if (rotated)
-        return QRectF (nameW() + nowW() + 8 + k * sceneW() + 1, rowH() + 4 + g * groupH() + 1, sceneW() - 3, groupH() - 3);
+        return QRectF (nameW() + nowW() + 8 + k * sceneW() + 1, rowH() + 4 + (g - firstGroup) * groupH() + 1, sceneW() - 3, groupH() - 3);
     return QRectF (nameW() + g * cellW() + 1, 2 * rowH() + 6 + k * rowH() + 2, cellW() - 2, rowH() - 3);
 }
 
@@ -87,6 +98,22 @@ void SceneView::paintEvent (QPaintEvent*)
     }
     else
     {
+        firstGroup = std::clamp (firstGroup, 0, kGroups - visibleGroups());
+        p.drawText (QRectF (8, 0, nameW() - 50, rowH()), Qt::AlignVCenter | Qt::AlignLeft, tr ("GROUPS"));
+        if (visibleGroups() < kGroups)               // pas la place pour 16 : triangles haut / bas
+            for (const bool up : { true, false })
+            {
+                const bool can = up ? firstGroup > 0 : firstGroup + visibleGroups() < kGroups;
+                const QRectF a = up ? upArrow() : downArrow();
+                p.setPen (Qt::NoPen);
+                p.setBrush (can ? QColor (60, 60, 72) : QColor (28, 28, 34));
+                p.drawRoundedRect (a, 3, 3);
+                p.setBrush (can ? QColor (235, 235, 242) : QColor (80, 80, 90));
+                const QPointF c = a.center();
+                QPolygonF tri;
+                tri << QPointF (c.x() - 5, c.y() + (up ? 3 : -3)) << QPointF (c.x() + 5, c.y() + (up ? 3 : -3)) << QPointF (c.x(), c.y() + (up ? -4 : 4));
+                p.drawPolygon (tri);
+            }
         p.setPen (QColor (230, 230, 240));
         p.drawText (QRectF (nameW() + 2, 0, nowW() - 4, rowH()), Qt::AlignCenter, tr ("NOW"));
         p.setPen (QColor (60, 60, 70));
@@ -95,17 +122,24 @@ void SceneView::paintEvent (QPaintEvent*)
     // Groupes (le groupe choisi en plein)
     for (int g = 0; g < kGroups; ++g)
     {
-        const QColor c = groupColor (g);
+        if (! groupShown (g))
+            continue;
+        const QColor c = state.groupAudible (g) ? groupColor (g) : QColor (90, 90, 98);   // muet : gris
         const QRectF r = groupCell (g);
         p.setPen (Qt::NoPen);
         p.setBrush (g == state.group ? c : c.darker (260));
         p.drawRoundedRect (r, 4, 4);
         p.setPen (g == state.group ? QColor (15, 15, 18) : c.lighter (130));
-        p.drawText (r, Qt::AlignCenter, p.fontMetrics().elidedText (session::groupTitle (state, g), Qt::ElideRight, (int) r.width() - 4));
+        const QRectF tr = rotated ? r.adjusted (8, 0, -4, 0) : r;   // tourne : nom a gauche
+        p.drawText (tr, Qt::AlignVCenter | (rotated ? Qt::AlignLeft : Qt::AlignHCenter),
+                    p.fontMetrics().elidedText (session::groupTitle (state, g)
+                        + (state.groupMute[(size_t) g] ? " M" : state.groupSolo[(size_t) g] ? " S" : ""), Qt::ElideRight, (int) tr.width() - 2));
     }
     // Ce qui joue (cadre orange : en attente de la fin du pattern)
     for (int g = 0; g < kGroups; ++g)
     {
+        if (! groupShown (g))
+            continue;
         const QRectF r = nowCell (g);
         const int queued = sequencer.queuedPattern (g);
         const bool silent = sequencer.groupOff (g) && queued == seq::kNoQueue;
@@ -126,17 +160,35 @@ void SceneView::paintEvent (QPaintEvent*)
         for (int g = 0; sc.used && g < kGroups; ++g)
             matches &= sc.pattern[(size_t) g] == seq::kFree || sc.pattern[(size_t) g] == combo[(size_t) g];
         const QRectF nameBox = sceneNameCell (k);
-        p.setPen (i == now ? QPen (QColor (232, 232, 240), 2) : Qt::NoPen);
+        p.setPen (i == now ? QPen (QColor (232, 232, 240), 2) : i == editScene && editMode ? QPen (QColor (252, 140, 40), 2) : QPen (Qt::NoPen));
         p.setBrush (i == now && matches ? QColor (232, 232, 240) : sc.used ? QColor (44, 44, 54) : QColor (22, 22, 27));
         p.drawRoundedRect (nameBox, 4, 4);
         p.setPen (i == now && matches ? QColor (15, 15, 18) : sc.used ? QColor (235, 235, 242) : QColor (80, 80, 90));
         const QString label = QString ("S%1").arg (i + 1) + (sc.name.empty() ? QString() : " " + QString::fromStdString (sc.name));
-        p.drawText (nameBox.adjusted (6, 0, -4, 0), Qt::AlignVCenter | (rotated ? Qt::AlignHCenter : Qt::AlignLeft),
-                    sc.used ? QString::fromUtf8 ("▶ ") + label : label);
+        p.drawText (nameBox.adjusted (6, 0, sc.used ? -22 : -4, 0), Qt::AlignVCenter | (rotated ? Qt::AlignHCenter : Qt::AlignLeft),
+                    p.fontMetrics().elidedText (sc.used ? QString::fromUtf8 ("▶ ") + label : label, Qt::ElideRight, (int) nameBox.width() - (sc.used ? 28 : 10)));
         if (! sc.used)
             continue;
+        {
+            // Cadenas : ferme (orange) = scene verrouillee ; ouvert (gris) = modifiable
+            const QRectF lb = lockBox (k);
+            const QColor ink = sc.locked ? QColor (252, 140, 40) : QColor (110, 110, 122);
+            p.setBrush (Qt::NoBrush);
+            p.setPen (QPen (ink, 1.6));
+            const QRectF body (lb.left() + 2, lb.top() + 7, 12, 8);
+            const QRectF arc (lb.left() + 4, lb.top() + 1, 8, 10);
+            if (sc.locked)
+                p.drawArc (arc, 0, 180 * 16);
+            else
+                p.drawArc (arc.translated (4, -1), 0, 180 * 16);   // anse ouverte, decalee
+            p.setBrush (ink);
+            p.setPen (Qt::NoPen);
+            p.drawRoundedRect (body, 2, 2);
+        }
         for (int g = 0; g < kGroups; ++g)
         {
+            if (! groupShown (g))
+                continue;
             const QRectF r = sceneCell (k, g);
             const int v = sc.pattern[(size_t) g];
             p.setPen (Qt::NoPen);
@@ -190,7 +242,7 @@ int SceneView::pickPattern (int g, const QPoint& at, bool allowFree, int current
         choices << qMakePair (fr, (int) seq::kFree);
     }
     QAction* rename = nullptr;
-    if (currentValue >= 0)
+    if (currentValue >= 0 && editMode)
     {
         menu.addSeparator();
         rename = menu.addAction (tr ("Rename %1...").arg (patternText (g, currentValue)));
@@ -213,25 +265,42 @@ int SceneView::pickPattern (int g, const QPoint& at, bool allowFree, int current
 
 void SceneView::mousePressEvent (QMouseEvent* e)
 {
+    // Modes : Play = cliquer joue ; Edit = cliquer modifie les scenes ; aucun = tout est protege
     const QPointF pos = e->position();
     const bool right = e->button() == Qt::RightButton || (e->modifiers() & Qt::MetaModifier);
     const QPoint at = e->globalPosition().toPoint();
-    for (int g = 0; g < kGroups; ++g)                // nom d'un groupe : le choisir
-        if (groupCell (g).contains (pos))
+    const bool playing = isPlaying && isPlaying();
+    if (rotated && visibleGroups() < kGroups)        // triangles : faire defiler les groupes
+    {
+        if (upArrow().contains (pos) || downArrow().contains (pos))
         {
-            emit groupChosen (g);
+            firstGroup = std::clamp (firstGroup + (upArrow().contains (pos) ? -1 : 1), 0, kGroups - visibleGroups());
+            update();
             return;
         }
-    for (int g = 0; g < kGroups; ++g)                // ce qui joue : clic = joue / se tait, clic droit = choisir
-        if (nowCell (g).contains (pos))
+    }
+    for (int g = 0; g < kGroups; ++g)                // nom d'un groupe : le choisir ; clic droit : Mute / Solo
+        if (groupShown (g) && groupCell (g).contains (pos))
+        {
+            right ? emit groupMenu (g, at) : emit groupChosen (g);
+            update();
+            return;
+        }
+    for (int g = 0; g < kGroups; ++g)                // ce qui joue (Play) : clic = joue / se tait, clic droit = choisir
+        if (groupShown (g) && nowCell (g).contains (pos))
         {
             emit groupChosen (g);
+            if (! playMode)
+            {
+                emit message (tr ("Turn Play on to change what plays"));
+                return;
+            }
             const int nowValue = sequencer.currentCombo()[(size_t) g];
             const int v = right ? pickPattern (g, at, false, nowValue)
                                 : (nowValue == seq::kOff ? sequencer.currentPattern (g) : (int) seq::kOff);
             if (v != kNothing)
             {
-                sequencer.selectPattern (g, v, isPlaying && isPlaying());
+                sequencer.selectPattern (g, v, playing);
                 sequencer.setCurrentScene (-1);
                 emit changed();
             }
@@ -242,27 +311,78 @@ void SceneView::mousePressEvent (QMouseEvent* e)
     for (int k = 0; k < vis && firstScene + k < seq::kPatternSlots; ++k)
     {
         const int i = firstScene + k;
-        if (sceneNameCell (k).contains (pos))        // nom de la scene : lancer (clic droit : menu)
+        seq::Scene sc = sequencer.scene (i);
+        if (sc.used && lockBox (k).contains (pos))  // cadenas (Edit)
         {
-            right ? emit sceneMenu (i, at) : emit sceneClicked (i);
+            if (! editMode)
+            {
+                emit message (tr ("Turn Edit on to lock / unlock a scene"));
+                return;
+            }
+            sc.locked = ! sc.locked;
+            sequencer.setScene (i, sc);
+            emit message (QString ("SCENE %1 %2").arg (i + 1).arg (sc.locked ? "LOCKED" : "UNLOCKED"));
+            emit changed();
             update();
             return;
         }
-        seq::Scene sc = sequencer.scene (i);
+        if (sceneNameCell (k).contains (pos))
+        {
+            if (right)                               // menu de la scene : Edit seulement
+                editMode ? emit sceneMenu (i, at) : emit message (tr ("Turn Edit on to change scenes"));
+            else if (playMode && (sc.used || editMode))
+                emit sceneClicked (i);               // lancer (vide + Edit : nouvelle scene)
+            else if (editMode)
+            {
+                editScene = i;                       // Edit seul : choisir la scene sans la lancer
+                if (! sc.used)
+                    emit sceneClicked (i);           // vide : nouvelle scene
+            }
+            else if (! editMode && ! playMode)
+                emit message (tr ("Scenes protected: turn Edit or Play on"));
+            update();
+            return;
+        }
         if (! sc.used)
             continue;
         for (int g = 0; g < kGroups; ++g)
-            if (sceneCell (k, g).contains (pos))
+            if (groupShown (g) && sceneCell (k, g).contains (pos))
             {
-                // clic : le pattern du groupe actif / eteint dans la scene ; clic droit : choisir
-                const int v = right ? pickPattern (g, at, true, sc.pattern[(size_t) g])
-                                    : (sc.pattern[(size_t) g] >= 0 ? (int) seq::kOff : sequencer.currentPattern (g));
-                if (v != kNothing)
+                if (! editMode && ! playMode)
                 {
-                    sc.pattern[(size_t) g] = v;
-                    sequencer.setScene (i, sc);
-                    emit changed();
+                    emit message (tr ("Scenes protected: turn Edit or Play on"));
+                    return;
                 }
+                int value = sc.pattern[(size_t) g];
+                if (editMode)
+                {
+                    if (sc.locked)
+                    {
+                        emit message (QString ("SCENE %1 is locked").arg (i + 1));
+                        if (! playMode)
+                            return;
+                    }
+                    else
+                    {
+                        // clic : le pattern du groupe actif / eteint dans la scene ; clic droit : choisir
+                        const int v = right ? pickPattern (g, at, true, value)
+                                            : (value >= 0 ? (int) seq::kOff : sequencer.currentPattern (g));
+                        if (v != kNothing)
+                        {
+                            sc.pattern[(size_t) g] = value = v;
+                            sequencer.setScene (i, sc);
+                            editScene = i;
+                        }
+                    }
+                }
+                if (playMode && value >= 0 && ! right)   // Play : jouer ce pattern pour ce groupe
+                {
+                    sequencer.selectPattern (g, value, playing);
+                    sequencer.setCurrentScene (-1);
+                    emit message (QString ("%1 : %2%3").arg (session::groupTitle (state, g), patternText (g, value),
+                                                             playing ? QString (" (next)") : QString()));
+                }
+                emit changed();
                 update();
                 return;
             }
@@ -274,13 +394,26 @@ void SceneView::mouseDoubleClickEvent (QMouseEvent* e)
     // Double-clic sur le nom d'une scene : la renommer
     const QPointF pos = e->position();
     for (int k = 0; k < visibleScenes() && firstScene + k < seq::kPatternSlots; ++k)
-        if (sceneNameCell (k).contains (pos) && sequencer.scene (firstScene + k).used)
-            emit renameScene (firstScene + k);
+        if (sceneNameCell (k).contains (pos) && sequencer.scene (firstScene + k).used && ! lockBox (k).contains (pos))
+        {
+            if (! editMode)
+                emit message (tr ("Turn Edit on to rename a scene"));
+            else if (sceneLocked (firstScene + k))
+                emit message (QString ("SCENE %1 is locked").arg (firstScene + k + 1));
+            else
+                emit renameScene (firstScene + k);
+        }
 }
 
 void SceneView::wheelEvent (QWheelEvent* e)
 {
     const int steps = (e->angleDelta().y() ? e->angleDelta().y() : e->angleDelta().x()) / 120;
+    if (rotated && e->position().x() < nameW() + nowW() + 4)   // colonne des groupes : les faire defiler
+    {
+        firstGroup = std::clamp (firstGroup - steps, 0, kGroups - visibleGroups());
+        update();
+        return;
+    }
     firstScene = std::clamp (firstScene - steps * 2, 0, std::max (0, seq::kPatternSlots - visibleScenes()));
     update();
 }

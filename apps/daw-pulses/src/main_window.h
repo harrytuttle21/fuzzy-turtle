@@ -9,7 +9,9 @@
 #include "session.h"
 #include "system_stats.h"
 
+#include <QDialog>
 #include <QHash>
+#include <functional>
 #include <QJsonObject>
 #include <QMainWindow>
 #include <QSet>
@@ -324,8 +326,17 @@ private:
         seq::Pattern pattern;
         std::vector<std::pair<int, SoundCopy>> sounds;   // index groupe * 16 + pad - 1
         std::vector<GroupSave> groups;               // groupes entiers (pattern + volume)
+        bool hasScenes = false;                      // les 64 scenes (gestionnaire de patterns)
+        std::vector<seq::Scene> scenes;
         QString label;
     };
+    void rememberPatterns (int group, const QString& label);   // tous les patterns du groupe + les scenes
+    void openPatternManager();                       // Pattern > Patterns... : la liste du groupe
+    std::function<void()> patternManagerRefresh;     // la fenetre ouverte suit les changements
+    QDialog* patternManagerDialog = nullptr;
+    seq::Pattern patternClip;                        // Copy / Paste du gestionnaire
+    std::string patternClipName;
+    bool patternClipFull = false;
     void rememberSounds (const std::vector<std::pair<int, int>>& pads, const std::vector<int>& groups = {}, const QString& label = {});
     UndoStep capture (const UndoStep& like) const;   // l'etat actuel des memes elements (pour refaire)
     std::mutex undoLock;                             // l'enregistrement vient aussi de la Maschine

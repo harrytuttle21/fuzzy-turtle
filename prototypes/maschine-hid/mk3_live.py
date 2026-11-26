@@ -545,6 +545,7 @@ class State:
         self.scene_bank = 0
         self.scene_knobs = {0: Knob(40)}
         self.scene_names = [''] * PAT_SLOTS
+        self.scene_locked: set[int] = set()       # scenes verrouillees (cadenas) : se lancent, ne changent plus
         self.name_edit = None                    # nom en cours d'edition : ('pattern', g, i) / ('scene', i)
         self.name_pos = 0
         self.name_knobs = {4: Knob(40), 5: Knob(25), 6: Knob(40), 7: Knob(40)}   # sous l'ecran droit
@@ -2142,7 +2143,7 @@ def draw_scenes(st: State, half: int) -> Image.Image:
 
             def centered(txt, ty, f):
                 d.text((x + 55 - d.textlength(txt, font=f) / 2, ty), txt, font=f, fill=ink)
-            centered(f'S{idx + 1:02d}', y + 5, font(15))
+            centered(f'S{idx + 1:02d}' + (' LOCK' if sc and idx in st.scene_locked else ''), y + 5, font(15))
             if sc and st.scene_names[idx]:
                 centered(st.scene_names[idx], y + 26, font(12))   # nom court
             elif sc:                                   # groupes dont le pattern n'est pas le 1er
@@ -3929,6 +3930,9 @@ def scene_function(st: State, pad: int) -> None:
         st.toast = ('Choose a scene first', now + 2)
         return
     label = f'S{cur + 1:02d}'
+    if pad in (9, 12) and cur in st.scene_locked:     # verrouillee : ni coller, ni effacer
+        st.toast = (f'{label} is locked', now + 2)
+        return
     if pad == 11 and st.scenes[cur]:
         st.clip_scene = (dict(st.scenes[cur]), st.scene_names[cur])
         st.toast = (f'{label} copied', now + 2)
@@ -4003,7 +4007,8 @@ def project_data(st: State) -> dict:
                                          **({'synth': SYNTHS[st.synth[(g, s)] - 1] if st.synth[(g, s)] else 'None'}
                                             if (g, s) in st.synth else {})}
                                 for s in range(1, 17)}}
-    scenes = [{'index': i, 'name': st.scene_names[i], 'groups': sc}
+    scenes = [{'index': i, 'name': st.scene_names[i], 'groups': sc,
+               **({'locked': True} if i in st.scene_locked else {})}
               for i, sc in enumerate(st.scenes) if sc]
     return {'format': 'fuzzy-proto', 'version': PROJECT_VERSION, 'name': st.project_name,
             'bpm': st.bpm, 'master': st.master, 'linked': sorted(st.linked),
@@ -4134,9 +4139,12 @@ def load_project(st: State, name: str) -> None:
                 st.synth[(g, int(s))] = 0
     st.scenes = [None] * PAT_SLOTS
     st.scene_names = [''] * PAT_SLOTS
+    st.scene_locked = set()
     for sd in data.get('scenes', []):
         st.scenes[sd['index']] = dict(sd.get('groups', {}))
         st.scene_names[sd['index']] = sd.get('name', '')
+        if sd.get('locked'):
+            st.scene_locked.add(sd['index'])
     st.scene_current = None
     st.arrangement = [{'scene': int(e['scene']), 'repeats': float(e.get('repeats', 1)),
                        **({'bars': float(e['bars'])} if e.get('bars') else {})}
@@ -4165,6 +4173,7 @@ def new_project(st: State) -> None:
     st.pat_off.clear()
     st.scenes = [None] * PAT_SLOTS
     st.scene_names = [''] * PAT_SLOTS
+    st.scene_locked = set()
     st.scene_current = None
     st.arrangement, st.arr_on, st.arr_sel = [], False, 0
     existing = set(list_projects())
@@ -4842,6 +4851,9 @@ def scene_pad(st: State, pad: int) -> None:
     if 'shift' in st.held:                           # Shift + pad : serigraphie, scene choisie
         scene_function(st, pad)
         return
+    if idx in st.scene_locked and st.scenes[idx] and ({'erase', 'duplicate', 'select'} & st.held):
+        st.toast = (f'S{idx + 1:02d} is locked', time.monotonic() + 2)   # verrouillee : se lance seulement
+        return
     if 'erase' in st.held:
         st.scenes[idx] = None
         st.scene_names[idx] = ''
@@ -4875,6 +4887,8 @@ def name_target(st: State):
         if pat is None:
             return None
         return pat.get('name', ''), lambda v: pat.__setitem__('name', v)
+    if t[1] in st.scene_locked:                      # verrouillee : nom fixe
+        return None
     return st.scene_names[t[1]], lambda v: st.scene_names.__setitem__(t[1], v)
 
 

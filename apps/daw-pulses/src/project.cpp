@@ -186,7 +186,10 @@ QJsonObject build (QJsonObject d, const QString& name, const seq::Sequencer& seq
         QJsonObject combo;
         for (int g = 0; g < session::kGroups; ++g)
             combo[key (g)] = sc.pattern[(size_t) g] == seq::kFree ? QJsonValue (QJsonValue::Null) : QJsonValue (sc.pattern[(size_t) g]);
-        scenes.append (QJsonObject { { "index", i }, { "name", QString::fromStdString (sc.name) }, { "groups", combo } });
+        QJsonObject so { { "index", i }, { "name", QString::fromStdString (sc.name) }, { "groups", combo } };
+        if (sc.locked)
+            so["locked"] = true;                     // meme cle que le pilote
+        scenes.append (so);
     }
     d["scenes"] = scenes;
     return d;
@@ -301,6 +304,7 @@ void Project::toApp (seq::Sequencer& sequencer, session::State& state, int& bpm)
         seq::Scene sc;
         sc.used = true;
         sc.name = sd["name"].toString().toStdString();
+        sc.locked = sd["locked"].toBool (false);
         const QJsonObject combo = sd["groups"].toObject();
         for (int g = 0; g < session::kGroups; ++g)
         {

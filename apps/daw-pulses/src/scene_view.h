@@ -16,7 +16,9 @@ class SceneView : public QWidget
 public:
     SceneView (seq::Sequencer& sequencer, const session::State& state, QWidget* parent = nullptr);
     std::function<bool()> isPlaying;
-    void setRotated (bool on) { rotated = on; update(); }   // scenes en colonnes, groupes en lignes
+    void setRotated (bool on) { rotated = on; firstGroup = 0; update(); }   // scenes en colonnes, groupes en lignes
+    // Modes : Edit = modifier les scenes ; Play = jouer en cliquant ; aucun = tout est protege
+    void setModes (bool edit, bool play) { editMode = edit; playMode = play; update(); }
     bool isRotated() const { return rotated; }
     QSize minimumSizeHint() const override { return { 400, 160 }; }
 
@@ -27,6 +29,8 @@ signals:
     void groupChosen (int group);                    // clic dans la colonne d'un groupe
     void renameScene (int scene);                    // double-clic sur le nom
     void renamePattern (int group, int pattern);
+    void groupMenu (int group, const QPoint& globalPos);   // clic droit sur un groupe : Mute / Solo...
+    void message (const QString& text);
 
 protected:
     void paintEvent (QPaintEvent*) override;
@@ -39,7 +43,13 @@ private:
     int nowW() const { return 110; }                                       // tourne : colonne NOW
     int rowH() const { return 28; }
     double cellW() const { return (width() - nameW() - 4) / double (session::kGroups); }
-    double groupH() const { return std::max (18.0, (height() - rowH() - 6) / double (session::kGroups)); }   // tourne
+    double groupH() const { return 24; }             // tourne : hauteur fixe, lisible (on fait defiler)
+    int visibleGroups() const;                       // tourne : combien de groupes tiennent
+    bool groupShown (int g) const { return ! rotated || (g >= firstGroup && g < firstGroup + visibleGroups()); }
+    QRectF upArrow() const { return QRectF (nameW() - 44, 2, 20, rowH() - 4); }
+    QRectF downArrow() const { return QRectF (nameW() - 22, 2, 20, rowH() - 4); }
+    QRectF lockBox (int k) const;                    // le cadenas d'une scene (rang visible)
+    bool sceneLocked (int i) const { return sequencer.scene (i).locked; }
     double sceneW() const                            // tourne : les scenes remplissent toute la largeur
     {
         const int avail = std::max (96, width() - nameW() - nowW() - 8);
@@ -56,6 +66,8 @@ private:
 
     seq::Sequencer& sequencer;
     const session::State& state;
-    int firstScene = 0;
+    int firstScene = 0, firstGroup = 0;
     bool rotated = false;
+    bool editMode = false, playMode = true;
+    int editScene = -1;                              // Edit seul : la scene choisie (cadre)
 };

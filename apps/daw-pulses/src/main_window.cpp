@@ -68,6 +68,8 @@
 #include <QAbstractButton>
 #include <QMimeData>
 #include <QDialog>
+#include <QTableWidget>
+#include <QHeaderView>
 #include <QDialogButtonBox>
 #include <QStackedWidget>
 #include <QStatusBar>
@@ -166,9 +168,9 @@ MainWindow::MainWindow (const Options& options, QWidget* parent) : QMainWindow (
         auto* row = new QHBoxLayout;
         row->setContentsMargins (0, 0, 0, 0);
         // Trois boutons, comme PAD MODE / KEYBOARD / CHORDS de la Maschine : le mode actif est orange
-        padsOnlyButton = new QPushButton (tr ("Pad Mode"));
-        padModeButton = new QPushButton (tr ("Keyboard Mode"));
-        chordsModeButton = new QPushButton (tr ("Chords Mode"));
+        padsOnlyButton = new QPushButton (tr ("Pad mode"));
+        padModeButton = new QPushButton (tr ("Keyboard mode"));
+        chordsModeButton = new QPushButton (tr ("Chords mode"));
         padsOnlyButton->setToolTip (tr ("Pads play their 16 sounds (Maschine: PAD MODE)"));
         padModeButton->setToolTip (tr ("Pads play the chosen sound on 16 notes of the scale (Maschine: KEYBOARD)"));
         chordsModeButton->setToolTip (tr ("Each pad plays a chord of the Chords menu (Maschine: CHORDS)"));
@@ -198,6 +200,7 @@ MainWindow::MainWindow (const Options& options, QWidget* parent) : QMainWindow (
                 b->setFixedWidth (w + 4);
         });
         padsOnlyButton->setChecked (true);
+        row->insertStretch (0, 1);                   // les 3 boutons au centre
         row->addStretch (1);
         padsCol->addLayout (row);
         padsCol->addWidget (muteSoloRow (padsUnmute, padsUnsolo, false));   // dessous : tout reactiver
@@ -705,6 +708,50 @@ MainWindow::MainWindow (const Options& options, QWidget* parent) : QMainWindow (
                 left.text (x + (110 - fc::Canvas::textWidth (t)) / 2, top + k * 14, t, ink);
             }
         }
+        // Ecran droit, PATTERN ou SCENE tenu : les 16 noms de la banque, places comme les pads
+        if (patternHeld || sceneHeld)
+        {
+            const bool scenes = sceneHeld;
+            const int bank = scenes ? patternBar->sceneBank : patternBar->patternBank;
+            const int g = state.group;
+            right.fill (fc::kBlack);
+            right.fillRect (0, 0, 480, 26, rgb (acc));
+            const std::string head = scenes ? QString ("SCENES  bank %1/4").arg (bank + 1).toStdString()
+                                            : QString ("PATTERNS %1  bank %2/4").arg (groupTitle (state, g)).arg (bank + 1).toStdString();
+            right.text (8, 5, head, fc::kBlack);
+            const int nowIndex = scenes ? sequencer.currentScene() : (sequencer.groupOff (g) ? -1 : sequencer.currentPattern (g));
+            const int queued = scenes ? -1 : sequencer.queuedPattern (g);
+            for (int k = 0; k < 16; ++k)
+            {
+                const int pad = 13 + k % 4 - 4 * (k / 4);   // pad 13 en haut a gauche
+                const int i = bank * 16 + pad - 1;
+                const int x = 4 + (k % 4) * 119, y = 32 + (k / 4) * 60;
+                const bool used = scenes ? sequencer.scene (i).used : sequencer.hasPattern (g, i);
+                const bool now = i == nowIndex;
+                right.fillRect (x, y, 112, 54, now ? rgb (acc) : used ? fc::Rgb { 44, 44, 54 } : fc::Rgb { 18, 18, 22 });
+                if (i == queued)                     // en attente : cadre blanc
+                {
+                    right.fillRect (x, y, 112, 2, fc::kWhite);
+                    right.fillRect (x, y + 52, 112, 2, fc::kWhite);
+                    right.fillRect (x, y, 2, 54, fc::kWhite);
+                    right.fillRect (x + 110, y, 2, 54, fc::kWhite);
+                }
+                const fc::Rgb ink = now ? fc::kBlack : used ? fc::kWhite : fc::Rgb { 90, 90, 100 };
+                const std::string num = (scenes ? QString ("S%1").arg (i + 1) : QString::number (i + 1)).toStdString();
+                right.text (x + 4, y + 4, num, ink);
+                if (used)
+                {
+                    QString name = scenes ? QString::fromStdString (sequencer.scene (i).name) : QString::fromStdString (sequencer.patternName (g, i));
+                    if (name.isEmpty() && ! scenes)
+                        name = QString ("Pat%1").arg (i + 1);
+                    if (scenes && sequencer.scene (i).locked)
+                        right.text (x + 112 - 4 - fc::Canvas::textWidth ("LOCK"), y + 4, "LOCK", ink);
+                    const std::string t = name.left (13).toStdString();
+                    right.text (x + (112 - fc::Canvas::textWidth (t)) / 2, y + 26, t, ink);
+                }
+            }
+            return;
+        }
         // Ecran droit : transport
         right.fill (fc::kBlack);
         right.fillRect (0, 0, 480, 26, rgb (acc));
@@ -713,6 +760,20 @@ MainWindow::MainWindow (const Options& options, QWidget* parent) : QMainWindow (
         right.text (8, 120, transport->playing() ? "PLAY" : "STOP", transport->playing() ? rgb (acc) : fc::kWhite, 2);
         for (int i = 0; i < 4; ++i)
             right.fillRect (200 + i * 40, 122, 28, 28, transport->playing() && i == beatShown ? rgb (acc) : fc::Rgb { 40, 40, 48 });
+        {
+            // Scene en cours et pattern du groupe choisi (noms)
+            const int sc = sequencer.currentScene();
+            const QString sceneText = sc < 0 ? QString ("-")
+                                    : QString ("S%1 %2").arg (sc + 1).arg (QString::fromStdString (sequencer.scene (sc).name));
+            right.text (8, 92, ("SCENE   " + sceneText.trimmed()).toStdString(), fc::kWhite);
+            const int g = state.group;
+            const int pi = sequencer.currentPattern (g);
+            QString pn = QString::fromStdString (sequencer.patternName (g, pi));
+            if (pn.isEmpty())
+                pn = QString ("Pat%1").arg (pi + 1);
+            const QString patText = sequencer.groupOff (g) ? QString ("off") : QString ("%1 %2").arg (pi + 1).arg (pn);
+            right.text (8, 160, QString ("PATTERN %1 : %2").arg (groupTitle (state, g), patText).toStdString(), fc::kWhite);
+        }
         right.text (8, 180, QString ("Metronome %1  vol %2").arg (transport->metronome() ? "ON" : "OFF")
                                 .arg (transport->metronomeVolume()).toStdString(), fc::kWhite);
         right.text (8, 204, QString ("Keyboard : sound %1, octave %2").arg (state.sound.load())
@@ -741,6 +802,8 @@ MainWindow::MainWindow (const Options& options, QWidget* parent) : QMainWindow (
 MainWindow::~MainWindow()
 {
     qApp->removeEventFilter (this);
+    patternManagerRefresh = nullptr;
+    delete patternManagerDialog;                     // avant nos membres (sa fermeture les touche)
 }
 
 // ---------------------------------------------------------------------------------------- UI
@@ -849,8 +912,6 @@ QWidget* MainWindow::buildGroupBlock()
     });
     head->addWidget (title);
     head->addStretch();
-    head->addWidget (muteSoloRow (groupUnmute, groupUnsolo, true));
-    head->addWidget (bankButton);
     col->addLayout (head);
     auto* grid = new QGridLayout;
     grid->setSpacing (8);
@@ -931,6 +992,14 @@ QWidget* MainWindow::buildGroupBlock()
         groupButtons[(size_t) i] = b;
     }
     col->addLayout (grid);
+    // Sous les groupes, au centre : tout reactiver et la 2e banque
+    auto* tools = new QHBoxLayout;
+    tools->addStretch();
+    tools->addWidget (muteSoloRow (groupUnmute, groupUnsolo, true));
+    tools->addWidget (bankButton);
+    tools->addStretch();
+    col->addLayout (tools);
+    col->addStretch (1);                             // le bloc reste en haut, la barre colle aux groupes
     return panel;
 }
 
@@ -1034,6 +1103,11 @@ QWidget* MainWindow::buildLeftPanel()
     tools->addWidget (lengthBox);
     tools->addWidget (twice);
     tools->addWidget (gen);
+    auto* manager = new QPushButton (tr ("Patterns..."));
+    manager->setFocusPolicy (Qt::NoFocus);
+    manager->setToolTip (tr ("All the patterns of this group: play, rename, copy, paste, duplicate, delete, scenes"));
+    connect (manager, &QPushButton::clicked, this, [this] { openPatternManager(); });
+    tools->addWidget (manager);
     tools->addWidget (clear);
     tools->addSpacing (8);
     for (const int step : { -1, 1, -12, 12 })        // transposition : selection, sinon case du curseur
@@ -1501,6 +1575,7 @@ void MainWindow::recordEnd (RecNote& slot)
 
 void MainWindow::selectGroup (int group)
 {
+    QTimer::singleShot (0, this, [this] { if (patternManagerRefresh) patternManagerRefresh(); });   // la liste suit le groupe
     state.group = qBound (0, group, kGroups - 1);
     if (patternBar)
         patternBar->refresh();
@@ -1658,6 +1733,13 @@ void MainWindow::onMaschineButton (const QString& name, bool down)
 {
     if (name == "tempo")
         maschine->setProperty ("tempoHeld", down);
+    if (name == "mute" && down && maschine->property ("shiftHeld").toBool())   // Shift + MUTE : panique
+    {
+        releaseAllKeys();
+        engine->panic();                             // tous les sons se coupent
+        toast ("ALL SOUNDS OFF");
+        return;
+    }
     if (name == "mute" || name == "solo")           // tenus : + groupe ou + pad
     {
         (name == "mute" ? muteHeld : soloHeld) = down;
@@ -2259,13 +2341,45 @@ bool MainWindow::maybeSave()
 {
     if (! project.modified (sequencer, state, bpmBox->value()))
         return true;
-    const auto answer = QMessageBox::question (this, tr ("Unsaved changes"),
-                                               tr ("Save the changes to project %1?").arg (project.name),
-                                               QMessageBox::Save | QMessageBox::Discard | QMessageBox::Cancel,
-                                               QMessageBox::Save);
-    if (answer == QMessageBox::Save)
+    // Don't Save / Cancel / Save : 1re lettre en gras soulignee = sa touche (D, C, S, avec ou sans Cmd).
+    // Cancel est choisi par defaut (Entree ne perd rien).
+    QDialog box (this);
+    box.setWindowTitle (tr ("Unsaved changes"));
+    auto* col = new QVBoxLayout (&box);
+    auto* text = new QLabel (tr ("Save the changes to project <b>%1</b>?").arg (project.name.toHtmlEscaped()));
+    text->setContentsMargins (6, 6, 6, 10);
+    col->addWidget (text);
+    auto* row = new QHBoxLayout;
+    int answer = 0;                                  // 0 = Cancel, 1 = Don't Save, 2 = Save
+    auto button = [&] (const QString& word, int value)
+    {
+        auto* b = new QPushButton;
+        auto* inner = new QHBoxLayout (b);
+        inner->setContentsMargins (14, 0, 14, 0);
+        auto* l = new QLabel (QString ("<b><u>%1</u></b>%2").arg (word.left (1).toHtmlEscaped(), word.mid (1).toHtmlEscaped()));
+        l->setAttribute (Qt::WA_TransparentForMouseEvents);
+        l->setStyleSheet ("background: transparent;");
+        l->setAlignment (Qt::AlignCenter);
+        inner->addWidget (l);
+        b->setMinimumSize (l->sizeHint().width() + 34, 30);
+        connect (b, &QPushButton::clicked, &box, [&box, &answer, value] { answer = value; box.accept(); });
+        for (const QString& key : { word.left (1), "Ctrl+" + word.left (1) })   // Ctrl = Cmd sur Mac
+            connect (new QShortcut (QKeySequence (key), &box), &QShortcut::activated, b, &QPushButton::click);
+        row->addWidget (b);
+        return b;
+    };
+    button (tr ("Don't Save"), 1);
+    row->addStretch();
+    auto* cancel = button (tr ("Cancel"), 0);
+    auto* save = button (tr ("Save"), 2);
+    save->setObjectName ("accent");
+    col->addLayout (row);
+    cancel->setDefault (true);
+    cancel->setFocus();
+    box.exec();
+    if (answer == 2)
         return saveProject();
-    return answer == QMessageBox::Discard;
+    return answer == 1;
 }
 
 // ------------------------------------------------------------------------------- panneaux et vues
@@ -2428,7 +2542,29 @@ MainWindow::UndoStep MainWindow::capture (const UndoStep& like) const
         now.groups.push_back ({ gs.group, sequencer.groupPatterns (gs.group), state.groupVolume[(size_t) gs.group].load(), state.groupLabel[(size_t) gs.group] });
     for (const auto& entry : like.sounds)
         now.sounds.push_back ({ entry.first, takeSound (entry.first / 16, entry.first % 16 + 1) });
+    if (like.hasScenes)
+    {
+        now.hasScenes = true;
+        for (int i = 0; i < seq::kPatternSlots; ++i)
+            now.scenes.push_back (sequencer.scene (i));
+    }
     return now;
+}
+
+void MainWindow::rememberPatterns (int g, const QString& label)
+{
+    // Avant une action du gestionnaire de patterns : Cmd+Z remet les patterns du groupe et les scenes
+    UndoStep step;
+    step.label = label;
+    step.groups.push_back ({ g, sequencer.groupPatterns (g), state.groupVolume[(size_t) g].load(), state.groupLabel[(size_t) g] });
+    step.hasScenes = true;
+    for (int i = 0; i < seq::kPatternSlots; ++i)
+        step.scenes.push_back (sequencer.scene (i));
+    std::lock_guard<std::mutex> lk (undoLock);
+    undoStack.push_back (std::move (step));
+    if (undoStack.size() > 100)
+        undoStack.erase (undoStack.begin());
+    redoStack.clear();
 }
 
 void MainWindow::rememberSounds (const std::vector<std::pair<int, int>>& pads, const std::vector<int>& groups, const QString& label)
@@ -2487,6 +2623,9 @@ void MainWindow::undo (bool redoIt)
         state.groupVolume[(size_t) gs.group] = gs.volume;
         state.groupLabel[(size_t) gs.group] = gs.label;
     }
+    if (step.hasScenes)
+        for (int i = 0; i < (int) step.scenes.size(); ++i)
+            sequencer.setScene (i, step.scenes[(size_t) i]);
     for (const auto& [i, s] : step.sounds)
         putSound (i / 16, i % 16 + 1, s);
     if (! step.sounds.empty() || ! step.groups.empty())
@@ -2499,7 +2638,11 @@ void MainWindow::undo (bool redoIt)
     if (shown != state.group)                         // on montre le groupe concerne
         selectGroup (shown);
     showPatternState();
-    patternBar->refresh();
+    patternBar->refresh (true);
+    if (sceneView)
+        sceneView->update();
+    if (patternManagerRefresh)
+        patternManagerRefresh();
     statusBar()->showMessage (QString ("%1 (%2)").arg (redoIt ? tr ("Redo") : tr ("Undo"),
                                                        step.label.isEmpty() ? groupName (shown) : step.label), 1500);
 }
@@ -2637,6 +2780,8 @@ void MainWindow::toggleSound (int group, int sound, bool solo)
 
 void MainWindow::refreshMuteSolo()
 {
+    if (sceneView)
+        sceneView->update();                         // vue Scenes : groupes muets en gris
     // « Unmute all » / « Unsolo all » : actifs seulement s'il y a quelque chose a reactiver
     bool anyMute = false, anySolo = false, anyGMute = false, anyGSolo = false;
     for (int s = 0; s < 16; ++s)
@@ -4978,6 +5123,8 @@ bool MainWindow::trackerKey (QKeyEvent* e)
 
 void MainWindow::patternsChanged()
 {
+    if (patternManagerRefresh)
+        patternManagerRefresh();                     // la liste des patterns suit
     // Un pattern ou une scene a change : toutes les vues suivent
     showPatternState();                              // longueur, selection
     refreshAll();
@@ -5017,8 +5164,19 @@ QWidget* MainWindow::buildScenes()
     rotate->setObjectName ("keys");
     rotate->setToolTip (tr ("Scenes in columns, groups in rows (or back)"));
     head->addWidget (rotate);
-    auto* hint = new QLabel (tr ("scene: click = launch, double-click = rename, right-click = more · cell: click = on / off, "
-                                 "right-click = choose pattern / free / rename · NOW PLAYING: same · wheel = more scenes"));
+    // Modes : Play (defaut) = cliquer joue ; Edit = cliquer modifie ; les deux ; aucun = protege
+    auto* editBtn = new QPushButton (tr ("Edit"));
+    auto* playBtn = new QPushButton (tr ("Play"));
+    for (auto* b : { editBtn, playBtn })
+    {
+        b->setCheckable (true);
+        b->setFocusPolicy (Qt::NoFocus);
+        b->setObjectName ("keys");
+        head->addWidget (b);
+    }
+    editBtn->setToolTip (tr ("Edit: click a cell = on / off in the scene, right-click = choose a pattern, lock, rename"));
+    playBtn->setToolTip (tr ("Play: click a cell = play that pattern, click a scene = launch it (Edit and Play both off = protected)"));
+    auto* hint = new QLabel;
     hint->setObjectName ("hint");
     hint->setSizePolicy (QSizePolicy::Ignored, QSizePolicy::Preferred);
     hint->setMinimumWidth (0);
@@ -5028,6 +5186,22 @@ QWidget* MainWindow::buildScenes()
     sceneView = new SceneView (sequencer, state);
     sceneView->isPlaying = [this] { return transport && transport->playing(); };
     rotate->setChecked (QSettings().value ("scenes/rotated", false).toBool());
+    editBtn->setChecked (QSettings().value ("scenes/edit", false).toBool());
+    playBtn->setChecked (QSettings().value ("scenes/play", true).toBool());
+    auto modes = [this, editBtn, playBtn, hint]
+    {
+        const bool e = editBtn->isChecked(), p = playBtn->isChecked();
+        sceneView->setModes (e, p);
+        QSettings().setValue ("scenes/edit", e);
+        QSettings().setValue ("scenes/play", p);
+        hint->setText (! e && ! p ? tr ("PROTECTED: Edit and Play are off, nothing changes on click \u00B7 right-click a group = mute / solo")
+                       : QString (p ? tr ("cell: click = play it \u00B7 scene: click = launch") : QString())
+                         + (e && p ? QStringLiteral (" \u00B7 ") : QString())
+                         + (e ? tr ("cell: click = on / off, right-click = choose \u00B7 lock = no more changes \u00B7 double-click = rename") : QString())
+                         + tr (" \u00B7 wheel = more"));
+    };
+    connect (editBtn, &QPushButton::toggled, this, modes);
+    connect (playBtn, &QPushButton::toggled, this, modes);
     sceneView->setRotated (rotate->isChecked());
     connect (rotate, &QPushButton::toggled, this, [this] (bool on)
     {
@@ -5035,6 +5209,29 @@ QWidget* MainWindow::buildScenes()
         QSettings().setValue ("scenes/rotated", on);
     });
     col->addWidget (sceneView, 1);
+    modes();
+    connect (sceneView, &SceneView::message, this, [this] (const QString& t) { toast (t); });
+    connect (sceneView, &SceneView::groupMenu, this, [this] (int g, const QPoint& at)
+    {
+        // Clic droit sur un groupe (vue Scenes) : Mute / Solo, renommer
+        QMenu menu (this);
+        auto* mute = menu.addAction (state.groupMute[(size_t) g] ? tr ("Unmute %1").arg (groupTitle (state, g)) : tr ("Mute %1").arg (groupTitle (state, g)));
+        auto* solo = menu.addAction (state.groupSolo[(size_t) g] ? tr ("Unsolo %1").arg (groupTitle (state, g)) : tr ("Solo %1").arg (groupTitle (state, g)));
+        menu.addSeparator();
+        auto* rename = menu.addAction (tr ("Rename Group %1...").arg (groupName (g)));
+        auto* picked = menu.exec (at);
+        if (picked == mute)
+            state.groupMute[(size_t) g] = ! state.groupMute[(size_t) g];
+        else if (picked == solo)
+            state.groupSolo[(size_t) g] = ! state.groupSolo[(size_t) g];
+        else if (picked == rename)
+            renameGroup (g);
+        if (picked == mute || picked == solo)
+        {
+            refreshMuteSolo();
+            sceneView->update();
+        }
+    });
     connect (sceneView, &SceneView::sceneClicked, this, [this] (int i) { patternBar->chooseScene (i); });
     connect (sceneView, &SceneView::sceneMenu, this, [this] (int i, const QPoint& at) { patternBar->sceneMenu (i, at); });
     connect (sceneView, &SceneView::changed, this, [this] { patternBar->refresh (true); patternsChanged(); });
@@ -5244,4 +5441,266 @@ void MainWindow::importGroupFrom (const QString& path, const QJsonObject& doc)
     if (missing)
         QMessageBox::warning (this, tr ("Import Group"), tr ("%1 sample(s) not found: those pads stay without sample.").arg (missing));
     toast (QString ("GROUP %1 imported").arg (groupName (g)));
+}
+
+// ------------------------------------------------------------ gestionnaire de patterns (groupe choisi)
+
+void MainWindow::openPatternManager()
+{
+    // Une fenetre (non bloquante) : les 64 cases de patterns du groupe choisi, et des actions
+    if (patternManagerDialog)
+    {
+        patternManagerDialog->show();
+        patternManagerDialog->raise();
+        patternManagerDialog->activateWindow();
+        return;
+    }
+    auto* box = new QDialog (this);
+    patternManagerDialog = box;
+    box->setAttribute (Qt::WA_DeleteOnClose);
+    box->resize (720, 520);
+    auto* col = new QVBoxLayout (box);
+    auto* title = new QLabel;
+    title->setObjectName ("section");
+    col->addWidget (title);
+    auto* table = new QTableWidget (seq::kPatternSlots, 6);
+    table->setHorizontalHeaderLabels ({ tr ("#"), tr ("Name"), tr ("Lines"), tr ("Notes"), tr ("In scenes"), tr ("Now") });
+    table->verticalHeader()->hide();
+    table->setSelectionBehavior (QAbstractItemView::SelectRows);
+    table->setSelectionMode (QAbstractItemView::SingleSelection);
+    table->setEditTriggers (QAbstractItemView::NoEditTriggers);
+    table->horizontalHeader()->setSectionResizeMode (QHeaderView::ResizeToContents);
+    table->horizontalHeader()->setSectionResizeMode (4, QHeaderView::Stretch);
+    col->addWidget (table, 1);
+    auto* row = new QHBoxLayout;
+    auto button = [&] (const QString& text, const QString& tip)
+    {
+        auto* b = new QPushButton (text);
+        b->setFocusPolicy (Qt::NoFocus);
+        b->setToolTip (tip);
+        row->addWidget (b);
+        return b;
+    };
+    auto* play = button (tr ("Play"), tr ("Play this pattern (at the end of the bar if playing)"));
+    auto* rename = button (tr ("Rename"), tr ("Short name (8 characters, as on the Maschine)"));
+    auto* copy = button (tr ("Copy"), tr ("Copy this pattern"));
+    auto* paste = button (tr ("Paste"), tr ("Paste the copied pattern into this slot"));
+    auto* dup = button (tr ("Duplicate"), tr ("Copy into the first free slot"));
+    auto* twice = button (tr ("Double length"), tr ("Length x 2, notes copied into the new half"));
+    auto* erase = button (tr ("Delete"), tr ("Delete this pattern (the playing one is only cleared)"));
+    auto* scenes = button (tr ("Scenes..."), tr ("Tick the scenes that play this pattern for this group"));
+    col->addLayout (row);
+    auto* hint = new QLabel (tr ("Group chosen in the app · double-click = play · Cmd+Z undoes every change"));
+    hint->setObjectName ("hint");
+    col->addWidget (hint);
+
+    auto chosen = [table] { return table->currentRow(); };
+    auto usedIn = [this] (int g, int idx)            // les scenes ou ce pattern joue pour ce groupe
+    {
+        QStringList out;
+        for (int i = 0; i < seq::kPatternSlots; ++i)
+        {
+            const seq::Scene sc = sequencer.scene (i);
+            if (sc.used && sc.pattern[(size_t) g] == idx)
+                out << QString ("S%1").arg (i + 1) + (sc.name.empty() ? QString() : " " + QString::fromStdString (sc.name));
+        }
+        return out;
+    };
+    auto refresh = [this, box, title, table, play, rename, copy, paste, dup, twice, erase, scenes, chosen, usedIn]
+    {
+        const int g = state.group;
+        box->setWindowTitle (tr ("Patterns of group %1").arg (groupTitle (state, g)));
+        title->setText (tr ("PATTERNS  %1").arg (groupTitle (state, g)));
+        title->setStyleSheet (QString ("QLabel { color: %1; }").arg (css (groupColor (g))));
+        const int cur = sequencer.currentPattern (g);
+        for (int i = 0; i < seq::kPatternSlots; ++i)
+        {
+            const bool exists = sequencer.hasPattern (g, i);
+            const seq::Pattern pat = sequencer.patternAt (g, i);
+            int notes = 0;
+            for (int r = 0; exists && r < pat.length; ++r)
+                for (const auto& c : pat.rows[(size_t) r])
+                    notes += c.empty() ? 0 : 1;
+            QString name = QString::fromStdString (sequencer.patternName (g, i));
+            if (exists && name.isEmpty())
+                name = QString ("Pat%1").arg (i + 1);
+            const QStringList cells { QString::number (i + 1), exists ? name : tr ("(empty)"),
+                                      exists ? QString::number (pat.length) : QString(), exists ? QString::number (notes) : QString(),
+                                      exists ? usedIn (g, i).join (", ") : QString(),
+                                      exists && i == cur ? (sequencer.groupOff (g) ? tr ("chosen (off)") : QStringLiteral ("▶")) : QString() };
+            for (int c = 0; c < cells.size(); ++c)
+            {
+                auto* item = table->item (i, c);
+                if (! item)
+                    table->setItem (i, c, item = new QTableWidgetItem);
+                item->setText (cells[c]);
+                item->setForeground (exists ? QColor (230, 230, 238) : QColor (90, 90, 100));
+            }
+        }
+        const int i = chosen();
+        const bool exists = i >= 0 && sequencer.hasPattern (g, i);
+        for (auto* b : { play, rename, copy, dup, twice, erase, scenes })
+            b->setEnabled (exists);
+        paste->setEnabled (i >= 0 && patternClipFull);
+    };
+    patternManagerRefresh = refresh;
+    connect (box, &QObject::destroyed, this, [this] { patternManagerRefresh = nullptr; patternManagerDialog = nullptr; });
+    connect (table, &QTableWidget::currentCellChanged, box, [refresh] { refresh(); });
+    auto done = [this] (const QString& msg)          // apres une action : toutes les vues suivent
+    {
+        patternBar->refresh (true);
+        patternsChanged();
+        if (! msg.isEmpty())
+            toast (msg);
+    };
+    auto playIt = [this, chosen, done]
+    {
+        const int g = state.group, i = chosen();
+        if (i < 0 || ! sequencer.hasPattern (g, i))
+            return;
+        sequencer.selectPattern (g, i, transport->playing());
+        sequencer.setCurrentScene (-1);
+        done (QString ("PATTERN %1 %2").arg (i + 1).arg (transport->playing() ? QString (": next") : QString()));
+    };
+    connect (play, &QPushButton::clicked, box, playIt);
+    connect (table, &QTableWidget::cellDoubleClicked, box, playIt);
+    connect (rename, &QPushButton::clicked, box, [this, chosen, done]
+    {
+        const int i = chosen();
+        if (i >= 0)
+            patternBar->renamePattern (state.group, i);
+        done ({});
+    });
+    connect (copy, &QPushButton::clicked, box, [this, chosen, refresh]
+    {
+        const int g = state.group, i = chosen();
+        if (i < 0 || ! sequencer.hasPattern (g, i))
+            return;
+        patternClip = sequencer.patternAt (g, i);
+        patternClipName = sequencer.patternName (g, i);
+        patternClipFull = true;
+        toast (QString ("PATTERN %1 copied").arg (i + 1));
+        refresh();
+    });
+    connect (paste, &QPushButton::clicked, box, [this, chosen, done]
+    {
+        const int g = state.group, i = chosen();
+        if (i < 0 || ! patternClipFull)
+            return;
+        rememberPatterns (g, tr ("Paste pattern"));
+        sequencer.setPatternAt (g, i, patternClip);
+        sequencer.setPatternName (g, i, patternClipName);
+        done (QString ("PASTE > PATTERN %1").arg (i + 1));
+    });
+    connect (dup, &QPushButton::clicked, box, [this, chosen, done, table]
+    {
+        const int g = state.group, i = chosen();
+        if (i < 0 || ! sequencer.hasPattern (g, i))
+            return;
+        int to = -1;
+        for (int k = 1; k < seq::kPatternSlots && to < 0; ++k)
+            if (! sequencer.hasPattern (g, (i + k) % seq::kPatternSlots))
+                to = (i + k) % seq::kPatternSlots;
+        if (to < 0)
+        {
+            toast ("No free pattern slot");
+            return;
+        }
+        rememberPatterns (g, tr ("Duplicate pattern"));
+        sequencer.setPatternAt (g, to, sequencer.patternAt (g, i));
+        sequencer.setPatternName (g, to, sequencer.patternName (g, i));
+        done (QString ("PATTERN %1 > %2").arg (i + 1).arg (to + 1));
+        table->setCurrentCell (to, 0);
+    });
+    connect (twice, &QPushButton::clicked, box, [this, chosen, done]
+    {
+        const int g = state.group, i = chosen();
+        if (i < 0 || ! sequencer.hasPattern (g, i))
+            return;
+        const seq::Pattern p = sequencer.patternAt (g, i);
+        if (p.length * 2 > seq::kMaxRows)
+        {
+            toast (QString ("Too long (max %1 lines)").arg (seq::kMaxRows));
+            return;
+        }
+        rememberPatterns (g, tr ("Double pattern"));
+        seq::Pattern d = p;
+        for (int r = 0; r < p.length; ++r)
+            d.rows[(size_t) (r + p.length)] = p.rows[(size_t) r];
+        d.length = p.length * 2;
+        sequencer.setPatternAt (g, i, d);
+        done (QString ("PATTERN %1: %2 lines").arg (i + 1).arg (d.length));
+    });
+    connect (erase, &QPushButton::clicked, box, [this, box, chosen, done, usedIn]
+    {
+        const int g = state.group, i = chosen();
+        if (i < 0 || ! sequencer.hasPattern (g, i))
+            return;
+        for (int k = 0; k < seq::kPatternSlots; ++k)   // une scene verrouillee le joue : on le garde
+        {
+            const seq::Scene sc = sequencer.scene (k);
+            if (sc.used && sc.locked && sc.pattern[(size_t) g] == i)
+            {
+                toast (QString ("Pattern %1 is used by locked scene S%2").arg (i + 1).arg (k + 1));
+                return;
+            }
+        }
+        const QStringList in = usedIn (g, i);
+        if (! in.isEmpty() && QMessageBox::question (box, tr ("Delete pattern"),
+                                                     tr ("Pattern %1 is used in %2.\nDelete it anyway? (those scenes will play nothing for this group)")
+                                                         .arg (i + 1).arg (in.join (", "))) != QMessageBox::Yes)
+            return;
+        rememberPatterns (g, tr ("Delete pattern"));
+        for (int k = 0; k < seq::kPatternSlots; ++k)   // les scenes qui le jouaient : groupe eteint
+        {
+            seq::Scene sc = sequencer.scene (k);
+            if (sc.used && sc.pattern[(size_t) g] == i && ! sc.locked)
+            {
+                sc.pattern[(size_t) g] = seq::kOff;
+                sequencer.setScene (k, sc);
+            }
+        }
+        sequencer.removePattern (g, i);
+        done (QString ("PATTERN %1 deleted").arg (i + 1));
+    });
+    connect (scenes, &QPushButton::clicked, box, [this, box, chosen, done, scenes]
+    {
+        // Les scenes ou ce pattern joue (pour ce groupe) : cocher = l'y mettre, decocher = groupe eteint
+        const int g = state.group, i = chosen();
+        if (i < 0 || ! sequencer.hasPattern (g, i))
+            return;
+        QMenu menu (box);
+        QList<QPair<QAction*, int>> items;
+        for (int k = 0; k < seq::kPatternSlots; ++k)
+        {
+            const seq::Scene sc = sequencer.scene (k);
+            if (! sc.used)
+                continue;
+            auto* a = menu.addAction (QString ("S%1 %2%3").arg (k + 1).arg (QString::fromStdString (sc.name))
+                                          .arg (sc.locked ? QString ("  (locked)") : QString()));
+            a->setCheckable (true);
+            a->setChecked (sc.pattern[(size_t) g] == i);
+            a->setEnabled (! sc.locked);
+            items << qMakePair (a, k);
+        }
+        if (items.isEmpty())
+        {
+            toast ("No scene yet");
+            return;
+        }
+        auto* picked = menu.exec (scenes->mapToGlobal (QPoint (0, scenes->height())));
+        for (const auto& [a, k] : items)
+            if (a == picked)
+            {
+                rememberPatterns (g, tr ("Pattern in scene"));
+                seq::Scene sc = sequencer.scene (k);
+                sc.pattern[(size_t) g] = a->isChecked() ? i : (int) seq::kOff;
+                sequencer.setScene (k, sc);
+                done (QString ("S%1 %2: %3").arg (k + 1).arg (groupName (g))
+                          .arg (a->isChecked() ? QString ("pattern %1").arg (i + 1) : QString ("off")));
+            }
+    });
+    table->setCurrentCell (std::max (0, sequencer.currentPattern (state.group)), 0);
+    refresh();
+    box->show();
 }
