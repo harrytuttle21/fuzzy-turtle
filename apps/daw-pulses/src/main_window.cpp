@@ -84,7 +84,7 @@ using namespace session;
 namespace fc = fuzzy::control;
 
 namespace {
-constexpr int kLayoutVersion = 7;                  // disposition des panneaux (2 : Pattern et Mixer en panneaux)
+constexpr int kLayoutVersion = 8;                  // disposition des panneaux (2 : Pattern et Mixer en panneaux)
 
 // Clavier musical de l'ordinateur : rangee du milieu = touches blanches, rangee du haut = noires.
 struct KeyLayout { const char* notes; char octDown, octUp, velDown, velUp; };
@@ -224,6 +224,9 @@ MainWindow::MainWindow (const Options& options, QWidget* parent) : QMainWindow (
     addDockWidget (Qt::BottomDockWidgetArea, groupsDock);
     addDockWidget (Qt::BottomDockWidgetArea, keysTabDock);
     splitDockWidget (groupsDock, keysTabDock, Qt::Horizontal);
+    // Transport : sa propre fenetre, sous les groupes (detachable a part)
+    transportDock = makeDock (tr ("Transport"), "transportDock", buildTransportBar());
+    splitDockWidget (groupsDock, transportDock, Qt::Vertical);
     addDockWidget (Qt::BottomDockWidgetArea, padsDock);
     splitDockWidget (keysTabDock, padsDock, Qt::Horizontal);
     tabifyDockWidget (keysTabDock, soundDock);       // Keyboard et Sound en onglets (apres les pads)
@@ -326,6 +329,7 @@ MainWindow::MainWindow (const Options& options, QWidget* parent) : QMainWindow (
     {
         resizeDocks ({ groupsDock, keysTabDock, padsDock }, { width() * 25 / 100, width() * 50 / 100, width() * 25 / 100 }, Qt::Horizontal);
         resizeDocks ({ patternDock, padsDock }, { height() * 58 / 100, height() * 42 / 100 }, Qt::Vertical);
+        resizeDocks ({ groupsDock, transportDock }, { height(), transportDock->widget()->sizeHint().height() }, Qt::Vertical);
         defaultLayout = saveState (kLayoutVersion);   // vue Default
         QSettings s;
         if (s.contains ("windowState"))
@@ -1026,8 +1030,6 @@ QWidget* MainWindow::buildGroupBlock()
     tools->addWidget (bankButton);
     tools->addStretch();
     col->addLayout (tools);
-    col->addSpacing (6);
-    col->addWidget (buildTransportBar());            // lecture / enregistrement, sous les groupes
     col->addStretch (1);                             // le bloc reste en haut, la barre colle aux groupes
     return panel;
 }
@@ -1352,6 +1354,7 @@ QWidget* MainWindow::buildTransportBar()
     rows->addLayout (top);
     rows->addLayout (row);
     bar->setToolTip (tr ("Space bar: play / pause"));
+    bar->setSizePolicy (QSizePolicy::Preferred, QSizePolicy::Maximum);   // juste sa hauteur
     return bar;
 }
 
@@ -2459,7 +2462,7 @@ void MainWindow::buildViewMenu (QMenu* menu)
     // Panneaux : coche = visible
     struct Item { QDockWidget* dock; QKeySequence key; };
     for (const auto& item : { Item { padsDock, QKeySequence ("Ctrl+1") }, Item { groupsDock, QKeySequence ("Ctrl+2") },
-                              Item { statusDock, QKeySequence ("Ctrl+I") } })
+                              Item { transportDock, QKeySequence() }, Item { statusDock, QKeySequence ("Ctrl+I") } })
     {
         auto* a = item.dock->toggleViewAction();
         a->setShortcut (item.key);

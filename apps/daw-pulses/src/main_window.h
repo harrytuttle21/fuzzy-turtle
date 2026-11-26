@@ -123,7 +123,7 @@ private:
     QDockWidget* groupsDock = nullptr;
     QDockWidget* keysDock = nullptr;
     QDockWidget* statusDock = nullptr;
-    QToolBar* transportBar = nullptr;
+    QDockWidget* transportDock = nullptr;           // Transport : fenetre a part, sous les groupes
     bool projectModified = false;
 
     PadGrid* pads = nullptr;
