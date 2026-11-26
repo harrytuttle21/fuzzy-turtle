@@ -17,10 +17,11 @@ struct KeySettings
 {
     int root = 0;                                    // tonique : 0 = C ... 11 = B
     int scale = 0;                                   // >= 0 : music::scales() (0 = Chromatic) ; < 0 : personnalisee (-1 = la 1re)
-    int chordMode = 0;                               // 0 aucun, 1 Harmonizer, 2 Chord Set, 3 accord personnalise
+    int chordMode = 0;                               // 0 aucun, 1 Harmonizer, 2 Chord Set, 3 accord personnalise, 4 User
     int harmony = 2;                                 // index dans music::harmonies() (1-3-5)
     int chordSet = 0;                                // index dans music::chordSets()
     int customChord = 0;                             // index dans customChords()
+    int userBank = 0;                                // User 1-10 (accords perso, comme le pilote)
 };
 
 // Gammes et accords personnalises (enregistres dans les reglages de l'app)
@@ -29,6 +30,14 @@ std::vector<Custom>& customScales();
 std::vector<Custom>& customChords();
 void loadCustom();
 void saveCustom();
+// Accords USER : 10 banques de 12 accords (intervalles depuis la tonique de l'octave), le meme
+// fichier que le pilote Maschine (user_chords.json) : ce qui est cree d'un cote se retrouve de l'autre
+constexpr int kUserBanks = 10;
+std::vector<std::vector<std::vector<int>>>& userChords();
+QString userChordsFile();                        // le fichier utilise (a cote du pilote, sinon les reglages)
+void loadUserChords();
+bool saveUserChords();
+int userCount (int bank);                        // accords remplis dans une banque
 const std::vector<int>& scaleSteps (int scale);        // gamme fournie (>= 0) ou personnalisee (< 0)
 int customScaleId (int index);                          // index personnalise -> valeur de « scale »
 

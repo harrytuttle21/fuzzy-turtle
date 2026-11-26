@@ -214,6 +214,10 @@ private:
     std::atomic<bool> padChords { false };           // mode CHORDS : chaque pad joue un accord (menu Chords)
     int padChordKey (int pad) const;                 // touche jouee par un pad en mode CHORDS (-1 = aucun accord)
     QString padChordLabel (int pad) const;           // nom de l'accord du pad
+    void chordPadMenu (int pad, const QPoint& at);   // mode Chords, clic droit sur un pad : accords User
+    void chordDropMenu (int fromPad, int toPad, const QPoint& at);   // set User : pad lache sur un pad
+    std::vector<int> chordClip;                      // Copy / Paste d'un accord User
+    bool chordClipFull = false;
     QString padLabel (int pad) const;                // texte d'un pad selon le mode (son, note, accord)
     void setPadChords (bool on);
     void useMelodicSound();                          // KEYBOARD / CHORDS : pas une batterie de synthese
@@ -331,12 +335,13 @@ private:
         QString label;
     };
     void rememberPatterns (int group, const QString& label);   // tous les patterns du groupe + les scenes
-    void openPatternManager();                       // Pattern > Patterns... : la liste du groupe
+    void openPatternManager();                       // Pattern > List : la liste du groupe
+    void openSceneList();                            // Scenes > List : les scenes et leurs patterns
+    class PaletteView* palette = nullptr;            // Scenes > Palette : carres a glisser
+    QDialog* sceneListDialog = nullptr;
+    std::function<void()> sceneListRefresh;
     std::function<void()> patternManagerRefresh;     // la fenetre ouverte suit les changements
     QDialog* patternManagerDialog = nullptr;
-    seq::Pattern patternClip;                        // Copy / Paste du gestionnaire
-    std::string patternClipName;
-    bool patternClipFull = false;
     void rememberSounds (const std::vector<std::pair<int, int>>& pads, const std::vector<int>& groups = {}, const QString& label = {});
     UndoStep capture (const UndoStep& like) const;   // l'etat actuel des memes elements (pour refaire)
     std::mutex undoLock;                             // l'enregistrement vient aussi de la Maschine
@@ -363,7 +368,7 @@ private:
     QPushButton* padsUnsolo = nullptr;
     QPushButton* mixUnmute = nullptr;
     QPushButton* mixUnsolo = nullptr;
-    QWidget* muteSoloRow (QPushButton*& unmute, QPushButton*& unsolo, bool groups);
+    QWidget* muteSoloRow (QPushButton*& unmute, QPushButton*& unsolo, bool groups, bool vertical = false);
 
     // Samples des pads (envoyes au moteur ; ce qui a deja ete envoye, pour n'envoyer que les changements)
     std::array<QString, session::kGroups * 16> sentSamples;

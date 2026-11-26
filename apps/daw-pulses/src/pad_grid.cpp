@@ -26,11 +26,13 @@ PadGrid::PadGrid (QWidget* parent) : QWidget (parent)
 
 QRectF PadGrid::padRect (int pad) const
 {
-    const double side = std::min (width(), height());
-    const double cell = side / 4.0, gap = 8;
+    // Pads aussi grands que la place le permet ; un peu plus larges que hauts si le panneau
+    // est large (jusqu'a 1,35 fois) : plus de place pour les noms
+    const double ch = std::min (width(), height()) / 4.0;
+    const double cw = std::min (width() / 4.0, ch * 1.35), gap = 6;
     const int col = (pad - 1) % 4, row = 3 - (pad - 1) / 4;      // pad 1 en bas a gauche
-    const double x0 = (width() - side) / 2, y0 = (height() - side) / 2;   // centres
-    return { x0 + col * cell + gap / 2, y0 + row * cell + gap / 2, cell - gap, cell - gap };
+    const double x0 = (width() - 4 * cw) / 2, y0 = (height() - 4 * ch) / 2;   // centres
+    return { x0 + col * cw + gap / 2, y0 + row * ch + gap / 2, cw - gap, ch - gap };
 }
 
 int PadGrid::padAt (const QPointF& p) const
@@ -55,9 +57,9 @@ void PadGrid::paintEvent (QPaintEvent*)
     QPainter g (this);
     g.setRenderHint (QPainter::Antialiasing);
     // Texte a la taille d'un pad (lisible meme quand le panneau est etroit)
-    const double cell = padRect (1).width();
+    const double cell = std::min (padRect (1).width(), padRect (1).height() * 1.2);
     QFont f = font();
-    f.setPixelSize (std::clamp (int (cell * 0.15), 8, 15));
+    f.setPixelSize (std::clamp (int (cell * 0.17), 10, 20));   // plus grand : lisible
     g.setFont (f);
     const QFontMetricsF fm (f);
     for (int pad = 1; pad <= 16; ++pad)

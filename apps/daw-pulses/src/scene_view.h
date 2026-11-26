@@ -30,6 +30,9 @@ signals:
     void renameScene (int scene);                    // double-clic sur le nom
     void renamePattern (int group, int pattern);
     void groupMenu (int group, const QPoint& globalPos);   // clic droit sur un groupe : Mute / Solo...
+    void muteSoloClicked (int group, bool solo);     // boutons M / S d'un groupe (Rotate)
+    void allOff (bool solo);                         // A/M : tout dé-muter ; A/S : tout dé-soloer
+    void beforeEdit (const QString& label);          // avant de modifier une scene (Cmd+Z)
     void message (const QString& text);
 
 protected:
@@ -37,9 +40,13 @@ protected:
     void mousePressEvent (QMouseEvent*) override;
     void wheelEvent (QWheelEvent*) override;
     void mouseDoubleClickEvent (QMouseEvent*) override;
+    void dragEnterEvent (class QDragEnterEvent*) override;   // un carre de la palette
+    void dragMoveEvent (class QDragMoveEvent*) override;
+    void dragLeaveEvent (class QDragLeaveEvent*) override;
+    void dropEvent (class QDropEvent*) override;
 
 private:
-    int nameW() const { return rotated ? 150 : 120; }                    // tourne : noms des groupes lisibles
+    int nameW() const { return rotated ? 196 : 120; }                    // tourne : M, S et noms lisibles
     int nowW() const { return 110; }                                       // tourne : colonne NOW
     int rowH() const { return 28; }
     double cellW() const { return (width() - nameW() - 4) / double (session::kGroups); }
@@ -47,6 +54,12 @@ private:
     int visibleGroups() const;                       // tourne : combien de groupes tiennent
     bool groupShown (int g) const { return ! rotated || (g >= firstGroup && g < firstGroup + visibleGroups()); }
     QRectF upArrow() const { return QRectF (nameW() - 44, 2, 20, rowH() - 4); }
+    QRectF muteBox (int g) const;                    // Rotate : M et S a gauche du groupe
+    QRectF soloBox (int g) const;
+    QRectF allMuteBox() const { return QRectF (2, 3, 34, rowH() - 6); }   // A/M au-dessus
+    QRectF allSoloBox() const { return QRectF (38, 3, 34, rowH() - 6); }  // A/S
+    bool dropTarget (const QPointF& pos, int group, int& scene, int& cellGroup) const;   // ou lacher un pattern
+    int dropScene = -1, dropGroup = -1;              // case survolee pendant le glisser
     QRectF downArrow() const { return QRectF (nameW() - 22, 2, 20, rowH() - 4); }
     QRectF lockBox (int k) const;                    // le cadenas d'une scene (rang visible)
     bool sceneLocked (int i) const { return sequencer.scene (i).locked; }

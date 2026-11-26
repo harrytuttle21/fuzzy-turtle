@@ -23,15 +23,26 @@ public:
 
     void refresh (bool force = false);               // redessine si quelque chose a change
     std::function<bool()> isPlaying;                 // lecture en cours ? (changements en attente)
+    std::function<void (int group)> startAudition;   // Play d'un pattern : ce groupe seul, lecture lancee
+    std::function<void()> stopPlayback;              // Stop (pendant l'ecoute)
+    std::function<void()> endAudition;               // une scene lancee : tous les groupes rejouent
+    // Presse-papiers (barre du haut et listes) : un pattern, une scene
+    seq::Pattern clipPattern;
+    std::string clipPatternName;
+    bool clipPatternFull = false;
+    seq::Scene clipScene;
+    bool clipSceneFull = false;
     int patternBank = 0, sceneBank = 0;
 
 signals:
     void changed();                                  // pattern ou scene change : rafraichir les vues
     void message (const QString& text);              // petit message (barre d'etat / Maschine)
     void aboutToChange (int group);                  // avant de modifier un pattern (annuler)
+    void beforeEdit (int group, const QString& label);   // avant de modifier patterns / scenes (annuler tout)
 
 public:
     void choosePattern (int index);                  // aussi pour la Maschine (PATTERN + pad)
+    void playPattern (int group, int index);         // Play : allume (jamais n'eteint), lance la lecture
     void chooseScene (int index);                    // SCENE + pad
     void patternMenu (int index, const QPoint& at);
     void sceneMenu (int index, const QPoint& at);
@@ -42,7 +53,8 @@ public:
     static QString sceneName (const seq::Sequencer& s, int index);                // nom, sinon « S3 »
 
 private:
-    int freeSlot (int from) const;                   // premier emplacement libre apres `from`
+    int freeSlot (int from) const;
+    bool confirm (const QString& question, const QString& detail);   // Yes / Cancel (Cancel par defaut)                   // premier emplacement libre apres `from`
     QString patternLabel (int g, int index) const;
 
     seq::Sequencer& sequencer;

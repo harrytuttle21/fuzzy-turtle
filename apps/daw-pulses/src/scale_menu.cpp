@@ -8,6 +8,8 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QMenu>
+#include <QFileDialog>
+#include <QSettings>
 #include <QMessageBox>
 #include <QPushButton>
 #include <QVBoxLayout>
@@ -181,6 +183,32 @@ void fillChordMenu (QMenu* menu, const KeySettings& k, const std::function<void 
         a->setChecked (k.chordMode == 2 && k.chordSet == i);
         QObject::connect (a, &QAction::triggered, parent, [pick, i] { pick (2, i); });
     }
+    // User 1-10 : accords perso (clic droit sur un pad en mode Chords : « Add to User »)
+    auto* user = menu->addMenu (k.chordMode == 4 ? QStringLiteral ("\u2713 User sets") : QStringLiteral ("User sets"));
+    for (int i = 0; i < kUserBanks; ++i)
+    {
+        const int n = userCount (i);
+        auto* a = user->addAction (QString ("User %1").arg (i + 1) + (n ? QString ("  (%1)").arg (n) : QObject::tr ("  (empty)")));
+        a->setCheckable (true);
+        a->setChecked (k.chordMode == 4 && k.userBank == i);
+        QObject::connect (a, &QAction::triggered, parent, [pick, i] { pick (4, i); });
+    }
+    user->addSeparator();
+    auto* file = user->addAction (QObject::tr ("Chords file (shared with the Maschine)..."));
+    file->setToolTip (userChordsFile());
+    user->setToolTipsVisible (true);
+    QObject::connect (file, &QAction::triggered, parent, [pick, parent, k]
+    {
+        const QString path = QFileDialog::getSaveFileName (parent, QObject::tr ("User chords file (user_chords.json of the Maschine driver)"),
+                                                           userChordsFile(), QObject::tr ("Chords (*.json)"),
+                                                           nullptr, QFileDialog::DontConfirmOverwrite);
+        if (path.isEmpty())
+            return;
+        QSettings().setValue ("keys/userChordsFile", path);
+        loadUserChords();                            // existant : on le lit ; nouveau : vide
+        pick (k.chordMode, k.chordMode == 1 ? k.harmony : k.chordMode == 2 ? k.chordSet
+                         : k.chordMode == 3 ? k.customChord : k.userBank);   // meme reglage, accords relus
+    });
     menu->addSeparator();
     auto* custom = menu->addMenu (k.chordMode == 3 ? QStringLiteral ("\u2713 Custom") : QStringLiteral ("Custom"));
     for (int i = 0; i < (int) customChords().size(); ++i)

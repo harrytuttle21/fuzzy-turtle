@@ -2,6 +2,9 @@
 #include "scene_view.h"
 
 #include <QMenu>
+#include <QMimeData>
+#include <QDragEnterEvent>
+#include <QDropEvent>
 #include <QMouseEvent>
 #include <QPainter>
 #include <QWheelEvent>
@@ -17,6 +20,7 @@ SceneView::SceneView (seq::Sequencer& seqr, const session::State& st, QWidget* p
     : QWidget (parent), sequencer (seqr), state (st)
 {
     setFocusPolicy (Qt::NoFocus);
+    setAcceptDrops (true);                           // carres de la palette
 }
 
 QString SceneView::patternText (int g, int index) const
@@ -50,8 +54,18 @@ QRectF SceneView::lockBox (int k) const
 QRectF SceneView::groupCell (int g) const
 {
     if (rotated)
-        return QRectF (2, rowH() + 4 + (g - firstGroup) * groupH() + 1, nameW() - 4, groupH() - 3);
+        return QRectF (48, rowH() + 4 + (g - firstGroup) * groupH() + 1, nameW() - 52, groupH() - 3);
     return QRectF (nameW() + g * cellW() + 1, 2, cellW() - 2, rowH() - 3);
+}
+
+QRectF SceneView::muteBox (int g) const
+{
+    return QRectF (2, rowH() + 4 + (g - firstGroup) * groupH() + 1, 20, groupH() - 3);
+}
+
+QRectF SceneView::soloBox (int g) const
+{
+    return QRectF (24, rowH() + 4 + (g - firstGroup) * groupH() + 1, 20, groupH() - 3);
 }
 
 QRectF SceneView::nowCell (int g) const
@@ -99,7 +113,24 @@ void SceneView::paintEvent (QPaintEvent*)
     else
     {
         firstGroup = std::clamp (firstGroup, 0, kGroups - visibleGroups());
-        p.drawText (QRectF (8, 0, nameW() - 50, rowH()), Qt::AlignVCenter | Qt::AlignLeft, tr ("GROUPS"));
+        p.drawText (QRectF (80, 0, nameW() - 128, rowH()), Qt::AlignVCenter | Qt::AlignLeft, tr ("GROUPS"));
+        // A/M et A/S : tout reactiver (allumes s'il y a quelque chose a reactiver)
+        bool anyMute = false, anySolo = false;
+        for (int g = 0; g < kGroups; ++g)
+        {
+            anyMute |= state.groupMute[(size_t) g].load();
+            anySolo |= state.groupSolo[(size_t) g].load();
+        }
+        for (const bool solo : { false, true })
+        {
+            const bool on = solo ? anySolo : anyMute;
+            const QRectF b = solo ? allSoloBox() : allMuteBox();
+            p.setPen (on ? Qt::NoPen : QPen (QColor (70, 70, 80)));
+            p.setBrush (on ? (solo ? QColor (232, 192, 64) : QColor (224, 80, 80)) : QColor (22, 22, 27));
+            p.drawRoundedRect (b, 3, 3);
+            p.setPen (on ? QColor (15, 15, 18) : QColor (110, 110, 120));
+            p.drawText (b, Qt::AlignCenter, solo ? "A/S" : "A/M");
+        }
         if (visibleGroups() < kGroups)               // pas la place pour 16 : triangles haut / bas
             for (const bool up : { true, false })
             {
@@ -133,7 +164,18 @@ void SceneView::paintEvent (QPaintEvent*)
         const QRectF tr = rotated ? r.adjusted (8, 0, -4, 0) : r;   // tourne : nom a gauche
         p.drawText (tr, Qt::AlignVCenter | (rotated ? Qt::AlignLeft : Qt::AlignHCenter),
                     p.fontMetrics().elidedText (session::groupTitle (state, g)
-                        + (state.groupMute[(size_t) g] ? " M" : state.groupSolo[(size_t) g] ? " S" : ""), Qt::ElideRight, (int) tr.width() - 2));
+                        + (rotated ? "" : state.groupMute[(size_t) g] ? " M" : state.groupSolo[(size_t) g] ? " S" : ""), Qt::ElideRight, (int) tr.width() - 2));
+        if (rotated)                                 // M (rouge = muet) et S (jaune = solo)
+            for (const bool solo : { false, true })
+            {
+                const bool on = solo ? state.groupSolo[(size_t) g].load() : state.groupMute[(size_t) g].load();
+                const QRectF b = solo ? soloBox (g) : muteBox (g);
+                p.setPen (on ? Qt::NoPen : QPen (QColor (70, 70, 80)));
+                p.setBrush (on ? (solo ? QColor (232, 192, 64) : QColor (224, 80, 80)) : QColor (22, 22, 27));
+                p.drawRoundedRect (b, 3, 3);
+                p.setPen (on ? QColor (15, 15, 18) : QColor (110, 110, 120));
+                p.drawText (b, Qt::AlignCenter, solo ? "S" : "M");
+            }
     }
     // Ce qui joue (cadre orange : en attente de la fin du pattern)
     for (int g = 0; g < kGroups; ++g)
@@ -172,12 +214,14 @@ void SceneView::paintEvent (QPaintEvent*)
         {
             // Cadenas : ferme (orange) = scene verrouillee ; ouvert (gris) = modifiable
             const QRectF lb = lockBox (k);
-            const QColor ink = sc.locked ? QColor (252, 140, 40) : QColor (110, 110, 122);
+            // Edit eteint : tout est ferme (gris) ; Edit : ouvert, sauf les scenes verrouillees (orange)
+            const bool closed = sc.locked || ! editMode;
+            const QColor ink = sc.locked ? QColor (252, 140, 40) : ! editMode ? QColor (90, 90, 100) : QColor (150, 150, 162);
             p.setBrush (Qt::NoBrush);
             p.setPen (QPen (ink, 1.6));
             const QRectF body (lb.left() + 2, lb.top() + 7, 12, 8);
             const QRectF arc (lb.left() + 4, lb.top() + 1, 8, 10);
-            if (sc.locked)
+            if (closed)
                 p.drawArc (arc, 0, 180 * 16);
             else
                 p.drawArc (arc.translated (4, -1), 0, 180 * 16);   // anse ouverte, decalee
@@ -194,6 +238,12 @@ void SceneView::paintEvent (QPaintEvent*)
             p.setPen (Qt::NoPen);
             p.setBrush (v == seq::kFree ? QColor (22, 22, 27) : v == seq::kOff ? QColor (30, 30, 36) : groupColor (g).darker (220));
             p.drawRoundedRect (r, 4, 4);
+            if (i == dropScene && g == dropGroup)    // palette : ici en lachant
+            {
+                p.setPen (QPen (QColor (252, 140, 40), 2, Qt::DashLine));
+                p.setBrush (Qt::NoBrush);
+                p.drawRoundedRect (r.adjusted (1, 1, -1, -1), 4, 4);
+            }
             p.setPen (v == seq::kFree ? QColor (90, 90, 100) : v == seq::kOff ? QColor (230, 110, 110) : QColor (230, 230, 238));
             p.drawText (r, Qt::AlignCenter, patternText (g, v));
         }
@@ -270,6 +320,22 @@ void SceneView::mousePressEvent (QMouseEvent* e)
     const bool right = e->button() == Qt::RightButton || (e->modifiers() & Qt::MetaModifier);
     const QPoint at = e->globalPosition().toPoint();
     const bool playing = isPlaying && isPlaying();
+    if (rotated && ! right)                          // M / S d'un groupe, A/M et A/S : toujours permis
+    {
+        if (allMuteBox().contains (pos) || allSoloBox().contains (pos))
+        {
+            emit allOff (allSoloBox().contains (pos));
+            update();
+            return;
+        }
+        for (int g = 0; g < kGroups; ++g)
+            if (groupShown (g) && (muteBox (g).contains (pos) || soloBox (g).contains (pos)))
+            {
+                emit muteSoloClicked (g, soloBox (g).contains (pos));
+                update();
+                return;
+            }
+    }
     if (rotated && visibleGroups() < kGroups)        // triangles : faire defiler les groupes
     {
         if (upArrow().contains (pos) || downArrow().contains (pos))
@@ -319,6 +385,7 @@ void SceneView::mousePressEvent (QMouseEvent* e)
                 emit message (tr ("Turn Edit on to lock / unlock a scene"));
                 return;
             }
+            emit beforeEdit (QString ("Lock scene %1").arg (i + 1));
             sc.locked = ! sc.locked;
             sequencer.setScene (i, sc);
             emit message (QString ("SCENE %1 %2").arg (i + 1).arg (sc.locked ? "LOCKED" : "UNLOCKED"));
@@ -369,6 +436,7 @@ void SceneView::mousePressEvent (QMouseEvent* e)
                                             : (value >= 0 ? (int) seq::kOff : sequencer.currentPattern (g));
                         if (v != kNothing)
                         {
+                            emit beforeEdit (QString ("Scene %1").arg (i + 1));
                             sc.pattern[(size_t) g] = value = v;
                             sequencer.setScene (i, sc);
                             editScene = i;
@@ -416,4 +484,105 @@ void SceneView::wheelEvent (QWheelEvent* e)
     }
     firstScene = std::clamp (firstScene - steps * 2, 0, std::max (0, seq::kPatternSlots - visibleScenes()));
     update();
+}
+
+// ------------------------------------------------------------ palette : glisser un pattern dans une scene
+
+namespace {
+// « fuzzy/pattern » : groupe, index
+bool readDrag (const QMimeData* m, int& group, int& index)
+{
+    if (! m || ! m->hasFormat ("application/x-fuzzy-pattern"))
+        return false;
+    const QList<QByteArray> parts = m->data ("application/x-fuzzy-pattern").split (',');
+    if (parts.size() != 2)
+        return false;
+    group = parts[0].toInt();
+    index = parts[1].toInt();
+    return true;
+}
+}
+
+bool SceneView::dropTarget (const QPointF& pos, int group, int& scene, int& cellGroup) const
+{
+    // Une case de scene (le groupe doit etre celui du pattern), ou le nom d'une scene (ligne du groupe)
+    scene = cellGroup = -1;
+    for (int k = 0; k < visibleScenes() && firstScene + k < seq::kPatternSlots; ++k)
+    {
+        if (sceneNameCell (k).contains (pos))
+        {
+            scene = firstScene + k;
+            cellGroup = group;
+            return true;
+        }
+        for (int g = 0; g < kGroups; ++g)
+            if (groupShown (g) && sceneCell (k, g).contains (pos))
+            {
+                scene = firstScene + k;
+                cellGroup = g;
+                return g == group;
+            }
+    }
+    return false;
+}
+
+void SceneView::dragEnterEvent (QDragEnterEvent* e)
+{
+    int g = 0, i = 0;
+    if (readDrag (e->mimeData(), g, i))
+        e->acceptProposedAction();
+}
+
+void SceneView::dragMoveEvent (QDragMoveEvent* e)
+{
+    int g = 0, i = 0, sc = -1, cg = -1;
+    readDrag (e->mimeData(), g, i);
+    const bool ok = dropTarget (e->position(), g, sc, cg) && editMode && ! (sc >= 0 && sequencer.scene (sc).locked);
+    dropScene = ok ? sc : -1;
+    dropGroup = ok ? cg : -1;
+    ok ? e->acceptProposedAction() : e->ignore();
+    update();
+}
+
+void SceneView::dragLeaveEvent (QDragLeaveEvent*)
+{
+    dropScene = dropGroup = -1;
+    update();
+}
+
+void SceneView::dropEvent (QDropEvent* e)
+{
+    int g = 0, i = 0, sc = -1, cg = -1;
+    dropScene = dropGroup = -1;
+    update();
+    if (! readDrag (e->mimeData(), g, i))
+        return;
+    if (! editMode)
+    {
+        emit message (tr ("Turn Edit on to put patterns into scenes"));
+        return;
+    }
+    if (! dropTarget (e->position(), g, sc, cg))
+    {
+        if (sc >= 0)
+            emit message (QString ("Pattern of group %1: drop it in the row of group %1").arg (session::groupName (g)));
+        return;
+    }
+    seq::Scene scene = sequencer.scene (sc);
+    if (scene.locked)
+    {
+        emit message (QString ("SCENE %1 is locked").arg (sc + 1));
+        return;
+    }
+    emit beforeEdit (QString ("Scene %1").arg (sc + 1));
+    if (! scene.used)                                // scene vide : nouvelle, rien d'autre actif
+    {
+        scene.used = true;
+        scene.pattern.fill (seq::kOff);
+    }
+    scene.pattern[(size_t) g] = i;
+    sequencer.setScene (sc, scene);
+    e->acceptProposedAction();
+    emit message (QString ("S%1 %2 = %3").arg (sc + 1).arg (session::groupName (g)).arg (patternText (g, i)));
+    emit changed();
 }

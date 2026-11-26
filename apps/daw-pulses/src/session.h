@@ -100,6 +100,13 @@ struct State
         return true;
     }
     bool audible (int g, int sound) const { return groupAudible (g) && soundAudible (g, sound); }
+    // Ecoute d'un pattern (Play des listes) : seul ce groupe joue, sans toucher a Mute / Solo
+    std::atomic<int> audition { -1 };
+    bool playAudible (int g, int sound) const
+    {
+        const int a = audition.load();
+        return (a < 0 || a == g) && audible (g, sound);
+    }
     // 'M' coupe, 'S' solo, 'm' muet a cause d'un solo ailleurs, 0 sinon
     char soundTag (int g, int sound) const
     {
@@ -170,8 +177,10 @@ struct State
             loopStart[(size_t) i] = 0.0f;
             loopEnd[(size_t) i] = 1.0f;
             releaseMs[(size_t) i] = 150;
-            synth[(size_t) i] = -1;
-            hasInstrument[(size_t) i] = i < 8 * 16;   // A-H : synthes du pad ; A2-H2 : vides
+            // Nouveau projet : seul le groupe A a ses sons (synthes du pad) ; les autres sont vides
+            // (« None » ecrit dans le projet : le pilote les voit vides aussi)
+            synth[(size_t) i] = i < 16 ? -1 : i < 8 * 16 ? 0 : -1;
+            hasInstrument[(size_t) i] = i < 16;
             resetSoundSettings ((size_t) i);
         }
     }
@@ -184,8 +193,8 @@ struct State
             playMode[(size_t) i] = defaultMode (i % 16 + 1);
             loopEnd[(size_t) i] = 1.0f;
             releaseMs[(size_t) i] = 150;
-            synth[(size_t) i] = -1;
-            hasInstrument[(size_t) i] = i < 8 * 16;
+            synth[(size_t) i] = i < 16 ? -1 : i < 8 * 16 ? 0 : -1;   // seul A a ses sons
+            hasInstrument[(size_t) i] = i < 16;
             resetSoundSettings ((size_t) i);
         }
     }

@@ -9,6 +9,7 @@
 #include "step_view.h"
 #include "pattern_bar.h"
 #include "scene_view.h"
+#include "palette_view.h"
 #include "loop_dialog.h"
 #include "piano_roll.h"
 #include "generate_dialog.h"
@@ -69,6 +70,8 @@
 #include <QMimeData>
 #include <QDialog>
 #include <QTableWidget>
+#include <QListWidget>
+#include <QDialogButtonBox>
 #include <QHeaderView>
 #include <QDialogButtonBox>
 #include <QStackedWidget>
@@ -132,6 +135,17 @@ MainWindow::MainWindow (const Options& options, QWidget* parent) : QMainWindow (
     addToolBar (Qt::TopToolBarArea, patternsToolBar);
     connect (patternBar, &PatternBar::message, this, [this] (const QString& t) { toast (t); });
     connect (patternBar, &PatternBar::aboutToChange, this, [this] (int g) { remember (g); });
+    connect (patternBar, &PatternBar::beforeEdit, this, [this] (int g, const QString& label) { rememberPatterns (g, label); });
+    patternBar->startAudition = [this] (int g)       // Play d'un pattern : ce groupe seul
+    {
+        state.audition = g;
+        if (! transport->playing())
+            transport->play();
+        if (patternManagerRefresh)
+            patternManagerRefresh();
+    };
+    patternBar->stopPlayback = [this] { transport->stop(); };
+    patternBar->endAudition = [this] { state.audition = -1; };
     connect (patternBar, &PatternBar::changed, this, &MainWindow::patternsChanged);
 
     // Tout est en panneaux (pas de zone centrale fixe) : Pattern et Mixer en onglets
@@ -202,8 +216,8 @@ MainWindow::MainWindow (const Options& options, QWidget* parent) : QMainWindow (
         padsOnlyButton->setChecked (true);
         row->insertStretch (0, 1);                   // les 3 boutons au centre
         row->addStretch (1);
+        row->addWidget (muteSoloRow (padsUnmute, padsUnsolo, false, true));   // A/M sur A/S, a droite
         padsCol->addLayout (row);
-        padsCol->addWidget (muteSoloRow (padsUnmute, padsUnsolo, false));   // dessous : tout reactiver
     }
     padsDock = makeDock (tr ("Pads"), "padsDock", padsPanel);
     statusDock = makeDock (tr ("Status"), "statusDock", buildScreens());
@@ -221,10 +235,7 @@ MainWindow::MainWindow (const Options& options, QWidget* parent) : QMainWindow (
     statusDock->resize (720, 190);
     statusDock->hide();
 
-    transportBar = new QToolBar (tr ("Transport"));
-    transportBar->setObjectName ("transportTool");
-    transportBar->addWidget (buildTransportBar());
-    addToolBar (Qt::BottomToolBarArea, transportBar);
+    // Transport : sous les groupes (panneau Groups), plus de barre en bas de la fenetre
     applyTheme();
     if (auto* screen = QGuiApplication::primaryScreen())   // grande fenetre au premier lancement
         resize (screen->availableGeometry().size() * 0.92);
@@ -382,6 +393,11 @@ MainWindow::MainWindow (const Options& options, QWidget* parent) : QMainWindow (
     });
     connect (pads, &PadGrid::menuRequested, this, [this] (int pad, const QPoint& at)
     {
+        if (padChords)                               // mode Chords : le menu des accords (User)
+        {
+            chordPadMenu (pad, at);
+            return;
+        }
         lastPad = pad;
         lastArea = Area::Pads;
         // Clic droit sur un pad : Mute (rouge), Solo (jaune), puis le sample.
@@ -560,6 +576,15 @@ MainWindow::MainWindow (const Options& options, QWidget* parent) : QMainWindow (
     });
     connect (transport, &Transport::playingChanged, this, [this] (bool on)
     {
+        if (! on)
+            state.audition = -1;                     // fin de l'ecoute : tous les groupes rejouent
+        QTimer::singleShot (0, this, [this]          // Play / Stop des listes
+        {
+            if (patternManagerRefresh)
+                patternManagerRefresh();
+            if (sceneListRefresh)
+                sceneListRefresh();
+        });
         patternView->setPlaying (on);
         pianoRoll->setPlaying (on);
         tracker->setPlaying (on);
@@ -803,7 +828,9 @@ MainWindow::~MainWindow()
 {
     qApp->removeEventFilter (this);
     patternManagerRefresh = nullptr;
+    sceneListRefresh = nullptr;
     delete patternManagerDialog;                     // avant nos membres (sa fermeture les touche)
+    delete sceneListDialog;
 }
 
 // ---------------------------------------------------------------------------------------- UI
@@ -920,7 +947,7 @@ QWidget* MainWindow::buildGroupBlock()
         auto* b = new QPushButton;
         b->setCheckable (true);
         b->setFocusPolicy (Qt::NoFocus);
-        b->setMinimumHeight (48);
+        b->setFixedHeight (58);                      // toujours la place de 2 lignes (lettre + nom) : rien ne bouge
         b->setAcceptDrops (true);                    // pad ou groupe lache dessus
         b->installEventFilter (this);                // glisser le groupe (copier / deplacer)
         b->setProperty ("groupIndex", i);
@@ -999,6 +1026,8 @@ QWidget* MainWindow::buildGroupBlock()
     tools->addWidget (bankButton);
     tools->addStretch();
     col->addLayout (tools);
+    col->addSpacing (6);
+    col->addWidget (buildTransportBar());            // lecture / enregistrement, sous les groupes
     col->addStretch (1);                             // le bloc reste en haut, la barre colle aux groupes
     return panel;
 }
@@ -1103,11 +1132,12 @@ QWidget* MainWindow::buildLeftPanel()
     tools->addWidget (lengthBox);
     tools->addWidget (twice);
     tools->addWidget (gen);
-    auto* manager = new QPushButton (tr ("Patterns..."));
+    auto* manager = new QPushButton (tr ("List"));    // en premier sur la ligne
     manager->setFocusPolicy (Qt::NoFocus);
-    manager->setToolTip (tr ("All the patterns of this group: play, rename, copy, paste, duplicate, delete, scenes"));
+    manager->setToolTip (tr ("List of the patterns of this group: play, rename, copy, paste, duplicate, delete, scenes"));
     connect (manager, &QPushButton::clicked, this, [this] { openPatternManager(); });
-    tools->addWidget (manager);
+    tools->insertWidget (0, manager);
+    tools->insertSpacing (1, 8);
     tools->addWidget (clear);
     tools->addSpacing (8);
     for (const int step : { -1, 1, -12, 12 })        // transposition : selection, sinon case du curseur
@@ -1228,12 +1258,17 @@ bool MainWindow::patternShown() const
 
 QWidget* MainWindow::buildTransportBar()
 {
-    // Tout en bas, long et fin : symboles habituels du transport
+    // Sous les groupes, compact sur 2 lignes : en haut les temps, METRO et son volume ;
+    // en bas ⏮ ▶ ■ ● et le tempo
     auto* bar = new QFrame;
     bar->setObjectName ("transport");
-    auto* row = new QHBoxLayout (bar);
-    row->setContentsMargins (10, 4, 10, 4);
-    row->setSpacing (8);
+    auto* rows = new QVBoxLayout (bar);
+    rows->setContentsMargins (8, 4, 8, 4);
+    rows->setSpacing (4);
+    auto* top = new QHBoxLayout;
+    auto* row = new QHBoxLayout;
+    top->setSpacing (8);
+    row->setSpacing (6);
 
     auto* restart = new QPushButton (QStringLiteral ("⏮"));                  // retour au debut
     restart->setToolTip (tr ("Restart from the beginning (Maschine: RESTART)"));
@@ -1261,9 +1296,10 @@ QWidget* MainWindow::buildTransportBar()
         b->setFocusPolicy (Qt::NoFocus);
         b->setFixedSize (46, 30);
     }
+    row->addStretch();
     for (auto* b : { restart, playButton, stop, recButton })
         row->addWidget (b);
-    row->addSpacing (14);
+    row->addSpacing (8);
 
     bpmBox = new QSpinBox;
     bpmBox->setRange (30, 300);
@@ -1281,8 +1317,10 @@ QWidget* MainWindow::buildTransportBar()
     beatLabel = new QLabel (QStringLiteral ("○ ○ ○ ○"));
     beatLabel->setObjectName ("beats");
     row->addWidget (bpmBox);
-    row->addWidget (beatLabel);
-    row->addSpacing (14);
+    row->addStretch();
+    top->addStretch();
+    top->addWidget (beatLabel);
+    top->addSpacing (8);
 
     metroButton = new QPushButton (QStringLiteral ("♩  ") + tr ("METRO"));
     metroButton->setCheckable (true);
@@ -1308,13 +1346,12 @@ QWidget* MainWindow::buildTransportBar()
         QSettings().setValue ("metronomeVolume", v);
         refreshMaschine();
     });
-    row->addWidget (metroButton);
-    row->addWidget (metroVolume);
-    row->addStretch();
-    auto* keysHint = new QLabel (tr ("Space \u25B6 / \u275A\u275A"));   // rappel : la barre d'espace
-    keysHint->setObjectName ("hint");
-    keysHint->setToolTip (tr ("Space bar: play / pause"));
-    row->addWidget (keysHint);
+    top->addWidget (metroButton);
+    top->addWidget (metroVolume);
+    top->addStretch();
+    rows->addLayout (top);
+    rows->addLayout (row);
+    bar->setToolTip (tr ("Space bar: play / pause"));
     return bar;
 }
 
@@ -1423,10 +1460,23 @@ void MainWindow::applyTheme()
         QSpinBox::up-button:hover, QSpinBox::down-button:hover { background: #44444f; }
         QSpinBox::up-arrow { image: url(:/arrow_up.png); width: 10px; height: 6px; }
         QSpinBox::down-arrow { image: url(:/arrow_down.png); width: 10px; height: 6px; }
-        QPushButton#unmute, QPushButton#unsolo { font-size: 11px; padding: 2px 8px; }
-        QPushButton#unmute:enabled { color: #e05050; border-color: #e05050; }
-        QPushButton#unsolo:enabled { color: #e8c040; border-color: #e8c040; }
-        QPushButton#unmute:disabled, QPushButton#unsolo:disabled { color: #55555e; }
+        QPushButton#unmute, QPushButton#unsolo { font-size: 11px; font-weight: bold; padding: 2px 8px; min-width: 30px; }
+        QPushButton#unmute:enabled { background: #e05050; color: #111; border-color: #e05050; }
+        QPushButton#unsolo:enabled { background: #e8c040; color: #111; border-color: #e8c040; }
+        QPushButton#unmute:disabled, QPushButton#unsolo:disabled { background: #17171c; color: #55555e; }
+        QMenu { background: #1c1c22; border: 1px solid #34343e; padding: 4px; }
+        QMenu::item { padding: 5px 24px 5px 24px; border-radius: 4px; }
+        QMenu::item:selected { background: #f5c9a0; color: #111; }
+        QMenu::item:checked { color: %1; font-weight: bold; }
+        QMenu::item:checked:selected { background: #f5c9a0; color: #111; }
+        QMenu::item:disabled { color: #66666e; }
+        QMenu::separator { height: 1px; background: #34343e; margin: 4px 8px; }
+        QComboBox QAbstractItemView { background: #1c1c22; border: 1px solid #34343e; outline: 0;
+                                      selection-background-color: #f5c9a0; selection-color: #111; }
+        QComboBox QAbstractItemView::item { padding: 4px 8px; }
+        QComboBox QAbstractItemView::item:selected { background: #f5c9a0; color: #111; }
+        QTableWidget, QListWidget { background: #15151a; alternate-background-color: #1a1a20;
+                                    selection-background-color: #f5c9a0; selection-color: #111; gridline-color: #26262e; }
         QSlider::groove:horizontal { height: 4px; background: #34343e; border-radius: 2px; }
         QSlider::handle:horizontal { width: 12px; margin: -5px 0; background: %1; border-radius: 6px; }
         QStatusBar { color: #8a8a92; }
@@ -1575,7 +1625,7 @@ void MainWindow::recordEnd (RecNote& slot)
 
 void MainWindow::selectGroup (int group)
 {
-    QTimer::singleShot (0, this, [this] { if (patternManagerRefresh) patternManagerRefresh(); });   // la liste suit le groupe
+    QTimer::singleShot (0, this, [this] { if (patternManagerRefresh) patternManagerRefresh(); if (palette) palette->update(); });   // la liste suit le groupe
     state.group = qBound (0, group, kGroups - 1);
     if (patternBar)
         patternBar->refresh();
@@ -2415,7 +2465,6 @@ void MainWindow::buildViewMenu (QMenu* menu)
         a->setShortcut (item.key);
         menu->addAction (a);
     }
-    menu->addAction (transportBar->toggleViewAction());
     menu->addSeparator();
     menu->addAction (patternsToolBar->toggleViewAction());   // barre Patterns / Scenes
     menu->addAction (tr ("Display Diagnostics (F12)"), this, [this] { showDisplayDiagnostics(); });
@@ -2556,7 +2605,8 @@ void MainWindow::rememberPatterns (int g, const QString& label)
     // Avant une action du gestionnaire de patterns : Cmd+Z remet les patterns du groupe et les scenes
     UndoStep step;
     step.label = label;
-    step.groups.push_back ({ g, sequencer.groupPatterns (g), state.groupVolume[(size_t) g].load(), state.groupLabel[(size_t) g] });
+    if (g >= 0)                                      // -1 : les scenes seulement
+        step.groups.push_back ({ g, sequencer.groupPatterns (g), state.groupVolume[(size_t) g].load(), state.groupLabel[(size_t) g] });
     step.hasScenes = true;
     for (int i = 0; i < seq::kPatternSlots; ++i)
         step.scenes.push_back (sequencer.scene (i));
@@ -2643,6 +2693,10 @@ void MainWindow::undo (bool redoIt)
         sceneView->update();
     if (patternManagerRefresh)
         patternManagerRefresh();
+    if (sceneListRefresh)
+        sceneListRefresh();
+    if (palette)
+        palette->update();
     statusBar()->showMessage (QString ("%1 (%2)").arg (redoIt ? tr ("Redo") : tr ("Undo"),
                                                        step.label.isEmpty() ? groupName (shown) : step.label), 1500);
 }
@@ -2821,15 +2875,16 @@ void MainWindow::refreshMuteSolo()
     refreshMaschine();
 }
 
-QWidget* MainWindow::muteSoloRow (QPushButton*& unmute, QPushButton*& unsolo, bool groups)
+QWidget* MainWindow::muteSoloRow (QPushButton*& unmute, QPushButton*& unsolo, bool groups, bool vertical)
 {
-    // Deux petits boutons : tout reactiver d'un coup (sons du groupe, ou groupes du mixeur)
+    // Deux petits boutons : tout reactiver d'un coup (sons du groupe, ou groupes du mixeur) ;
+    // vertical : l'un au-dessus de l'autre (panneau Pads, gagne une ligne)
     auto* row = new QWidget;
-    auto* h = new QHBoxLayout (row);
+    QBoxLayout* h = vertical ? (QBoxLayout*) new QVBoxLayout (row) : (QBoxLayout*) new QHBoxLayout (row);
     h->setContentsMargins (0, 0, 0, 0);
-    h->setSpacing (6);
-    unmute = new QPushButton (tr ("Unmute all"));
-    unsolo = new QPushButton (tr ("Unsolo all"));
+    h->setSpacing (vertical ? 3 : 6);
+    unmute = new QPushButton (tr ("A/M"));           // norme de l'app : A/M = tout dé-muter
+    unsolo = new QPushButton (tr ("A/S"));           //                   A/S = tout dé-soloer
     unmute->setObjectName ("unmute");
     unsolo->setObjectName ("unsolo");
     for (auto* b : { unmute, unsolo })
@@ -2837,8 +2892,10 @@ QWidget* MainWindow::muteSoloRow (QPushButton*& unmute, QPushButton*& unsolo, bo
         b->setFocusPolicy (Qt::NoFocus);
         b->setEnabled (false);
     }
-    unmute->setToolTip (groups ? tr ("Turn every muted group back on") : tr ("Turn every muted sound of this group back on"));
-    unsolo->setToolTip (groups ? tr ("Clear the solo of every group") : tr ("Clear the solo of every sound of this group"));
+    unmute->setToolTip (groups ? tr ("A/M: turn every muted group back on (red = something is muted)")
+                               : tr ("A/M: turn every muted sound of this group back on (red = something is muted)"));
+    unsolo->setToolTip (groups ? tr ("A/S: clear the solo of every group (yellow = something is solo)")
+                               : tr ("A/S: clear the solo of every sound of this group (yellow = something is solo)"));
     connect (unmute, &QPushButton::clicked, this, [this, groups]
     {
         for (int i = 0; i < (groups ? kGroups : 16); ++i)
@@ -3401,7 +3458,9 @@ QWidget* MainWindow::buildKeyboardTab()
     music::loadCustom();                             // gammes et accords personnalises
     keySettings.scale = std::clamp (settings.value ("keys/scale", 0).toInt(), -(int) music::customScales().size(),
                                     (int) music::scales().size() - 1);
-    keySettings.chordMode = std::clamp (settings.value ("keys/chordMode", 0).toInt(), 0, 3);
+    music::loadUserChords();                         // accords User 1-10 (fichier du pilote Maschine)
+    keySettings.chordMode = std::clamp (settings.value ("keys/chordMode", 0).toInt(), 0, 4);
+    keySettings.userBank = std::clamp (settings.value ("keys/userBank", 0).toInt(), 0, music::kUserBanks - 1);
     keySettings.customChord = std::clamp (settings.value ("keys/customChord", 0).toInt(), 0, std::max (0, (int) music::customChords().size() - 1));
     if (keySettings.chordMode == 3 && music::customChords().empty())
         keySettings.chordMode = 0;
@@ -3476,6 +3535,7 @@ QWidget* MainWindow::buildKeyboardTab()
         s.setValue ("keys/harmony", keySettings.harmony);
         s.setValue ("keys/chordSet", keySettings.chordSet);
         s.setValue ("keys/customChord", keySettings.customChord);
+        s.setValue ("keys/userBank", keySettings.userBank);
         if (keySettings.chordMode != 0)
             s.setValue ("keys/lastChordMode", keySettings.chordMode);   // repris par le mode CHORDS
         scaleButton->setText (music::scaleLabel (keySettings.scale));
@@ -3499,6 +3559,8 @@ QWidget* MainWindow::buildKeyboardTab()
                 keySettings.chordSet = idx;
             else if (mode == 3)
                 keySettings.customChord = idx;
+            else if (mode == 4)
+                keySettings.userBank = idx;
             save();
         }, this);
     });
@@ -4108,7 +4170,7 @@ void MainWindow::setPadChords (bool on)
         // Pas d'accord choisi : le dernier reglage d'accords, sinon Harmonizer « Oct +1 »
         QSettings s;
         const int last = s.value ("keys/lastChordMode", 0).toInt();
-        if (last >= 1 && last <= 3 && ! (last == 3 && music::customChords().empty()))
+        if (last >= 1 && last <= 4 && ! (last == 3 && music::customChords().empty()))
             keySettings.chordMode = last;
         else
         {
@@ -4134,7 +4196,7 @@ int MainWindow::padChordKey (int pad) const
 {
     // Chord Set : les 12 accords sur les pads 1-12 (touches C a B de l'octave) ;
     // Harmonizer et Custom : un accord sur chaque note de la gamme (comme les notes du mode KEYBOARD)
-    if (keySettings.chordMode == 2)
+    if (keySettings.chordMode == 2 || keySettings.chordMode == 4)   // Chord Set et User : pads 1-12
         return pad <= 12 ? std::clamp (12 * (state.octave + 1) + keySettings.root + pad - 1, 1, 127) : -1;
     return padNote (pad);
 }
@@ -4193,6 +4255,8 @@ QString MainWindow::padChordLabel (int pad) const
         return transposeChordName (set.chords[(size_t) pad - 1].name, keySettings.root);
     }
     const QList<int> notes = music::chordFor (key, keySettings);
+    if (keySettings.chordMode == 4 && notes.isEmpty())
+        return QStringLiteral ("-");                 // User : case vide
     if (keySettings.chordMode == 1)                  // Oct +1... : la note et l'octave ajoutee
     {
         const auto& h = music::harmonies()[(size_t) std::clamp (keySettings.harmony, 0, (int) music::harmonies().size() - 1)];
@@ -4436,6 +4500,14 @@ bool MainWindow::confirmGroup (int from, int to, Transfer how)
 
 void MainWindow::soundDropMenu (int fg, int fp, int tp, const QPoint& at)
 {
+    if (padKeyboard)                                 // Keyboard / Chords : les pads ne deplacent pas les sons
+    {
+        if (padChords && keySettings.chordMode == 4 && fg == state.group)
+            chordDropMenu (fp, tp, at);              // set User : ranger les accords
+        else
+            toast (padChords ? "Chords mode: sounds don't move (User sets: drag = chords)" : "Keyboard mode: sounds don't move");
+        return;
+    }
     // Pad lache sur un autre pad : Copy / Move / Swap (le menu sert de confirmation)
     const int tg = state.group;
     QMenu menu (this);
@@ -5123,6 +5195,10 @@ bool MainWindow::trackerKey (QKeyEvent* e)
 
 void MainWindow::patternsChanged()
 {
+    if (palette)
+        palette->update();
+    if (sceneListRefresh)
+        sceneListRefresh();
     if (patternManagerRefresh)
         patternManagerRefresh();                     // la liste des patterns suit
     // Un pattern ou une scene a change : toutes les vues suivent
@@ -5174,6 +5250,17 @@ QWidget* MainWindow::buildScenes()
         b->setObjectName ("keys");
         head->addWidget (b);
     }
+    auto* listBtn = new QPushButton (tr ("List"));
+    listBtn->setFocusPolicy (Qt::NoFocus);
+    listBtn->setToolTip (tr ("List of the scenes and their patterns (S1 - AP1, BP3...)"));
+    connect (listBtn, &QPushButton::clicked, this, [this] { openSceneList(); });
+    head->insertWidget (1, listBtn);
+    auto* paletteBtn = new QPushButton (tr ("Palette"));
+    paletteBtn->setCheckable (true);
+    paletteBtn->setFocusPolicy (Qt::NoFocus);
+    paletteBtn->setObjectName ("keys");
+    paletteBtn->setToolTip (tr ("16 pattern squares of the chosen group: drag one into a scene cell (Edit on)"));
+    head->addWidget (paletteBtn);
     editBtn->setToolTip (tr ("Edit: click a cell = on / off in the scene, right-click = choose a pattern, lock, rename"));
     playBtn->setToolTip (tr ("Play: click a cell = play that pattern, click a scene = launch it (Edit and Play both off = protected)"));
     auto* hint = new QLabel;
@@ -5208,7 +5295,56 @@ QWidget* MainWindow::buildScenes()
         sceneView->setRotated (on);
         QSettings().setValue ("scenes/rotated", on);
     });
-    col->addWidget (sceneView, 1);
+    palette = new PaletteView (sequencer, state);
+    auto* area = new QBoxLayout (QBoxLayout::LeftToRight);   // la palette a gauche de la grille
+    area->addWidget (palette, 0, Qt::AlignTop);
+    area->addWidget (sceneView, 1);
+    col->addLayout (area, 1);
+    auto placePalette = [this, area, rotate, paletteBtn]
+    {
+        // Toujours a gauche : en bas, elle prenait trop de hauteur aux groupes (Rotate)
+        area->setDirection (QBoxLayout::LeftToRight);
+        area->setAlignment (palette, Qt::AlignTop);
+        palette->setVisible (paletteBtn->isChecked());
+        Q_UNUSED (rotate);
+    };
+    paletteBtn->setChecked (QSettings().value ("scenes/palette", false).toBool());
+    connect (paletteBtn, &QPushButton::toggled, this, [placePalette] (bool on) { QSettings().setValue ("scenes/palette", on); placePalette(); });
+    connect (rotate, &QPushButton::toggled, this, [placePalette] { placePalette(); });
+    placePalette();
+    connect (palette, &PaletteView::squareMenu, this, [this, editBtn] (int i, const QPoint& at)
+    {
+        // Edit : Copy, Paste here, Duplicate, Delete (confirmation)... le menu de la barre du haut
+        if (! editBtn->isChecked())
+        {
+            toast ("Turn Edit on to copy, duplicate or delete patterns");
+            return;
+        }
+        patternBar->patternMenu (i, at);
+        palette->update();
+    });
+    connect (palette, &PaletteView::playRequested, this, [this, playBtn] (int g, int i)
+    {
+        if (! playBtn->isChecked())
+        {
+            toast ("Turn Play on to play a pattern");
+            return;
+        }
+        patternBar->playPattern (g, i);
+    });
+    connect (sceneView, &SceneView::muteSoloClicked, this, [this] (int g, bool solo)
+    {
+        auto& flag = solo ? state.groupSolo[(size_t) g] : state.groupMute[(size_t) g];
+        flag = ! flag;
+        refreshMuteSolo();
+    });
+    connect (sceneView, &SceneView::allOff, this, [this] (bool solo)
+    {
+        for (int g = 0; g < kGroups; ++g)
+            (solo ? state.groupSolo : state.groupMute)[(size_t) g] = false;
+        refreshMuteSolo();
+    });
+    connect (sceneView, &SceneView::beforeEdit, this, [this] (const QString& label) { rememberPatterns (-1, label); });
     modes();
     connect (sceneView, &SceneView::message, this, [this] (const QString& t) { toast (t); });
     connect (sceneView, &SceneView::groupMenu, this, [this] (int g, const QPoint& at)
@@ -5534,14 +5670,20 @@ void MainWindow::openPatternManager()
                 if (! item)
                     table->setItem (i, c, item = new QTableWidgetItem);
                 item->setText (cells[c]);
-                item->setForeground (exists ? QColor (230, 230, 238) : QColor (90, 90, 100));
+                if (exists)                          // couleur par defaut : lisible aussi quand la ligne est choisie
+                    item->setData (Qt::ForegroundRole, QVariant());
+                else
+                    item->setForeground (QColor (90, 90, 100));
             }
         }
         const int i = chosen();
         const bool exists = i >= 0 && sequencer.hasPattern (g, i);
         for (auto* b : { play, rename, copy, dup, twice, erase, scenes })
             b->setEnabled (exists);
-        paste->setEnabled (i >= 0 && patternClipFull);
+        const bool listening = transport->playing() && state.audition.load() == g;
+        play->setText (listening ? tr ("Stop") : tr ("Play"));
+        play->setEnabled (exists || listening);
+        paste->setEnabled (i >= 0 && patternBar->clipPatternFull);
     };
     patternManagerRefresh = refresh;
     connect (box, &QObject::destroyed, this, [this] { patternManagerRefresh = nullptr; patternManagerDialog = nullptr; });
@@ -5556,11 +5698,15 @@ void MainWindow::openPatternManager()
     auto playIt = [this, chosen, done]
     {
         const int g = state.group, i = chosen();
+        if (transport->playing() && state.audition.load() == g)   // en ecoute : Stop
+        {
+            transport->stop();
+            return;
+        }
         if (i < 0 || ! sequencer.hasPattern (g, i))
             return;
-        sequencer.selectPattern (g, i, transport->playing());
-        sequencer.setCurrentScene (-1);
-        done (QString ("PATTERN %1 %2").arg (i + 1).arg (transport->playing() ? QString (": next") : QString()));
+        patternBar->playPattern (g, i);              // allume + lance la lecture si arretee
+        done ({});
     };
     connect (play, &QPushButton::clicked, box, playIt);
     connect (table, &QTableWidget::cellDoubleClicked, box, playIt);
@@ -5576,20 +5722,20 @@ void MainWindow::openPatternManager()
         const int g = state.group, i = chosen();
         if (i < 0 || ! sequencer.hasPattern (g, i))
             return;
-        patternClip = sequencer.patternAt (g, i);
-        patternClipName = sequencer.patternName (g, i);
-        patternClipFull = true;
+        patternBar->clipPattern = sequencer.patternAt (g, i);
+        patternBar->clipPatternName = sequencer.patternName (g, i);
+        patternBar->clipPatternFull = true;
         toast (QString ("PATTERN %1 copied").arg (i + 1));
         refresh();
     });
     connect (paste, &QPushButton::clicked, box, [this, chosen, done]
     {
         const int g = state.group, i = chosen();
-        if (i < 0 || ! patternClipFull)
+        if (i < 0 || ! patternBar->clipPatternFull)
             return;
         rememberPatterns (g, tr ("Paste pattern"));
-        sequencer.setPatternAt (g, i, patternClip);
-        sequencer.setPatternName (g, i, patternClipName);
+        sequencer.setPatternAt (g, i, patternBar->clipPattern);
+        sequencer.setPatternName (g, i, patternBar->clipPatternName);
         done (QString ("PASTE > PATTERN %1").arg (i + 1));
     });
     connect (dup, &QPushButton::clicked, box, [this, chosen, done, table]
@@ -5663,44 +5809,340 @@ void MainWindow::openPatternManager()
         sequencer.removePattern (g, i);
         done (QString ("PATTERN %1 deleted").arg (i + 1));
     });
-    connect (scenes, &QPushButton::clicked, box, [this, box, chosen, done, scenes]
+    connect (scenes, &QPushButton::clicked, box, [this, box, chosen, done]
     {
-        // Les scenes ou ce pattern joue (pour ce groupe) : cocher = l'y mettre, decocher = groupe eteint
+        // Les scenes ou ce pattern joue (pour ce groupe) : tout cocher d'un coup, puis OK
         const int g = state.group, i = chosen();
         if (i < 0 || ! sequencer.hasPattern (g, i))
             return;
-        QMenu menu (box);
-        QList<QPair<QAction*, int>> items;
+        QDialog pick (box);
+        pick.setWindowTitle (tr ("Pattern %1 in scenes").arg (i + 1));
+        auto* v = new QVBoxLayout (&pick);
+        v->addWidget (new QLabel (tr ("Group %1, pattern %2: tick the scenes that play it\n(untick = the group plays nothing in that scene)")
+                                      .arg (groupTitle (state, g)).arg (PatternBar::patternName (sequencer, g, i))));
+        auto* list = new QListWidget;
         for (int k = 0; k < seq::kPatternSlots; ++k)
         {
             const seq::Scene sc = sequencer.scene (k);
             if (! sc.used)
                 continue;
-            auto* a = menu.addAction (QString ("S%1 %2%3").arg (k + 1).arg (QString::fromStdString (sc.name))
-                                          .arg (sc.locked ? QString ("  (locked)") : QString()));
-            a->setCheckable (true);
-            a->setChecked (sc.pattern[(size_t) g] == i);
-            a->setEnabled (! sc.locked);
-            items << qMakePair (a, k);
+            auto* item = new QListWidgetItem (QString ("S%1 %2%3").arg (k + 1).arg (QString::fromStdString (sc.name))
+                                                  .arg (sc.locked ? QString ("  (locked)") : QString()));
+            item->setData (Qt::UserRole, k);
+            item->setFlags (sc.locked ? Qt::ItemIsUserCheckable : Qt::ItemIsUserCheckable | Qt::ItemIsEnabled);
+            item->setCheckState (sc.pattern[(size_t) g] == i ? Qt::Checked : Qt::Unchecked);
+            list->addItem (item);
         }
-        if (items.isEmpty())
+        if (list->count() == 0)
         {
             toast ("No scene yet");
             return;
         }
-        auto* picked = menu.exec (scenes->mapToGlobal (QPoint (0, scenes->height())));
-        for (const auto& [a, k] : items)
-            if (a == picked)
+        v->addWidget (list, 1);
+        auto* buttons = new QDialogButtonBox (QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
+        connect (buttons, &QDialogButtonBox::accepted, &pick, &QDialog::accept);
+        connect (buttons, &QDialogButtonBox::rejected, &pick, &QDialog::reject);
+        v->addWidget (buttons);
+        pick.resize (360, 420);
+        if (pick.exec() != QDialog::Accepted)
+            return;
+        rememberPatterns (g, tr ("Pattern in scenes"));
+        int changedCount = 0;
+        for (int r = 0; r < list->count(); ++r)
+        {
+            const int k = list->item (r)->data (Qt::UserRole).toInt();
+            seq::Scene sc = sequencer.scene (k);
+            if (sc.locked)
+                continue;
+            const bool on = list->item (r)->checkState() == Qt::Checked;
+            const int want = on ? i : (sc.pattern[(size_t) g] == i ? (int) seq::kOff : sc.pattern[(size_t) g]);
+            if (want != sc.pattern[(size_t) g])
             {
-                rememberPatterns (g, tr ("Pattern in scene"));
-                seq::Scene sc = sequencer.scene (k);
-                sc.pattern[(size_t) g] = a->isChecked() ? i : (int) seq::kOff;
+                sc.pattern[(size_t) g] = want;
                 sequencer.setScene (k, sc);
-                done (QString ("S%1 %2: %3").arg (k + 1).arg (groupName (g))
-                          .arg (a->isChecked() ? QString ("pattern %1").arg (i + 1) : QString ("off")));
+                ++changedCount;
             }
+        }
+        done (QString ("PATTERN %1: %2 scene(s) changed").arg (i + 1).arg (changedCount));
     });
     table->setCurrentCell (std::max (0, sequencer.currentPattern (state.group)), 0);
     refresh();
     box->show();
+}
+
+// ------------------------------------------------------------ liste des scenes (vue Scenes > List)
+
+void MainWindow::openSceneList()
+{
+    // L'inverse de la liste des patterns : chaque scene et ses patterns (S1 - AP1, BP3, CP1...)
+    if (sceneListDialog)
+    {
+        sceneListDialog->show();
+        sceneListDialog->raise();
+        sceneListDialog->activateWindow();
+        return;
+    }
+    auto* box = new QDialog (this);
+    sceneListDialog = box;
+    box->setAttribute (Qt::WA_DeleteOnClose);
+    box->setWindowTitle (tr ("Scenes"));
+    box->resize (760, 520);
+    auto* col = new QVBoxLayout (box);
+    auto* title = new QLabel (tr ("SCENES"));
+    title->setObjectName ("section");
+    col->addWidget (title);
+    auto* table = new QTableWidget (seq::kPatternSlots, 4);
+    table->setHorizontalHeaderLabels ({ tr ("Scene"), tr ("Name"), tr ("Patterns (group + pattern)"), tr ("Lock") });
+    table->verticalHeader()->hide();
+    table->setSelectionBehavior (QAbstractItemView::SelectRows);
+    table->setSelectionMode (QAbstractItemView::SingleSelection);
+    table->setEditTriggers (QAbstractItemView::NoEditTriggers);
+    table->horizontalHeader()->setSectionResizeMode (QHeaderView::ResizeToContents);
+    table->horizontalHeader()->setSectionResizeMode (2, QHeaderView::Stretch);
+    col->addWidget (table, 1);
+    auto* row = new QHBoxLayout;
+    auto button = [&] (const QString& text, const QString& tip)
+    {
+        auto* b = new QPushButton (text);
+        b->setFocusPolicy (Qt::NoFocus);
+        b->setToolTip (tip);
+        row->addWidget (b);
+        return b;
+    };
+    auto* launch = button (tr ("Launch"), tr ("Launch this scene (at the end of the bar if playing)"));
+    auto* rename = button (tr ("Rename"), tr ("Short name (8 characters)"));
+    auto* copy = button (tr ("Copy"), tr ("Copy this scene"));
+    auto* paste = button (tr ("Paste"), tr ("Paste the copied scene into this slot"));
+    auto* lock = button (tr ("Lock"), tr ("Lock / unlock: a locked scene launches but no longer changes"));
+    auto* erase = button (tr ("Delete"), tr ("Delete this scene"));
+    col->addLayout (row);
+    auto* hint = new QLabel (tr ("AP1 = group A, pattern 1 · A~ = group A free (keeps its pattern) · double-click = launch · Cmd+Z undoes"));
+    hint->setObjectName ("hint");
+    col->addWidget (hint);
+
+    auto chosen = [table] { return table->currentRow(); };
+    auto refresh = [this, table, launch, rename, copy, paste, lock, erase, chosen]
+    {
+        const int now = sequencer.currentScene();
+        for (int i = 0; i < seq::kPatternSlots; ++i)
+        {
+            const seq::Scene sc = sequencer.scene (i);
+            QStringList parts;
+            for (int g = 0; sc.used && g < kGroups; ++g)
+            {
+                const int v = sc.pattern[(size_t) g];
+                if (v >= 0)
+                    parts << groupName (g) + QString ("P%1").arg (v + 1);
+                else if (v == seq::kFree)
+                    parts << groupName (g) + "~";
+            }
+            const QStringList cells { QString ("S%1").arg (i + 1) + (i == now ? QStringLiteral (" ▶") : QString()),
+                                      sc.used ? QString::fromStdString (sc.name) : tr ("(empty)"),
+                                      sc.used ? (parts.isEmpty() ? tr ("(nothing plays)") : parts.join (", ")) : QString(),
+                                      sc.used && sc.locked ? tr ("locked") : QString() };
+            for (int c = 0; c < cells.size(); ++c)
+            {
+                auto* item = table->item (i, c);
+                if (! item)
+                    table->setItem (i, c, item = new QTableWidgetItem);
+                item->setText (cells[c]);
+                if (sc.used)
+                    item->setData (Qt::ForegroundRole, QVariant());   // lisible aussi sur la ligne choisie
+                else
+                    item->setForeground (QColor (90, 90, 100));
+            }
+        }
+        const int i = chosen();
+        const seq::Scene sc = i >= 0 ? sequencer.scene (i) : seq::Scene();
+        launch->setText (transport->playing() ? tr ("Stop") : tr ("Launch"));
+        launch->setEnabled (sc.used || transport->playing());
+        copy->setEnabled (sc.used);
+        lock->setEnabled (sc.used);
+        lock->setText (sc.locked ? tr ("Unlock") : tr ("Lock"));
+        rename->setEnabled (sc.used && ! sc.locked);
+        erase->setEnabled (sc.used && ! sc.locked);
+        paste->setEnabled (i >= 0 && patternBar->clipSceneFull && ! sc.locked);
+    };
+    sceneListRefresh = refresh;
+    connect (box, &QObject::destroyed, this, [this] { sceneListRefresh = nullptr; sceneListDialog = nullptr; });
+    connect (table, &QTableWidget::currentCellChanged, box, [refresh] { refresh(); });
+    auto done = [this] (const QString& msg)
+    {
+        patternBar->refresh (true);
+        patternsChanged();
+        if (! msg.isEmpty())
+            toast (msg);
+    };
+    auto launchIt = [this, chosen, done]
+    {
+        if (transport->playing())                    // en lecture : Stop
+        {
+            transport->stop();
+            return;
+        }
+        const int i = chosen();
+        if (i < 0 || ! sequencer.scene (i).used)
+            return;
+        patternBar->chooseScene (i);
+        if (! transport->playing())
+            transport->play();
+        done ({});
+    };
+    connect (launch, &QPushButton::clicked, box, launchIt);
+    connect (table, &QTableWidget::cellDoubleClicked, box, launchIt);
+    connect (rename, &QPushButton::clicked, box, [this, chosen, done]
+    {
+        if (chosen() >= 0)
+            patternBar->renameScene (chosen());
+        done ({});
+    });
+    connect (copy, &QPushButton::clicked, box, [this, chosen, refresh]
+    {
+        const int i = chosen();
+        if (i < 0 || ! sequencer.scene (i).used)
+            return;
+        patternBar->clipScene = sequencer.scene (i);
+        patternBar->clipScene.locked = false;
+        patternBar->clipSceneFull = true;
+        toast (QString ("SCENE %1 copied").arg (i + 1));
+        refresh();
+    });
+    connect (paste, &QPushButton::clicked, box, [this, chosen, done]
+    {
+        const int i = chosen();
+        if (i < 0 || ! patternBar->clipSceneFull || sequencer.scene (i).locked)
+            return;
+        rememberPatterns (-1, tr ("Paste scene"));
+        sequencer.setScene (i, patternBar->clipScene);
+        done (QString ("PASTE > SCENE %1").arg (i + 1));
+    });
+    connect (lock, &QPushButton::clicked, box, [this, chosen, done]
+    {
+        const int i = chosen();
+        seq::Scene sc = i >= 0 ? sequencer.scene (i) : seq::Scene();
+        if (! sc.used)
+            return;
+        rememberPatterns (-1, tr ("Lock scene"));
+        sc.locked = ! sc.locked;
+        sequencer.setScene (i, sc);
+        done (QString ("SCENE %1 %2").arg (i + 1).arg (sc.locked ? "LOCKED" : "UNLOCKED"));
+    });
+    connect (erase, &QPushButton::clicked, box, [this, chosen, done]
+    {
+        const int i = chosen();
+        if (i < 0 || ! sequencer.scene (i).used || sequencer.scene (i).locked)
+            return;
+        rememberPatterns (-1, tr ("Delete scene"));
+        sequencer.setScene (i, seq::Scene());
+        if (sequencer.currentScene() == i)
+            sequencer.setCurrentScene (-1);
+        done (QString ("SCENE %1 deleted").arg (i + 1));
+    });
+    table->setCurrentCell (std::max (0, sequencer.currentScene()), 0);
+    refresh();
+    box->show();
+}
+
+// ------------------------------------------------------------ accords User (mode Chords)
+
+void MainWindow::chordPadMenu (int pad, const QPoint& at)
+{
+    // Clic droit sur un pad en mode Chords : mettre cet accord dans un set User ;
+    // dans un set User : copier, coller, effacer l'accord du pad
+    const int key = padChordKey (pad);
+    const QList<int> notes = key > 0 ? music::chordFor (key, keySettings) : QList<int>();
+    const int base = 12 * (state.octave + 1) + keySettings.root;   // comme le pilote
+    QMenu menu (this);
+    auto* title = menu.addAction (tr ("Pad %1: %2").arg (pad).arg (notes.isEmpty() ? QString ("-") : padChordLabel (pad)));
+    title->setEnabled (false);
+    menu.addSeparator();
+    auto* add = menu.addMenu (tr ("Add this chord to User..."));
+    add->setEnabled (! notes.isEmpty());
+    for (int b = 0; b < music::kUserBanks; ++b)
+    {
+        auto* bank = add->addMenu (QString ("User %1").arg (b + 1));
+        for (int c = 0; c < 12; ++c)
+        {
+            const auto& existing = music::userChords()[(size_t) b][(size_t) c];
+            QList<int> ex;
+            for (int i : existing)
+                ex << base + i;
+            auto* a = bank->addAction (QString ("Pad %1  %2").arg (c + 1).arg (existing.empty() ? tr ("(empty)") : music::chordName (ex)));
+            connect (a, &QAction::triggered, this, [this, b, c, notes, base]
+            {
+                std::vector<int> intervals;
+                for (int n : notes)
+                    intervals.push_back (n - base);
+                std::sort (intervals.begin(), intervals.end());
+                music::userChords()[(size_t) b][(size_t) c] = intervals;
+                music::saveUserChords();
+                toast (QString ("USER %1 PAD %2 = %3").arg (b + 1).arg (c + 1).arg (music::chordName (QList<int> (notes.begin(), notes.end()))));
+                refreshAll();
+            });
+        }
+    }
+    const bool user = keySettings.chordMode == 4 && pad <= 12;
+    QAction *copy = nullptr, *paste = nullptr, *erase = nullptr;
+    if (user)
+    {
+        menu.addSeparator();
+        auto& slot = music::userChords()[(size_t) keySettings.userBank][(size_t) pad - 1];
+        copy = menu.addAction (tr ("Copy chord"));
+        copy->setEnabled (! slot.empty());
+        paste = menu.addAction (tr ("Paste chord here"));
+        paste->setEnabled (chordClipFull);
+        erase = menu.addAction (tr ("Delete chord"));
+        erase->setEnabled (! slot.empty());
+    }
+    auto* picked = menu.exec (at);
+    if (! picked || ! user)
+        return;
+    auto& slot = music::userChords()[(size_t) keySettings.userBank][(size_t) pad - 1];
+    if (picked == copy)
+    {
+        chordClip = slot;
+        chordClipFull = true;
+        toast (QString ("CHORD %1 copied").arg (pad));
+        return;
+    }
+    if (picked == paste)
+        slot = chordClip;
+    else if (picked == erase)
+        slot.clear();
+    else
+        return;
+    music::saveUserChords();
+    refreshAll();
+}
+
+void MainWindow::chordDropMenu (int fp, int tp, const QPoint& at)
+{
+    // Set User : pad lache sur un pad = Copy / Move / Swap des ACCORDS (jamais des sons)
+    if (fp > 12 || tp > 12 || fp == tp)
+        return;
+    auto& bank = music::userChords()[(size_t) keySettings.userBank];
+    QMenu menu (this);
+    auto* title = menu.addAction (tr ("User %1: chord %2 > %3").arg (keySettings.userBank + 1).arg (fp).arg (tp));
+    title->setEnabled (false);
+    menu.addSeparator();
+    auto* copy = menu.addAction (tr ("Copy chord here"));
+    auto* move = menu.addAction (tr ("Move chord here"));
+    auto* swap = menu.addAction (tr ("Swap chords"));
+    auto* picked = menu.exec (at);
+    auto& a = bank[(size_t) fp - 1];
+    auto& b = bank[(size_t) tp - 1];
+    if (picked == copy)
+        b = a;
+    else if (picked == move)
+    {
+        b = a;
+        a.clear();
+    }
+    else if (picked == swap)
+        std::swap (a, b);
+    else
+        return;
+    music::saveUserChords();
+    toast (QString ("CHORD %1 %2 %3").arg (fp).arg (picked == swap ? "<>" : ">").arg (tp));
+    refreshAll();
 }

@@ -2,6 +2,15 @@
 #include "keyboard_view.h"
 #include "music_tables.h"
 
+#include <QCoreApplication>
+#include <QDir>
+#include <QFile>
+#include <QFileInfo>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QSaveFile>
+#include <QStandardPaths>
 #include <QDateTime>
 #include <QSettings>
 #include <QMouseEvent>
@@ -84,6 +93,82 @@ void loadCustom()
     customChords() = readList (s.value ("custom/chords").toStringList());
 }
 
+std::vector<std::vector<std::vector<int>>>& userChords()
+{
+    static std::vector<std::vector<std::vector<int>>> banks (kUserBanks, std::vector<std::vector<int>> (12));
+    return banks;
+}
+
+QString userChordsFile()
+{
+    // Reglage (Settings) sinon : le dossier du pilote Maschine, en remontant depuis l'app,
+    // puis ~/Developer/fuzzy-turtle ; a defaut, un fichier dans le dossier des reglages de l'app
+    const QString set = QSettings().value ("keys/userChordsFile").toString();
+    if (! set.isEmpty())
+        return set;
+    QDir d (QCoreApplication::applicationDirPath());
+    for (int up = 0; up < 8; ++up)
+    {
+        if (d.exists ("prototypes/maschine-hid"))
+            return d.filePath ("prototypes/maschine-hid/user_chords.json");
+        if (! d.cdUp())
+            break;
+    }
+    const QString dev = QDir::homePath() + "/Developer/fuzzy-turtle/prototypes/maschine-hid";
+    if (QDir (dev).exists())
+        return dev + "/user_chords.json";
+    return QStandardPaths::writableLocation (QStandardPaths::AppDataLocation) + "/user_chords.json";
+}
+
+void loadUserChords()
+{
+    auto& banks = userChords();
+    for (auto& b : banks)
+        for (auto& c : b)
+            c.clear();
+    QFile f (userChordsFile());
+    if (! f.open (QIODevice::ReadOnly))
+        return;
+    const QJsonArray list = QJsonDocument::fromJson (f.readAll()).object()["banks"].toArray();
+    for (int b = 0; b < kUserBanks && b < list.size(); ++b)
+    {
+        const QJsonArray chords = list[b].toArray();
+        for (int c = 0; c < 12 && c < chords.size(); ++c)
+            for (const auto& n : chords[c].toArray())
+                banks[(size_t) b][(size_t) c].push_back (n.toInt());
+    }
+}
+
+bool saveUserChords()
+{
+    QJsonArray list;
+    for (const auto& b : userChords())
+    {
+        QJsonArray chords;
+        for (const auto& c : b)
+        {
+            QJsonArray notes;
+            for (int n : c)
+                notes.append (n);
+            chords.append (notes);
+        }
+        list.append (chords);
+    }
+    const QString path = userChordsFile();
+    QDir().mkpath (QFileInfo (path).absolutePath());
+    QSaveFile f (path);
+    return f.open (QIODevice::WriteOnly) && f.write (QJsonDocument (QJsonObject { { "banks", list } }).toJson (QJsonDocument::Indented)) >= 0
+           && f.commit();
+}
+
+int userCount (int bank)
+{
+    int n = 0;
+    for (const auto& c : userChords()[(size_t) std::clamp (bank, 0, kUserBanks - 1)])
+        n += c.empty() ? 0 : 1;
+    return n;
+}
+
 void saveCustom()
 {
     QSettings s;
@@ -134,6 +219,13 @@ QList<int> chordFor (int note, const KeySettings& k)
     {
         for (int i : customChords()[(size_t) k.customChord].notes)
             out << note + i;
+    }
+    else if (k.chordMode == 4)                       // User : 12 accords perso (pads 1-12)
+    {
+        const int index = ((note - k.root) % 12 + 12) % 12;
+        const int base = note - index;               // la tonique de cette octave (comme le pilote)
+        for (int i : userChords()[(size_t) std::clamp (k.userBank, 0, kUserBanks - 1)][(size_t) index])
+            out << base + i;
     }
     else if (k.chordMode == 2)                       // Chord Set : 12 accords sur les 12 notes de l'octave
     {
@@ -208,6 +300,7 @@ QString chordLabel (const KeySettings& k)
     {
         case 1: return QString ("Harmonizer %1").arg (harmonies()[(size_t) std::clamp (k.harmony, 0, (int) harmonies().size() - 1)].name);
         case 2: return QString ("Chord Set %1").arg (chordSets()[(size_t) std::clamp (k.chordSet, 0, (int) chordSets().size() - 1)].name);
+        case 4: return QString ("User %1").arg (k.userBank + 1);
         case 3: return k.customChord < (int) customChords().size() ? QString ("Custom : %1").arg (customChords()[(size_t) k.customChord].name)
                                                                    : QString ("Custom : ?");
         default: return QString ("Chords off");
@@ -345,7 +438,7 @@ void KeyboardView::paintEvent (QPaintEvent*)
             g.setPen (QColor (10, 10, 12));
             g.setBrush (fill);
             g.drawRoundedRect (r, 3, 3);
-            if (scaleNote && ! colorScale && (n - keys.root) % 12 != 0 && ! active.contains (n))
+            if (scaleNote && (n - keys.root) % 12 != 0 && ! active.contains (n))   // Color ou non : les points restent
             {   // touches classiques : la gamme en petits points
                 g.setPen (Qt::NoPen);
                 g.setBrush (color.darker (black ? 100 : 130));

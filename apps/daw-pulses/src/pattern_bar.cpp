@@ -10,6 +10,7 @@
 #include <QInputDialog>
 #include <QLabel>
 #include <QMenu>
+#include <QMessageBox>
 #include <QPushButton>
 
 using namespace session;
@@ -206,6 +207,15 @@ void PatternBar::renameScene (int index)
     emit changed();
 }
 
+bool PatternBar::confirm (const QString& question, const QString& detail)
+{
+    QMessageBox box (QMessageBox::Question, tr ("Delete"), question, QMessageBox::Yes | QMessageBox::Cancel, this);
+    if (! detail.isEmpty())
+        box.setInformativeText (detail);
+    box.setDefaultButton (QMessageBox::Cancel);      // Entree ne supprime rien
+    return box.exec() == QMessageBox::Yes;
+}
+
 int PatternBar::freeSlot (int from) const
 {
     for (int k = 1; k <= seq::kPatternSlots; ++k)
@@ -346,8 +356,25 @@ void PatternBar::choosePattern (int index)
                       .arg (playing && sequencer.queuedPattern (g) == index ? QString (" : next") : QString()));
 }
 
+void PatternBar::playPattern (int g, int index)
+{
+    if (! sequencer.hasPattern (g, index))
+        return;
+    const bool playing = isPlaying && isPlaying();
+    sequencer.selectPattern (g, index, playing);     // allume ce pattern (meme s'il etait le choisi)
+    sequencer.setCurrentScene (-1);
+    if (startAudition)
+        startAudition (g);                           // ce groupe seul ; lecture lancee si arretee
+    refresh (true);
+    emit changed();
+    emit message (QString ("%1 PLAY %2 (group alone)%3").arg (groupKey (g)).arg (patternName (sequencer, g, index))
+                      .arg (playing ? QString (" : next") : QString()));
+}
+
 void PatternBar::chooseScene (int index)
 {
+    if (endAudition)
+        endAudition();
     const bool playing = isPlaying && isPlaying();
     seq::Scene sc = sequencer.scene (index);
     if (! sc.used)                                   // vide : nouvelle scene, aucun pattern actif
@@ -375,7 +402,8 @@ void PatternBar::patternMenu (int index, const QPoint& at)
     auto* title = menu.addAction (tr ("Group %1, pattern %2").arg (groupKey (g)).arg (index + 1));
     title->setEnabled (false);
     menu.addSeparator();
-    auto* play = menu.addAction (exists ? tr ("Play") : tr ("New Pattern"));
+    const bool listening = state.audition.load() == g && isPlaying && isPlaying() && index == sequencer.currentPattern (g);
+    auto* play = menu.addAction (! exists ? tr ("New Pattern") : listening ? tr ("Stop") : tr ("Play (this group alone)"));
     const int cur = sequencer.currentPattern (g);
     auto* dupHere = menu.addAction (tr ("Duplicate pattern %1 here").arg (cur + 1));
     dupHere->setEnabled (index != cur);
@@ -384,13 +412,35 @@ void PatternBar::patternMenu (int index, const QPoint& at)
     auto* rename = menu.addAction (tr ("Rename..."));
     rename->setEnabled (exists);
     menu.addSeparator();
+    auto* copyP = menu.addAction (tr ("Copy"));
+    copyP->setEnabled (exists);
+    auto* pasteP = menu.addAction (tr ("Paste here"));
+    pasteP->setEnabled (clipPatternFull);
+    menu.addSeparator();
     auto* erase = menu.addAction (index == cur ? tr ("Clear (stays chosen)") : tr ("Delete"));
     erase->setEnabled (exists);
     auto* picked = menu.exec (at);
     if (! picked)
         return;
-    if (picked == play)
-        choosePattern (index);
+    if (picked == play && listening && stopPlayback)
+        stopPlayback();
+    else if (picked == play)
+        exists ? playPattern (g, index) : choosePattern (index);
+    else if (picked == copyP)
+    {
+        clipPattern = sequencer.patternAt (g, index);
+        clipPatternName = sequencer.patternName (g, index);
+        clipPatternFull = true;
+        emit message (QString ("PATTERN %1 copied").arg (index + 1));
+    }
+    else if (picked == pasteP)
+    {
+        emit beforeEdit (g, tr ("Paste pattern"));
+        sequencer.setPatternAt (g, index, clipPattern);
+        sequencer.setPatternName (g, index, clipPatternName);
+        emit message (QString ("PASTE > PATTERN %1").arg (index + 1));
+        emit changed();
+    }
     else if (picked == dupHere || picked == dupNext)
     {
         const int from = picked == dupHere ? cur : index;
@@ -409,8 +459,35 @@ void PatternBar::patternMenu (int index, const QPoint& at)
         renamePattern (g, index);
     else if (picked == erase)
     {
-        if (index == cur)
-            emit aboutToChange (g);                  // le pattern choisi : annulable
+        // Confirmation (Cancel par defaut) ; les scenes qui le jouent sont nommees
+        QStringList in;
+        for (int k = 0; k < seq::kPatternSlots; ++k)
+        {
+            const seq::Scene sc = sequencer.scene (k);
+            if (sc.used && sc.pattern[(size_t) g] == index)
+            {
+                if (sc.locked)
+                {
+                    emit message (QString ("Pattern %1 is used by locked scene S%2").arg (index + 1).arg (k + 1));
+                    return;
+                }
+                in << QString ("S%1").arg (k + 1);
+            }
+        }
+        const QString what = QString ("%1 (%2)").arg (index + 1).arg (patternName (sequencer, g, index));
+        if (! confirm (index == cur ? tr ("Clear pattern %1?").arg (what) : tr ("Delete pattern %1?").arg (what),
+                       in.isEmpty() ? QString() : tr ("It is used in %1: those scenes will play nothing for this group.").arg (in.join (", "))))
+            return;
+        emit beforeEdit (g, tr ("Delete pattern"));  // annulable (tous les patterns et les scenes)
+        for (int k = 0; k < seq::kPatternSlots; ++k)
+        {
+            seq::Scene sc = sequencer.scene (k);
+            if (sc.used && sc.pattern[(size_t) g] == index)
+            {
+                sc.pattern[(size_t) g] = seq::kOff;
+                sequencer.setScene (k, sc);
+            }
+        }
         sequencer.removePattern (g, index);
         emit changed();
     }
@@ -440,11 +517,21 @@ void PatternBar::sceneMenu (int index, const QPoint& at)
     auto* lock = menu.addAction (sc.locked ? tr ("Unlock") : tr ("Lock (no more changes)"));
     lock->setEnabled (sc.used);
     menu.addSeparator();
+    auto* copyS = menu.addAction (tr ("Copy"));
+    copyS->setEnabled (sc.used);
+    auto* pasteS = menu.addAction (tr ("Paste here"));
+    pasteS->setEnabled (clipSceneFull && ! sc.locked);
+    menu.addSeparator();
     auto* erase = menu.addAction (tr ("Delete"));
     erase->setEnabled (sc.used && ! sc.locked);
     auto* picked = menu.exec (at);
     if (! picked)
         return;
+    if (picked == erase && ! confirm (tr ("Delete scene %1?").arg (index + 1)
+                                          + (sc.name.empty() ? QString() : QString (" (%1)").arg (QString::fromStdString (sc.name))), {}))
+        return;
+    if (picked != launch && picked != copyS)
+        emit beforeEdit (-1, tr ("Scene %1").arg (index + 1));   // Cmd+Z remet les scenes
     seq::Scene edit = sc;
     if (picked == launch)
     {
@@ -485,6 +572,19 @@ void PatternBar::sceneMenu (int index, const QPoint& at)
         renameScene (index);
         return;
     }
+    else if (picked == copyS)
+    {
+        clipScene = sc;
+        clipScene.locked = false;
+        clipSceneFull = true;
+        emit message (QString ("SCENE %1 copied").arg (index + 1));
+        return;
+    }
+    else if (picked == pasteS)
+    {
+        sequencer.setScene (index, clipScene);
+        emit message (QString ("PASTE > SCENE %1").arg (index + 1));
+    }
     else if (picked == lock)
     {
         edit.locked = ! sc.locked;
@@ -492,7 +592,9 @@ void PatternBar::sceneMenu (int index, const QPoint& at)
         emit message (QString ("SCENE %1 %2").arg (index + 1).arg (edit.locked ? "LOCKED" : "UNLOCKED"));
     }
     else if (picked == erase)
+    {
         sequencer.setScene (index, seq::Scene());
+    }
     refresh (true);
     emit changed();
 }
