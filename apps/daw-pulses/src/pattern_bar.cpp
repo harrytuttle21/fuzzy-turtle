@@ -1,7 +1,10 @@
 // Barre PATTERNS / SCENES : voir pattern_bar.h
 #include "pattern_bar.h"
 
+#include <QAbstractItemView>
+#include <algorithm>
 #include <QComboBox>
+#include <QFontMetrics>
 #include <QGridLayout>
 #include <QHBoxLayout>
 #include <QInputDialog>
@@ -28,7 +31,14 @@ PatternBar::PatternBar (seq::Sequencer& seqr, const session::State& st, QWidget*
     for (auto* l : { patTitle, sceneTitle })
     {
         l->setObjectName ("section");
-        l->setMinimumWidth (96);
+    }
+    // Largeur fixe (le nom de groupe le plus long) : le reste de la barre ne bouge plus
+    {
+        QFont f = font();
+        f.setBold (true);
+        const int w = QFontMetrics (f).horizontalAdvance ("PATTERNS H2 WWWWWWWW") + 12;
+        for (auto* l : { patTitle, sceneTitle })
+            l->setFixedWidth (std::max (160, w));
     }
     grid->addWidget (sceneTitle, 0, 0);              // scenes en haut, patterns dessous
     grid->addWidget (patTitle, 1, 0);
@@ -67,6 +77,7 @@ PatternBar::PatternBar (seq::Sequencer& seqr, const session::State& st, QWidget*
     {
         b->setFocusPolicy (Qt::NoFocus);
         b->setFixedHeight (24);
+        b->setFixedWidth (80);
         b->setToolTip (tr ("Bank: 16 slots each, 4 banks"));
     }
     connect (patBankButton, &QPushButton::clicked, this, [this] { patternBank = (patternBank + 1) % 4; refresh (true); });
@@ -80,8 +91,9 @@ PatternBar::PatternBar (seq::Sequencer& seqr, const session::State& st, QWidget*
     {
         c->setFocusPolicy (Qt::NoFocus);
         c->setFixedHeight (24);
-        c->setMinimumWidth (130);
-        c->setSizeAdjustPolicy (QComboBox::AdjustToContents);
+        c->setFixedWidth (150);                      // largeur fixe : la barre ne bouge pas
+        c->setSizeAdjustPolicy (QComboBox::AdjustToMinimumContentsLengthWithIcon);
+        c->view()->setMinimumWidth (220);             // la liste ouverte, elle, est large
     }
     sceneList->setToolTip (tr ("All the scenes: choose one to launch it"));
     patList->setToolTip (tr ("All the patterns of this group: choose one to play it"));

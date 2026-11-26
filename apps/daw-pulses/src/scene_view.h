@@ -3,6 +3,7 @@
 
 #include <QWidget>
 
+#include <algorithm>
 #include <functional>
 
 // Vue SCENES (onglet) : un grand tableau, une colonne par groupe.
@@ -34,11 +35,16 @@ protected:
     void mouseDoubleClickEvent (QMouseEvent*) override;
 
 private:
-    int nameW() const { return rotated ? 64 : 120; }
+    int nameW() const { return rotated ? 150 : 120; }                    // tourne : noms des groupes lisibles
+    int nowW() const { return 110; }                                       // tourne : colonne NOW
     int rowH() const { return 28; }
     double cellW() const { return (width() - nameW() - 4) / double (session::kGroups); }
     double groupH() const { return std::max (18.0, (height() - rowH() - 6) / double (session::kGroups)); }   // tourne
-    int sceneW() const { return 96; }                                                                       // tourne
+    double sceneW() const                            // tourne : les scenes remplissent toute la largeur
+    {
+        const int avail = std::max (96, width() - nameW() - nowW() - 8);
+        return avail / double (std::clamp (avail / 96, 1, 64));
+    }
     int visibleScenes() const;
     // Cases (dans les deux sens) : nom d'un groupe, ce qui joue, nom d'une scene, case scene x groupe
     QRectF groupCell (int g) const;

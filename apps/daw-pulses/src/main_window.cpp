@@ -648,7 +648,7 @@ MainWindow::MainWindow (const Options& options, QWidget* parent) : QMainWindow (
             bool anyScene = false;                   // SCENE : vif tenu ou scene en cours, doux s'il y en a
             for (int i = 0; i < seq::kPatternSlots && ! anyScene; ++i)
                 anyScene = sequencer.scene (i).used;
-            l.setButton ("scene", sceneHeld || sequencer.currentScene() >= 0 ? fc::Shade::Bright
+            l.setButton ("scene", sceneHeld || shown (sceneView) || sequencer.currentScene() >= 0 ? fc::Shade::Bright
                                   : anyScene ? fc::Shade::Dim : fc::Shade::Off);
         }
         l.setButton ("events", shown (pianoRoll) ? fc::Shade::Bright : fc::Shade::Dim);
@@ -1676,6 +1676,8 @@ void MainWindow::onMaschineButton (const QString& name, bool down)
         }
         else if (! holdUsed && name == "pattern")    // PATTERN seul : vue Pattern (comme avant)
             toggleView (1, "PATTERN");
+        else if (! holdUsed)                         // SCENE seul : vue Scenes (2e appui : retour)
+            toggleView (6, "SCENES");
         refreshMaschine();                           // lumieres PATTERN / SCENE
         return;
     }
@@ -3171,7 +3173,8 @@ void MainWindow::cyclePlayMode()
 int MainWindow::currentView() const
 {
     auto shown = [] (QWidget* w) { return w && ! w->visibleRegion().isEmpty(); };
-    return shown (pianoRoll) ? 2 : shown (mixer) ? 0 : shown (patternView) ? 1 : shown (keyboardView) ? 3 : 1;
+    return shown (sceneView) ? 6 : shown (tracker) ? 5 : shown (pianoRoll) || shown (stepView) || shown (rollTracker) ? 2
+         : shown (mixer) ? 0 : shown (patternView) ? 1 : shown (keyboardView) ? 3 : 1;
 }
 
 void MainWindow::toggleView (int index, const QString& name)
@@ -3183,7 +3186,7 @@ void MainWindow::toggleView (int index, const QString& name)
         const int back = viewBefore;
         viewBefore = -1;
         showLeftTab (back);
-        toast (QStringList { "MIXER", "PATTERN", "PIANO ROLL", "KEYBOARD", "SOUND" }[back]);
+        toast (QStringList { "MIXER", "PATTERN", "PIANO ROLL", "KEYBOARD", "SOUND", "TRACKER", "SCENES" }.value (back));
         return;
     }
     if (now != index)

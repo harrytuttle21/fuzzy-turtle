@@ -32,7 +32,7 @@ QString SceneView::patternText (int g, int index) const
 int SceneView::visibleScenes() const
 {
     if (rotated)
-        return std::max (1, (width() - nameW() - sceneW() - 8) / sceneW());
+        return std::clamp (std::max (96, width() - nameW() - nowW() - 8) / 96, 1, 64);
     return std::max (1, (height() - 2 * rowH() - 8) / rowH());
 }
 
@@ -46,21 +46,21 @@ QRectF SceneView::groupCell (int g) const
 QRectF SceneView::nowCell (int g) const
 {
     if (rotated)
-        return QRectF (nameW() + 2, rowH() + 4 + g * groupH() + 1, sceneW() - 4, groupH() - 3);
+        return QRectF (nameW() + 2, rowH() + 4 + g * groupH() + 1, nowW() - 4, groupH() - 3);
     return QRectF (nameW() + g * cellW() + 1, rowH() + 2, cellW() - 2, rowH() - 3);
 }
 
 QRectF SceneView::sceneNameCell (int k) const
 {
     if (rotated)
-        return QRectF (nameW() + sceneW() + 8 + k * sceneW() + 1, 2, sceneW() - 3, rowH() - 3);
+        return QRectF (nameW() + nowW() + 8 + k * sceneW() + 1, 2, sceneW() - 3, rowH() - 3);
     return QRectF (4, 2 * rowH() + 6 + k * rowH() + 2, nameW() - 8, rowH() - 3);
 }
 
 QRectF SceneView::sceneCell (int k, int g) const
 {
     if (rotated)
-        return QRectF (nameW() + sceneW() + 8 + k * sceneW() + 1, rowH() + 4 + g * groupH() + 1, sceneW() - 3, groupH() - 3);
+        return QRectF (nameW() + nowW() + 8 + k * sceneW() + 1, rowH() + 4 + g * groupH() + 1, sceneW() - 3, groupH() - 3);
     return QRectF (nameW() + g * cellW() + 1, 2 * rowH() + 6 + k * rowH() + 2, cellW() - 2, rowH() - 3);
 }
 
@@ -88,9 +88,9 @@ void SceneView::paintEvent (QPaintEvent*)
     else
     {
         p.setPen (QColor (230, 230, 240));
-        p.drawText (QRectF (nameW() + 2, 0, sceneW() - 4, rowH()), Qt::AlignCenter, tr ("NOW"));
+        p.drawText (QRectF (nameW() + 2, 0, nowW() - 4, rowH()), Qt::AlignCenter, tr ("NOW"));
         p.setPen (QColor (60, 60, 70));
-        p.drawLine (QPointF (nameW() + sceneW() + 4, 0), QPointF (nameW() + sceneW() + 4, height()));
+        p.drawLine (QPointF (nameW() + nowW() + 4, 0), QPointF (nameW() + nowW() + 4, height()));
     }
     // Groupes (le groupe choisi en plein)
     for (int g = 0; g < kGroups; ++g)
