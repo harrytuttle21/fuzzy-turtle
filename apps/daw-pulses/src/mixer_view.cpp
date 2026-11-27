@@ -64,7 +64,7 @@ QRectF MixerView::meterRect (int strip) const
 {
     const double w = width() / 9.4;                         // 8 voies + master un peu a part
     const double x = strip < 8 ? strip * w : 8.4 * w;
-    return { x + w * 0.28, 22.0, w * 0.44, height() - 72.0 };
+    return { x + w * 0.28, 22.0, w * 0.44, height() - 92.0 };
 }
 
 QRectF MixerView::buttonRect (int strip, bool solo) const
@@ -72,6 +72,24 @@ QRectF MixerView::buttonRect (int strip, bool solo) const
     const QRectF m = meterRect (strip);
     const double bw = std::min (22.0, m.width() * 0.9 + 4), y = m.bottom() + 6;
     return { m.center().x() + (solo ? 1.0 : -1.0 - bw), y, bw, 18.0 };
+}
+
+QRectF MixerView::panRect (int strip) const
+{
+    const QRectF m = meterRect (strip);
+    const double w = std::min (64.0, width() / 9.4 * 0.8);
+    return { m.center().x() - w / 2, m.bottom() + 30, w, 12.0 };
+}
+
+void MixerView::setPanFromX (int strip, double x)
+{
+    const int g = groupOf (strip);
+    if (g < 0)
+        return;
+    const QRectF r = panRect (strip);
+    st.groupPan[(size_t) g] = std::clamp ((int) std::lround ((x - r.left()) / r.width() * 127.0), 0, 127);
+    emit volumeChanged();
+    update();
 }
 
 int MixerView::stripAt (double x) const
@@ -129,6 +147,16 @@ void MixerView::paintEvent (QPaintEvent*)
             g.setBrush (grad);
             g.drawRect (bar);
         }
+        // Graduations 25, 50, 75, 100 (100 = niveau normal)
+        g.setPen (QColor (95, 95, 105));
+        for (const int mark : { 25, 50, 75, 100 })
+        {
+            const double my = r.bottom() - r.height() * mark / 127.0;
+            g.drawLine (QPointF (r.left() - 4, my), QPointF (r.left() - 1, my));
+            g.drawLine (QPointF (r.right() + 1, my), QPointF (r.right() + 4, my));
+            if (r.left() - 26 > (s < 8 ? s * width() / 9.4 : 8.4 * width() / 9.4) - 2)
+                g.drawText (QRectF (r.left() - 28, my - 7, 22, 14), Qt::AlignRight | Qt::AlignVCenter, QString::number (mark));
+        }
         // Volume : le petit trait blanc
         const int vol = volumeOf (s);
         const double vy = r.bottom() - r.height() * vol / 127.0;
@@ -149,6 +177,26 @@ void MixerView::paintEvent (QPaintEvent*)
                 g.setPen (on ? QColor (15, 15, 15) : QColor (150, 150, 158));
                 g.drawText (b, Qt::AlignCenter, solo ? "S" : "M");
             }
+        // Pan du groupe : barre gauche / droite, curseur au centre = 64
+        if (grp >= 0)
+        {
+            const QRectF pr = panRect (s);
+            const int pan = st.groupPan[(size_t) grp];
+            g.setPen (QColor (60, 60, 70));
+            g.setBrush (QColor (22, 22, 27));
+            g.drawRoundedRect (pr, 3, 3);
+            const double cx = pr.center().x(), px = pr.left() + pr.width() * pan / 127.0;
+            g.setPen (Qt::NoPen);
+            g.setBrush (color.darker (120));
+            g.drawRect (QRectF (std::min (cx, px), pr.top() + 2, std::abs (px - cx), pr.height() - 4));
+            g.setPen (QColor (80, 80, 90));
+            g.drawLine (QPointF (cx, pr.top() + 1), QPointF (cx, pr.bottom() - 1));
+            g.setPen (QPen (Qt::white, 2));
+            g.drawLine (QPointF (px, pr.top() - 2), QPointF (px, pr.bottom() + 2));
+            g.setPen (QColor (120, 120, 130));
+            g.drawText (QRectF (pr.left() - 12, pr.top() - 2, 10, 16), Qt::AlignCenter, "L");
+            g.drawText (QRectF (pr.right() + 2, pr.top() - 2, 10, 16), Qt::AlignCenter, "R");
+        }
     }
 }
 
@@ -164,19 +212,38 @@ void MixerView::mousePressEvent (QMouseEvent* e)
                 update();
                 return;
             }
+    for (int strip = 0; strip < 8; ++strip)              // pan : barre gauche / droite
+        if (panRect (strip).adjusted (-4, -4, 4, 4).contains (e->position()))
+        {
+            dragging = strip;
+            panDrag = true;
+            setPanFromX (strip, e->position().x());
+            return;
+        }
+    panDrag = false;
     dragging = stripAt (e->position().x());
-    if (dragging >= 0)
+    if (dragging >= 0 && e->position().y() <= meterRect (dragging).bottom() + 4)
         setVolumeFromY (dragging, e->position().y());
+    else
+        dragging = -1;
 }
 
 void MixerView::mouseMoveEvent (QMouseEvent* e)
 {
     if (dragging >= 0)
-        setVolumeFromY (dragging, e->position().y());
+        panDrag ? setPanFromX (dragging, e->position().x()) : setVolumeFromY (dragging, e->position().y());
 }
 
 void MixerView::mouseDoubleClickEvent (QMouseEvent* e)
 {
+    for (int strip = 0; strip < 8; ++strip)              // pan : double-clic = centre
+        if (panRect (strip).adjusted (-4, -4, 4, 4).contains (e->position()))
+        {
+            st.groupPan[(size_t) groupOf (strip)] = 64;
+            emit volumeChanged();
+            update();
+            return;
+        }
     const int s = stripAt (e->position().x());
     if (s >= 0)
     {

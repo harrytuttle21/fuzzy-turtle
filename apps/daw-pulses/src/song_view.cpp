@@ -273,8 +273,14 @@ void SongView::paintEvent (QPaintEvent*)
             {
                 const double x0 = xOfRow (s), x1 = xOfRow (std::min (b, s + len));
                 const QRectF r (x0 + 1, y + 3, std::max (2.0, x1 - x0 - 2), laneH - 6);
-                p.setPen (Qt::NoPen);
-                p.setBrush (groupColor (g).darker (s == a ? 140 : 200));
+                // En lecture : le pattern qui joue (cette repetition) en vif avec un cadre blanc,
+                // le reste du bloc en cours un peu moins, les autres blocs estompes
+                const int at = a + playRow;
+                const bool nowRep = playing && i == playEntry && at >= s && at < s + len;
+                const bool nowBlock = playing && i == playEntry;
+                p.setPen (nowRep ? QPen (Qt::white, 2) : QPen (Qt::NoPen));
+                p.setBrush (nowRep ? groupColor (g) : groupColor (g).darker (playing ? (nowBlock ? 160 : 260)
+                                                                                    : (s == a ? 140 : 200)));
                 p.drawRoundedRect (r, 3, 3);
                 if (s == a)
                 {

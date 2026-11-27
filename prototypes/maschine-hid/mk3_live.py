@@ -600,6 +600,7 @@ class State:
         self.mixer = False
         self.mixer_page = 0
         self.master = 100
+        self.swing = 0                                 # SWING : decalage d'une double-croche sur deux (0-100 %)
         self.group_vol = {g: 100 for g in GROUPS}
         self.group_pan = {g: 64 for g in GROUPS}       # stereo des groupes (0 G, 64 centre, 127 D)
         self.mix_pan = False                           # MIXER : bouton 4 = vue PAN
@@ -3139,6 +3140,9 @@ def handle(st: State, ev: tuple) -> None:
         elif 'tap' in st.held:                       # TAP tenu + molette : volume du metronome
             st.metro_vol = max(0, min(127, st.metro_vol + 3 * ev[1]))
             st.tap_turned = True
+        elif 'swing' in st.held:                     # SWING tenu + molette : swing (0-100 %, comme l'app)
+            st.swing = max(0, min(100, st.swing + ev[1]))
+            st.toast = (f'SWING {st.swing} %', time.monotonic() + 2)
         elif 'tempo' in st.held:                     # TEMPO tenu + molette : tempo au BPM pres
             st.bpm = max(40, min(240, st.bpm + ev[1]))
             st.taps.clear()
@@ -4012,7 +4016,7 @@ def project_data(st: State) -> dict:
                **({'locked': True} if i in st.scene_locked else {})}
               for i, sc in enumerate(st.scenes) if sc]
     return {'format': 'fuzzy-proto', 'version': PROJECT_VERSION, 'name': st.project_name,
-            'bpm': st.bpm, 'master': st.master, 'linked': sorted(st.linked),
+            'bpm': st.bpm, 'swing': st.swing, 'master': st.master, 'linked': sorted(st.linked),
             'groups': groups, 'scenes': scenes,
             'arrangement': st.arrangement, 'arr_loop': st.arr_loop, 'song_mode': st.arr_on}
 
@@ -4084,6 +4088,7 @@ def load_project(st: State, name: str) -> None:
     st.redo_stack.clear()
     reset_playback(st)
     st.bpm = int(data.get('bpm', 120))
+    st.swing = max(0, min(100, int(data.get('swing', 0))))
     st.master = int(data.get('master', st.master))
     st.linked = set(data.get('linked', [])) & set(GROUPS)
     st.project_name = data.get('name', name)
@@ -5036,13 +5041,16 @@ def tick(st: State) -> bool:
             dur = 60 / st.bpm / 4
             at = st.next_row_time                           # heure prevue de cette ligne
             nxt = (row + 1) % pattern_length(st, g)
+            swing = st.swing / 100 * 0.5 * dur              # SWING : les lignes impaires un peu plus tard
+            here = swing if st.playhead % 2 == 1 else 0
+            later = swing if (st.playhead + 1) % 2 == 1 else 0
             for t in range(16):                             # toutes les pistes
                 cell = st.grids[g][row][t]
                 if cell and cell_off(cell) >= 0:            # a l'heure ou en retard
-                    schedule_cell(st, g, t, cell, at + cell_off(cell) / TIMING * dur, now)
+                    schedule_cell(st, g, t, cell, at + cell_off(cell) / TIMING * dur + here, now)
                 early = st.grids[g][nxt][t]                 # ligne suivante, en avance
                 if early and cell_off(early) < 0:
-                    schedule_cell(st, g, t, early, at + (1 + cell_off(early) / TIMING) * dur, now)
+                    schedule_cell(st, g, t, early, at + (1 + cell_off(early) / TIMING) * dur + later, now)
         if st.metro and st.playhead % 4 == 0:              # TAP : un coup par temps, accent sur la mesure
             click(st, st.playhead % 16 == 0)
         st.playhead += 1
@@ -5056,7 +5064,7 @@ def tick(st: State) -> bool:
 # Retro-eclairage des boutons (rapport 0x80, 63 octets) - emplacements et
 # niveaux repris du pilote r22yb3m (MIT). Boutons mono : 4 = doux, 7 = vif.
 # Groupes A-H : couleurs de la palette NI, (douce, vive) pour chaque groupe.
-BUTTON_SLOTS = {'fixed_vel': 45, 'plug_in': 1, 'events': 52, 'arranger': 2, 'file': 8, 'select': 55, 'restart': 37, 'pattern': 51, 'scene': 50, 'duplicate': 54, 'erase': 38, 'tempo': 23, 'play': 41, 'rec': 42, 'stop': 43, 'shift': 44, 'pad_mode': 46, 'keyboard': 47,
+BUTTON_SLOTS = {'swing': 21, 'fixed_vel': 45, 'plug_in': 1, 'events': 52, 'arranger': 2, 'file': 8, 'select': 55, 'restart': 37, 'pattern': 51, 'scene': 50, 'duplicate': 54, 'erase': 38, 'tempo': 23, 'play': 41, 'rec': 42, 'stop': 43, 'shift': 44, 'pad_mode': 46, 'keyboard': 47,
                 'chords': 48, 'step': 49, 'nav_prev': 6, 'nav_next': 7,
                 'mute': 57, 'solo': 56,
                 'mixer': 3, 'volume': 20,  # MIXER / VOLUME : emplacements supposes (21 = SWING)
@@ -5094,7 +5102,7 @@ ARP_DIRS = ['Up', 'Down', 'Up&Down', 'Down&Up', 'Random']
 def available_buttons(st: State) -> set:
     """Boutons qui ont une fonction dans le mode en cours (les autres restent eteints)."""
     on = {'play', 'rec', 'stop', 'shift', 'pad_mode', 'keyboard', 'chords', 'step', 'mixer',
-          'volume', 'tempo', 'mute', 'solo', 'follow', 'note_repeat'}
+          'volume', 'swing', 'tempo', 'mute', 'solo', 'follow', 'note_repeat'}
     on.add('restart')                                  # RESTART : toujours possible
     on.add('tap')                                      # TAP : metronome
     on.add('file')                                     # FILE : projets ; Shift + FILE : enregistrer
@@ -5156,7 +5164,7 @@ def button_frame(st: State) -> bytes:
     active = {'play': st.playing, 'rec': st.recording, 'stop': not st.playing,
               'shift': 'shift' in st.held, 'keyboard': st.right_view == 'keyboard',
               'pad_mode': not st.melodic(), 'chords': st.right_view == 'chords',
-              'step': st.step_mode, 'tempo': False, 'nav_prev': False, 'nav_next': False,
+              'step': st.step_mode, 'tempo': False, 'swing': st.swing > 0, 'nav_prev': False, 'nav_next': False,
               'pattern': st.pattern_mode, 'scene': st.scene_mode, 'select': False, 'file': st.file_mode,
               'arranger': st.arranger_mode or st.arr_on, 'plug_in': st.plugin_mode, 'events': st.events_mode, 'fixed_vel': False, 'restart': False, 'duplicate': False, 'erase': False,
               'mute': bool(st.muted), 'solo': bool(st.solo),

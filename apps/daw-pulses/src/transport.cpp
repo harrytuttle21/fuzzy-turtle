@@ -142,8 +142,13 @@ void Transport::run()
             }, Qt::QueuedConnection);
             break;
         }
-        for (const auto& h : hits)
+        const double swingRows = state.swing.load() / 100.0 * 0.5;   // SWING : lignes impaires plus tard
+        for (auto h : hits)
         {
+            // une note en avance (> 0,5) appartient a la ligne suivante
+            const bool odd = h.delayRows >= 0.5 ? (r + 1) % 2 == 1 : r % 2 == 1;
+            if (odd)
+                h.delayRows += swingRows;
             if (h.delayRows <= 0.0005)
                 playHit (h);
             else

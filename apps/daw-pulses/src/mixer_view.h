@@ -20,7 +20,7 @@ public:
     QSize minimumSizeHint() const override { return { 300, 150 }; }
 
 signals:
-    void volumeChanged();                                   // un volume a bouge (Maschine, reglages)
+    void volumeChanged();                                   // un volume (ou un pan) a bouge
     void muteSoloChanged();                                 // bouton M ou S d'une voie
 
 protected:
@@ -34,6 +34,9 @@ private:
     int stripAt (double x) const;                           // 0-7 voies, 8 = master, -1 = rien
     QRectF meterRect (int strip) const;
     QRectF buttonRect (int strip, bool solo) const;         // boutons M et S sous la voie
+    QRectF panRect (int strip) const;                       // pan gauche / droite (sous M et S)
+    void setPanFromX (int strip, double x);
+    bool panDrag = false;
     std::atomic<int>& volumeOf (int strip);
     int groupOf (int strip) const;                          // groupe 0-15, -1 = master
     void setVolumeFromY (int strip, double y);

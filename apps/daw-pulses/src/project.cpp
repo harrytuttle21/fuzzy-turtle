@@ -89,6 +89,8 @@ QJsonObject build (QJsonObject d, const QString& name, const seq::Sequencer& seq
         QJsonObject gd = groups[key (g)].toObject();
         gd["current"] = sequencer.currentPattern (g);
         gd["volume"] = state.groupVolume[(size_t) g].load();
+        if (state.groupPan[(size_t) g] != 64 || gd.contains ("pan"))
+            gd["pan"] = state.groupPan[(size_t) g].load();   // meme cle que le pilote
         gd["off"] = sequencer.groupOff (g);
         gd["name"] = state.groupLabel[(size_t) g];     // meme cle que la Maschine
         if (! gd.contains ("pan"))
@@ -208,6 +210,8 @@ QJsonObject build (QJsonObject d, const QString& name, const seq::Sequencer& seq
         d["arr_loop"] = sequencer.songLoop();
     if (sequencer.songMode() || d.contains ("song_mode"))
         d["song_mode"] = sequencer.songMode();
+    if (state.swing.load() != 0 || d.contains ("swing"))
+        d["swing"] = state.swing.load();             // meme cle que le pilote
     // Toutes les songs (versions) : cle de l'app (le pilote joue « arrangement » = la song choisie)
     const auto songs = sequencer.allSongs();
     if (songs.size() > 1 || d.contains ("songs"))
@@ -281,6 +285,7 @@ void Project::toApp (seq::Sequencer& sequencer, session::State& state, int& bpm)
     {
         const QJsonObject gd = groups[key (g)].toObject();
         state.groupVolume[(size_t) g] = std::clamp (gd["volume"].toInt (100), 0, 127);
+        state.groupPan[(size_t) g] = std::clamp (gd["pan"].toInt (64), 0, 127);
         state.groupLabel[(size_t) g] = gd["name"].toString().trimmed().left (8).toUpper();
         const QJsonObject sounds = gd["sounds"].toObject();
         for (int s = 1; s <= 16; ++s)
@@ -374,6 +379,7 @@ void Project::toApp (seq::Sequencer& sequencer, session::State& state, int& bpm)
     sequencer.songStartFrom (0);
     sequencer.setSongLoop (data["arr_loop"].toBool (true));
     sequencer.setSongMode (data["song_mode"].toBool (false));
+    state.swing = std::clamp (data["swing"].toInt (0), 0, 100);
     sequencer.setSongLoopRange (data["song_loop_from"].toInt (-1), data["song_loop_to"].toInt (-1));
     // Plusieurs songs : la choisie vient d'« arrangement » (peut-etre modifiee par la Maschine)
     if (data.contains ("songs"))

@@ -72,6 +72,8 @@ struct State
     std::atomic<int> octave { 3 };    // clavier : C3 en bas
     std::atomic<int> velocity { 100 };
     std::array<std::atomic<int>, kGroups> groupVolume;   // mixeur, 0-127 (100 = normal)
+    std::array<std::atomic<int>, kGroups> groupPan;
+    std::atomic<int> swing { 0 };                        // 0-100 % : une double-croche sur deux plus tard      // mixeur : stereo du groupe (0 G, 64 centre, 127 D)
     std::atomic<int> masterVolume { 100 };
 
     // Mute / solo, comme le prototype : un groupe joue s'il n'est pas coupe et, si un solo
@@ -148,7 +150,11 @@ struct State
     std::array<std::atomic<int>, kGroups * 16> soundPoly {};     // polyphonie : notes en meme temps (1-16, 4 par defaut)
     int pitchSemitones (int g, int sound) const { return std::clamp (soundPitch[(size_t) index (g, sound)].load() - 64, -24, 24); }
     int pitched (int g, int sound, int note) const { return std::clamp (note + pitchSemitones (g, sound), 0, 127); }
-    int pan (int g, int sound) const { return soundPan[(size_t) index (g, sound)]; }
+    // Pan du son + pan du groupe (comme le pilote)
+    int pan (int g, int sound) const
+    {
+        return std::clamp (soundPan[(size_t) index (g, sound)] + groupPan[(size_t) std::clamp (g, 0, kGroups - 1)] - 64, 0, 127);
+    }
     // Velocite envoyee au moteur pour un son : x volume du son, du groupe et master
     int outVelocity (int g, int sound, int velocity) const
     {
@@ -188,6 +194,7 @@ struct State
     State()
     {
         for (auto& v : groupVolume) v = 100;
+        for (auto& v : groupPan) v = 64;
         for (int i = 0; i < kGroups * 16; ++i)
         {
             playMode[(size_t) i] = defaultMode (i % 16 + 1);

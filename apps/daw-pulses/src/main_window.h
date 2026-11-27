@@ -10,6 +10,8 @@
 #include "system_stats.h"
 
 #include <QDialog>
+#include <QPointer>
+#include <QLabel>
 #include <QHash>
 #include <functional>
 #include <QJsonObject>
@@ -87,7 +89,7 @@ private:
     void buildViewMenu (QMenu* menu);
     void applyView (const QString& name);
     void saveViewAs();
-    QByteArray defaultLayout;                        // disposition par defaut (vue Default)
+    QByteArray defaultLayout, factoryLayout;                        // disposition par defaut (vue Default)
     QString projectsDir() const;
     QWidget* buildKeyboardPanel();
     void applyTheme();
@@ -123,7 +125,8 @@ private:
     QDockWidget* groupsDock = nullptr;
     QDockWidget* keysDock = nullptr;
     QDockWidget* statusDock = nullptr;
-    QDockWidget* transportDock = nullptr;           // Transport : fenetre a part, sous les groupes
+    QDockWidget* transportDock = nullptr;
+    class QSpinBox* swingBox = nullptr;              // Transport : SWING 0-100 %           // Transport : fenetre a part, sous les groupes
     bool projectModified = false;
 
     PadGrid* pads = nullptr;
@@ -271,6 +274,13 @@ private:
     class SongView* songView = nullptr;              // onglet Song (morceau)
     QDockWidget* songDock = nullptr;
     QWidget* buildSong();
+    // Ligne d'aide (en bas de la fenetre) : l'aide de la vue sous la souris
+    struct HelpEntry { QPointer<QLabel> label; QString view; };
+    std::vector<HelpEntry> helps;
+    QLabel* helpLine = nullptr;
+    void registerHint (QLabel* hint, const QString& view);
+    void showHelpFor (QWidget* w);
+    void showShortcuts();                            // Help > Keyboard shortcuts
     std::function<void()> songsRefresh;              // la liste des songs suit (annuler, ouvrir...)
     QPushButton* songButton = nullptr;               // SONG (vue Song) et son reflet dans le Transport
     QPushButton* songTransportButton = nullptr;

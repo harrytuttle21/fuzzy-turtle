@@ -228,6 +228,28 @@ MainWindow::MainWindow (const Options& options, QWidget* parent) : QMainWindow (
     addDockWidget (Qt::BottomDockWidgetArea, groupsDock);
     addDockWidget (Qt::BottomDockWidgetArea, keysTabDock);
     splitDockWidget (groupsDock, keysTabDock, Qt::Horizontal);
+    // Ligne d'aide, tout en bas : l'aide de la vue sous la souris (les barres gardent leur place)
+    {
+        auto* helpBar = new QToolBar (tr ("Help line"));
+        helpBar->setObjectName ("helpLine");
+        helpBar->setMovable (false);
+        helpBar->setFloatable (false);
+        // (taille demandee petite : un long texte n'elargit jamais la fenetre)
+        struct HelpLabel : QLabel
+        {
+            using QLabel::QLabel;
+            QSize sizeHint() const override { return { 200, QLabel::sizeHint().height() }; }
+            QSize minimumSizeHint() const override { return { 0, QLabel::sizeHint().height() }; }
+        };
+        helpLine = new HelpLabel (tr ("<span style='color:#b8b8c4'>Move the mouse over a view to see its help here</span>"));
+        helpLine->setTextFormat (Qt::RichText);
+        helpLine->setStyleSheet ("QLabel { color: #b8b8c4; background: #1c1c22; padding: 3px 10px; font-size: 12px; }");
+        helpLine->setSizePolicy (QSizePolicy::Expanding, QSizePolicy::Preferred);
+        helpLine->setMinimumWidth (0);
+        helpBar->addWidget (helpLine);
+        helpBar->setStyleSheet ("QToolBar { background: #1c1c22; border-top: 1px solid #2c2c34; spacing: 0; padding: 0; }");
+        addToolBar (Qt::BottomToolBarArea, helpBar);
+    }
     // Transport : sa propre fenetre, sous les groupes (detachable a part)
     transportDock = makeDock (tr ("Transport"), "transportDock", buildTransportBar());
     splitDockWidget (groupsDock, transportDock, Qt::Vertical);
@@ -284,9 +306,14 @@ MainWindow::MainWindow (const Options& options, QWidget* parent) : QMainWindow (
     });
     fileMenu->addAction (settingsAction);            // Mac : range dans le menu de l'app (Cmd + ,)
 
-    // Menu About : version, contact
-    auto* aboutMenu = menuBar()->addMenu (tr ("&About"));
+    // Menu Help : a propos (lien GitHub), raccourcis
+    auto* aboutMenu = menuBar()->addMenu (tr ("&Help"));
     auto* aboutAction = aboutMenu->addAction (tr ("About Fuzzy John DAW Pulses..."), this, [this] { showAbout(); });
+    aboutMenu->addAction (tr ("Keyboard shortcuts..."), this, [this] { showShortcuts(); });
+    aboutMenu->addAction (tr ("Fuzzy Turtle on GitHub"), this, []
+    {
+        QDesktopServices::openUrl (QUrl ("https://github.com/harrytuttle21/fuzzy-turtle"));
+    });
     aboutAction->setMenuRole (QAction::NoRole);      // reste dans ce menu sur Mac
     auto* appAbout = new QAction (tr ("About Fuzzy John DAW Pulses"), this);   // et dans le menu de l'app (Mac)
     appAbout->setMenuRole (QAction::AboutRole);
@@ -334,7 +361,9 @@ MainWindow::MainWindow (const Options& options, QWidget* parent) : QMainWindow (
         resizeDocks ({ groupsDock, keysTabDock, padsDock }, { width() * 25 / 100, width() * 50 / 100, width() * 25 / 100 }, Qt::Horizontal);
         resizeDocks ({ patternDock, padsDock }, { height() * 55 / 100, height() * 45 / 100 }, Qt::Vertical);   // vue par defaut
         resizeDocks ({ groupsDock, transportDock }, { height(), transportDock->widget()->sizeHint().height() }, Qt::Vertical);
-        defaultLayout = saveState (kLayoutVersion);   // vue Default
+        defaultLayout = factoryLayout = saveState (kLayoutVersion);   // vue Default (d'usine)
+        if (QSettings().contains ("layout/default"))  // « Save as Default » : la sienne
+            defaultLayout = QSettings().value ("layout/default").toByteArray();
         QSettings s;
         if (s.contains ("windowState"))
             restoreState (s.value ("windowState").toByteArray(), kLayoutVersion);
@@ -641,6 +670,11 @@ MainWindow::MainWindow (const Options& options, QWidget* parent) : QMainWindow (
     {
         if (maschine->property ("tempoHeld").toBool())
             bpmBox->setValue (bpmBox->value() + d);
+        else if (maschine->property ("swingHeld").toBool())   // SWING tenu + molette : swing
+        {
+            swingBox->setValue (swingBox->value() + d);
+            toast (QString ("SWING %1 %").arg (swingBox->value()));
+        }
         else if (maschine->property ("tapHeld").toBool())
         {
             metroVolume->setValue (metroVolume->value() + 4 * d);
@@ -687,6 +721,7 @@ MainWindow::MainWindow (const Options& options, QWidget* parent) : QMainWindow (
             l.setButton ("scene", sceneHeld || shown (sceneView) || sequencer.currentScene() >= 0 ? fc::Shade::Bright
                                   : anyScene ? fc::Shade::Dim : fc::Shade::Off);
         }
+        l.setButton ("swing", state.swing.load() > 0 ? fc::Shade::Bright : fc::Shade::Dim);
         l.setButton ("arranger", shown (songView) || sequencer.songMode() ? fc::Shade::Bright : fc::Shade::Dim);
         l.setButton ("events", shown (pianoRoll) ? fc::Shade::Bright : fc::Shade::Dim);
         l.setButton ("mixer", shown (mixer) ? fc::Shade::Bright : fc::Shade::Dim);
@@ -1079,8 +1114,9 @@ QWidget* MainWindow::buildMixer()
     panel->setObjectName ("panel");
     auto* col = new QVBoxLayout (panel);
     auto* head = new QHBoxLayout;
-    auto* hint = new QLabel (tr ("drag the white line = volume, double-click = 100, M = mute, S = solo"));
+    auto* hint = new QLabel (tr ("drag the white line = volume \u00B7 double-click = 100 \u00B7 M = mute \u00B7 S = solo \u00B7 drag the L / R bar = pan \u00B7 double-click it = center"));
     hint->setObjectName ("hint");
+    registerHint (hint, "MIXER");
     hint->setSizePolicy (QSizePolicy::Ignored, QSizePolicy::Preferred);   // peut retrecir
     hint->setMinimumWidth (0);
     head->addWidget (muteSoloRow (mixUnmute, mixUnsolo, true));
@@ -1147,6 +1183,7 @@ QWidget* MainWindow::buildLeftPanel()
     auto* hint = new QLabel (tr ("\u25CF + \u25B6 rec  \u00B7  drag = move (%1 copy)  \u00B7  Shift + click / frame = select  \u00B7  Del = erase")
                                  .arg (PatternView::copyKey()));
     hint->setObjectName ("hint");
+    registerHint (hint, "PATTERN");
     hint->setSizePolicy (QSizePolicy::Ignored, QSizePolicy::Preferred);   // peut retrecir
     hint->setMinimumWidth (0);
     hint->setAlignment (Qt::AlignRight | Qt::AlignVCenter);
@@ -1341,7 +1378,7 @@ QWidget* MainWindow::buildTransportBar()
     for (auto* b : { restart, playButton, stop, recButton })
     {
         b->setFocusPolicy (Qt::NoFocus);
-        b->setFixedSize (46, 30);
+        b->setFixedSize (40, 30);                    // compacts : la fenetre Transport reste etroite
     }
     row->addStretch();
     for (auto* b : { restart, playButton, stop, recButton })
@@ -1364,6 +1401,19 @@ QWidget* MainWindow::buildTransportBar()
     beatLabel = new QLabel (QStringLiteral ("○ ○ ○ ○"));
     beatLabel->setObjectName ("beats");
     row->addWidget (bpmBox);
+    swingBox = new QSpinBox;                         // SWING : une double-croche sur deux plus tard
+    swingBox->setRange (0, 100);
+    swingBox->setPrefix (tr ("Swing "));
+    swingBox->setSuffix (" %");
+    swingBox->setValue (state.swing.load());
+    swingBox->setMinimumWidth (100);
+    swingBox->setToolTip (tr ("Swing for patterns and the song (0 % = straight). Maschine: SWING held + jog wheel"));
+    connect (swingBox, &QSpinBox::valueChanged, this, [this] (int v)
+    {
+        state.swing = v;
+        refreshMaschine();
+    });
+    row->addWidget (swingBox);
     row->addStretch();
     top->addStretch();
     top->addWidget (beatLabel);
@@ -1385,7 +1435,7 @@ QWidget* MainWindow::buildTransportBar()
     metroVolume->setRange (0, 127);
     metroVolume->setValue (transport->metronomeVolume());
     metroVolume->setFocusPolicy (Qt::NoFocus);
-    metroVolume->setFixedWidth (110);
+    metroVolume->setFixedWidth (80);
     metroVolume->setToolTip (tr ("Metronome volume (Maschine: hold TAP + turn the 4D wheel)"));
     connect (metroVolume, &QSlider::valueChanged, this, [this] (int v)
     {
@@ -1852,6 +1902,13 @@ void MainWindow::onMaschineButton (const QString& name, bool down)
 {
     if (name == "tempo")
         maschine->setProperty ("tempoHeld", down);
+    if (name == "swing")                             // tenu + molette : swing
+    {
+        maschine->setProperty ("swingHeld", down);
+        if (down)
+            toast (QString ("SWING %1 % (turn the jog wheel)").arg (state.swing.load()));
+        return;
+    }
     if (name == "mute" && down && maschine->property ("shiftHeld").toBool())   // Shift + MUTE : panique
     {
         releaseAllKeys();
@@ -2019,6 +2076,8 @@ void MainWindow::onMaschineButton (const QString& name, bool down)
 
 bool MainWindow::eventFilter (QObject* watched, QEvent* event)
 {
+    if (event->type() == QEvent::Enter && helpLine && watched->isWidgetType())   // aide de la vue survolee
+        showHelpFor (static_cast<QWidget*> (watched));
     if (event->type() == QEvent::MouseButtonPress)    // zone cliquee : la cible de Cmd+C / X / V
     {
         for (auto* w = qobject_cast<QWidget*> (watched); w; w = w->parentWidget())
@@ -2322,6 +2381,12 @@ void MainWindow::newProject()
     sequencer.reset();                               // patterns, scenes : tout repart de zero
     if (songsRefresh)
         songsRefresh();
+    state.swing = 0;                                 // nouveau projet : sans swing
+    if (swingBox)
+    {
+        const QSignalBlocker block (swingBox);
+        swingBox->setValue (0);
+    }
     for (auto* sb : { songButton, songTransportButton })   // SONG : celui du projet
         if (sb)
         {
@@ -2331,6 +2396,7 @@ void MainWindow::newProject()
     for (int g = 0; g < kGroups; ++g)
     {
         state.groupVolume[(size_t) g] = 100;
+        state.groupPan[(size_t) g] = 64;
         state.groupLabel[(size_t) g].clear();
     }
     state.resetSounds();
@@ -2375,6 +2441,11 @@ bool MainWindow::openProjectFile (const QString& path, bool quiet)
     syncSamples();
     if (songsRefresh)
         songsRefresh();                              // la liste des songs du projet
+    if (swingBox)                                    // SWING du projet
+    {
+        const QSignalBlocker block (swingBox);
+        swingBox->setValue (state.swing.load());
+    }
     for (auto* sb : { songButton, songTransportButton })   // SONG : celui du projet
         if (sb)
         {
@@ -2600,6 +2671,20 @@ void MainWindow::buildViewMenu (QMenu* menu)
             a->setShortcut (QKeySequence (QString ("Ctrl+Alt+%1").arg (++n)));
     }
     menu->addAction (tr ("Save View As..."), this, [this] { saveViewAs(); });
+    menu->addAction (tr ("Save as Default"), this, [this]  // la disposition actuelle devient « Default »
+    {
+        defaultLayout = saveState (kLayoutVersion);
+        QSettings().setValue ("layout/default", defaultLayout);
+        toast ("THIS LAYOUT IS NOW THE DEFAULT VIEW");
+    });
+    if (QSettings().contains ("layout/default"))
+        menu->addAction (tr ("Reset Default (factory)"), this, [this]
+        {
+            QSettings().remove ("layout/default");
+            defaultLayout = factoryLayout;
+            applyView ("Default");
+            toast ("DEFAULT VIEW: FACTORY LAYOUT");
+        });
     if (! own.isEmpty())
     {
         auto* del = menu->addMenu (tr ("Delete View"));
@@ -3131,6 +3216,7 @@ QWidget* MainWindow::buildPianoRoll()
     auto* hint = new QLabel (tr ("click = note \u00B7 drag in empty space = select \u00B7 drag a note = move (%1 copy) \u00B7 double-click = erase \u00B7 bottom bars = velocity")
                                  .arg (PatternView::copyKey()));
     hint->setObjectName ("hint");
+    registerHint (hint, "PIANO ROLL");
     hint->setSizePolicy (QSizePolicy::Ignored, QSizePolicy::Preferred);   // peut retrecir
     hint->setMinimumWidth (0);
     head->addWidget (rollTitle);
@@ -4441,6 +4527,11 @@ void MainWindow::showAbout()
     contact->setTextFormat (Qt::RichText);
     contact->setTextInteractionFlags (Qt::TextSelectableByMouse);
     col->addWidget (contact);
+    auto* github = new QLabel (QString ("<p align='center'>Source code<br><a style='color:%1' href='https://github.com/harrytuttle21/fuzzy-turtle'>"
+                                        "github.com/harrytuttle21/fuzzy-turtle</a></p>").arg (css (kAccent)));
+    github->setTextFormat (Qt::RichText);
+    github->setOpenExternalLinks (true);             // clic : le navigateur s'ouvre
+    col->addWidget (github);
     auto* close = new QPushButton (tr ("Close"));
     connect (close, &QPushButton::clicked, &dialog, &QDialog::accept);
     col->addWidget (close);
@@ -5018,6 +5109,7 @@ QWidget* MainWindow::buildTracker()
     auto* hint = new QLabel (tr ("keys = notes · digits = velocity / length · Del = erase · arrows, Tab · double-click = note · %1 + wheel = value")
                                  .arg (PatternView::copyKey()));
     hint->setObjectName ("hint");
+    registerHint (hint, "TRACKER");
     hint->setSizePolicy (QSizePolicy::Ignored, QSizePolicy::Preferred);
     hint->setMinimumWidth (0);
     hint->setAlignment (Qt::AlignRight | Qt::AlignVCenter);
@@ -5385,6 +5477,7 @@ QWidget* MainWindow::buildScenes()
     playBtn->setToolTip (tr ("Play: click a cell = play that pattern, click a scene = launch it (Edit and Play both off = protected)"));
     auto* hint = new QLabel;
     hint->setObjectName ("hint");
+    registerHint (hint, "SCENES");
     hint->setSizePolicy (QSizePolicy::Ignored, QSizePolicy::Preferred);
     hint->setMinimumWidth (0);
     hint->setAlignment (Qt::AlignRight | Qt::AlignVCenter);
@@ -6343,10 +6436,12 @@ QWidget* MainWindow::buildSong()
     auto* hint = new QLabel (tr ("click a group cell = its pattern in the scene \u00B7 drag on the ruler = loop zone \u00B7 drag a block = move · drag its right edge = length · double-click = scene · "
                                  "right-click = repeats, length, duplicate, delete · click the ruler = play from there · 1 bar = 16 lines"));
     hint->setObjectName ("hint");
+    registerHint (hint, "SONG");
     hint->setWordWrap (true);
     hint->setSizePolicy (QSizePolicy::Ignored, QSizePolicy::Preferred);   // peut retrecir
     hint->setMinimumWidth (0);
     foot->addWidget (hint, 1);
+    foot->addStretch (1);                            // l'aide est dans la ligne du bas : zooms a droite
     addZooms();
     col->addLayout (foot);
 
@@ -7003,4 +7098,72 @@ void MainWindow::songCellMenu (int entry, int g, const QPoint& at)
         fill (menu.addMenu (tr ("Only this block (new scene)...")), true);
     }
     menu.exec (at);
+}
+
+// ------------------------------------------------------------ ligne d'aide
+
+void MainWindow::registerHint (QLabel* hint, const QString& view)
+{
+    // Les aides des vues ne prennent plus de place dans les barres : elles vont dans la ligne d'aide
+    hint->hide();
+    helps.push_back ({ hint, view });
+}
+
+void MainWindow::showHelpFor (QWidget* w)
+{
+    auto dockOf = [] (QWidget* x) -> QWidget*
+    {
+        while (x && ! qobject_cast<QDockWidget*> (x))
+            x = x->parentWidget();
+        return x;
+    };
+    QWidget* dock = dockOf (w);
+    if (! dock)
+        return;
+    for (const auto& h : helps)
+    {
+        if (! h.label || dockOf (h.label) != dock || ! h.label->parentWidget() || ! h.label->parentWidget()->isVisible())
+            continue;
+        // « action = effet · ... » : la vue en blanc, les actions en orange pale, le reste en gris clair
+        QStringList parts;
+        for (QString part : h.label->text().split (QChar (0x00B7), Qt::SkipEmptyParts))
+        {
+            part = part.trimmed().toHtmlEscaped();
+            const int eq = (int) part.indexOf (" = ");
+            parts << (eq > 0 ? QString ("<span style='color:#f5c9a0'>%1</span> = %2").arg (part.left (eq), part.mid (eq + 3)) : part);
+        }
+        helpLine->setText (QString ("<b style='color:#ffffff'>%1</b>&nbsp;&nbsp;&nbsp;%2")
+                               .arg (h.view.toHtmlEscaped(), parts.join (" <span style='color:#66666e'>&middot;</span> ")));
+        return;
+    }
+}
+
+void MainWindow::showShortcuts()
+{
+    // Help > Keyboard shortcuts : la liste, en un coup d'oeil
+#ifdef Q_OS_MACOS
+    const QString mod = "Cmd";
+#else
+    const QString mod = "Ctrl";
+#endif
+    QMessageBox box (this);
+    box.setWindowTitle (tr ("Keyboard shortcuts"));
+    box.setTextFormat (Qt::RichText);
+    box.setText (QString ("<table cellspacing=4>"
+        "<tr><td><b>Space</b></td><td>Play / pause</td></tr>"
+        "<tr><td><b>%1+Z / %1+Shift+Z</b></td><td>Undo / redo</td></tr>"
+        "<tr><td><b>%1+C / X / V</b></td><td>Copy / cut / paste (pads, groups, notes: last clicked area)</td></tr>"
+        "<tr><td><b>%1+S / %1+O / %1+N</b></td><td>Save / open / new project</td></tr>"
+        "<tr><td><b>%1+,</b></td><td>Settings</td></tr>"
+        "<tr><td><b>%1+1 / %1+2</b></td><td>Show Pads / Groups</td></tr>"
+        "<tr><td><b>%1+I</b></td><td>Status window</td></tr>"
+        "<tr><td><b>%1+U</b></td><td>Sound tab</td></tr>"
+        "<tr><td><b>F12</b></td><td>Display diagnostics</td></tr>"
+        "<tr><td><b>W / X (Z / X)</b></td><td>Octave - / + (PC keys)</td></tr>"
+        "<tr><td><b>C / V</b></td><td>Velocity - / + (PC keys)</td></tr>"
+        "<tr><td><b>Enter</b></td><td>Edit a cell (Pattern, Tracker)</td></tr>"
+        "<tr><td><b>Del</b></td><td>Erase the selection</td></tr>"
+        "<tr><td><b>%1 + wheel</b></td><td>Zoom (Song) / value (Tracker)</td></tr>"
+        "</table>").arg (mod));
+    box.exec();
 }

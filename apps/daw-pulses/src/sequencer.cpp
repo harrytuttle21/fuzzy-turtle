@@ -52,8 +52,10 @@ std::vector<Hit> Sequencer::hitsForRow (int row, double rowMs)
             if (n >= 0)
                 out.push_back ({ grp, t, n, c.velocity, gate, delay });
     };
-    const bool songPlays = songOn && ! entries.empty();
-    if (songPlays && songJump >= 0 && songRows % kRowsPerBar == 0)   // saut demande : en debut de mesure
+    // SONG allume (ou saut demande) pendant la lecture : on attend le debut de la mesure
+    const bool waiting = songOn && songJump >= 0 && row % kRowsPerBar != 0;
+    const bool songPlays = songOn && ! entries.empty() && ! waiting;
+    if (songPlays && songJump >= 0)                  // saut demande : en debut de mesure
     {
         songPos = std::clamp (songJump, 0, (int) entries.size() - 1);
         songRows = 0;
@@ -211,11 +213,10 @@ bool Sequencer::songMode() const
 void Sequencer::setSongMode (bool on)
 {
     std::lock_guard<std::mutex> g (lock);
-    if (on && ! songOn)
-    {
-        songPos = songStart;                         // le morceau reprend a l'entree choisie
-        songRows = 0;
-    }
+    if (on && ! songOn)                              // le morceau reprend a l'entree choisie,
+        songJump = songStart;                        // au debut de la mesure (sans couper)
+    if (! on)
+        songJump = -1;
     songOn = on;
 }
 
