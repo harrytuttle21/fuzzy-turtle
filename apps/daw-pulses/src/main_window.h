@@ -187,7 +187,7 @@ private:
     void copyGroups (const QList<int>& groups, bool cut);
     void pasteGroups (int group);
     // Ou agissent Cmd+C / X / V : la derniere zone cliquee
-    enum class Area { Pattern, Pads, Groups } lastArea = Area::Pattern;
+    enum class Area { Pattern, Pads, Groups, Song } lastArea = Area::Pattern;
     int lastPad = 1;                                 // dernier pad clique (cible de Coller)
     int dupGroup = -1, dupPad = 0;                   // Maschine : DUPLICATE + source + cible
     std::atomic<bool> duplicateHeld { false };
@@ -290,6 +290,15 @@ private:
     void addSongScene (int scene, int before);      // -1 : apres l'entree choisie
     void songSceneMenu (const QPoint& at, const std::function<void (int)>& picked);   // liste des scenes
     void songCellMenu (int entry, int group, const QPoint& at);   // case groupe x bloc : pattern de la scene
+    void songDuplicateBlocks();                      // blocs choisis : dupliques juste apres
+    void songDeleteBlocks();
+    void songCopyBlocks (bool cut);                  // Cmd+C / X dans la Song
+    void songPasteBlocks();                          // Cmd+V : apres le bloc choisi
+    bool songKey (QKeyEvent* e);                     // Del, fleches, Entree (la Song a la main)
+    std::vector<seq::SongEntry> songClip;            // blocs copies
+    void sceneColorMenu (QMenu* menu, int scene);    // couleur d'une scene (12 teintes + automatique)
+    class QListWidget* songSceneList = nullptr;      // liste des scenes a gauche de la Song (a glisser)
+    std::function<void()> songSceneListRefresh;
     int freeScene() const;                           // premiere case de scene libre (-1 : aucune)
     int newScene (bool fromPlaying);                 // nouvelle scene vide (ou ce qui joue), -1 si plein
     std::atomic<bool> arrangerMode { false };        // Maschine : vue Song montree (pads = ajouter la scene)

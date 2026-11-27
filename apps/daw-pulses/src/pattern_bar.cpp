@@ -10,6 +10,8 @@
 #include <QInputDialog>
 #include <QLabel>
 #include <QMenu>
+#include <QPixmap>
+#include <QIcon>
 #include <QMessageBox>
 #include <QPushButton>
 
@@ -516,6 +518,25 @@ void PatternBar::sceneMenu (int index, const QPoint& at)
     rename->setEnabled (sc.used && ! sc.locked);
     auto* lock = menu.addAction (sc.locked ? tr ("Unlock") : tr ("Lock (no more changes)"));
     lock->setEnabled (sc.used);
+    auto* colors = menu.addMenu (tr ("Color"));      // couleur de la scene (vues Song et Scenes)
+    colors->setEnabled (sc.used);
+    QList<QPair<QAction*, int>> hues;
+    {
+        auto* a = colors->addAction (tr ("Automatic"));
+        a->setCheckable (true);
+        a->setChecked (sc.color < 0);
+        hues << qMakePair (a, -1);
+        static const char* names[12] { "Red", "Orange", "Yellow", "Lime", "Green", "Teal", "Cyan", "Sky", "Blue", "Violet", "Magenta", "Pink" };
+        for (int k = 0; k < 12; ++k)
+        {
+            QPixmap swatch (14, 14);
+            swatch.fill (seq::sceneColor (0, k * 30));
+            auto* c = colors->addAction (QIcon (swatch), names[k]);
+            c->setCheckable (true);
+            c->setChecked (sc.color == k * 30);
+            hues << qMakePair (c, k * 30);
+        }
+    }
     menu.addSeparator();
     auto* copyS = menu.addAction (tr ("Copy"));
     copyS->setEnabled (sc.used);
@@ -533,6 +554,15 @@ void PatternBar::sceneMenu (int index, const QPoint& at)
     if (picked != launch && picked != copyS)
         emit beforeEdit (-1, tr ("Scene %1").arg (index + 1));   // Cmd+Z remet les scenes
     seq::Scene edit = sc;
+    for (const auto& [a, hue] : hues)
+        if (a == picked)
+        {
+            edit.color = hue;
+            sequencer.setScene (index, edit);
+            refresh (true);
+            emit changed();
+            return;
+        }
     if (picked == launch)
     {
         chooseScene (index);

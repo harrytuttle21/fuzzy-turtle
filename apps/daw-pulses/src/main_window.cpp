@@ -247,7 +247,7 @@ MainWindow::MainWindow (const Options& options, QWidget* parent) : QMainWindow (
         helpLine->setSizePolicy (QSizePolicy::Expanding, QSizePolicy::Preferred);
         helpLine->setMinimumWidth (0);
         helpBar->addWidget (helpLine);
-        helpBar->setStyleSheet ("QToolBar { background: #1c1c22; border-top: 1px solid #2c2c34; spacing: 0; padding: 0; }");
+        helpBar->setStyleSheet ("QToolBar { background: #1c1c22; border: none; border-top: 1px solid #6a6a76; spacing: 0; padding: 0; }");   // trait au-dessus
         addToolBar (Qt::BottomToolBarArea, helpBar);
     }
     // Transport : sa propre fenetre, sous les groupes (detachable a part)
@@ -343,7 +343,13 @@ MainWindow::MainWindow (const Options& options, QWidget* parent) : QMainWindow (
     addEdit (tr ("Paste"), QKeySequence::Paste, "Meta+V", [this] { paste(); });
     addEdit (tr ("Select All"), QKeySequence::SelectAll, "Meta+A", [this] { selectAll(); });
     editMenu->addSeparator();
-    auto* dbl = editMenu->addAction (tr ("Double Pattern"), this, [this] { doublePattern(); });
+    auto* dbl = editMenu->addAction (tr ("Double Pattern / Duplicate Song blocks"), this, [this]
+    {
+        if (lastArea == Area::Song && songView && ! songView->visibleRegion().isEmpty())
+            songDuplicateBlocks();                   // Song : Cmd+D duplique les blocs choisis
+        else
+            doublePattern();
+    });
     dbl->setShortcut (QKeySequence ("Ctrl+D"));
     auto* genAction = editMenu->addAction (tr ("Generate Notes..."), this, [this] { openGenerate(); });
     genAction->setShortcut (QKeySequence ("Ctrl+G"));
@@ -359,7 +365,7 @@ MainWindow::MainWindow (const Options& options, QWidget* parent) : QMainWindow (
     QTimer::singleShot (0, this, [this]
     {
         resizeDocks ({ groupsDock, keysTabDock, padsDock }, { width() * 25 / 100, width() * 50 / 100, width() * 25 / 100 }, Qt::Horizontal);
-        resizeDocks ({ patternDock, padsDock }, { height() * 55 / 100, height() * 45 / 100 }, Qt::Vertical);   // vue par defaut
+        resizeDocks ({ patternDock, padsDock }, { height() * 57 / 100, height() * 43 / 100 }, Qt::Vertical);   // vue d'usine (mesuree sur la capture de reference)
         resizeDocks ({ groupsDock, transportDock }, { height(), transportDock->widget()->sizeHint().height() }, Qt::Vertical);
         defaultLayout = factoryLayout = saveState (kLayoutVersion);   // vue Default (d'usine)
         if (QSettings().contains ("layout/default"))  // « Save as Default » : la sienne
@@ -1114,7 +1120,7 @@ QWidget* MainWindow::buildMixer()
     panel->setObjectName ("panel");
     auto* col = new QVBoxLayout (panel);
     auto* head = new QHBoxLayout;
-    auto* hint = new QLabel (tr ("drag the white line = volume \u00B7 double-click = 100 \u00B7 M = mute \u00B7 S = solo \u00B7 drag the L / R bar = pan \u00B7 double-click it = center"));
+    auto* hint = new QLabel (tr ("drag the white line = volume \u00B7 double-click = 100 \u00B7 M = mute \u00B7 S = solo \u00B7 drag the L / R bar = pan (sticks at the center) \u00B7 double-click or Option + click = center"));
     hint->setObjectName ("hint");
     registerHint (hint, "MIXER");
     hint->setSizePolicy (QSizePolicy::Ignored, QSizePolicy::Preferred);   // peut retrecir
@@ -2092,6 +2098,11 @@ bool MainWindow::eventFilter (QObject* watched, QEvent* event)
                 lastArea = Area::Pattern;
                 break;
             }
+            if (w == songView || w == songSceneList)
+            {
+                lastArea = Area::Song;
+                break;
+            }
         }
     }
     if (auto* b = qobject_cast<QPushButton*> (watched); b && b->property ("groupIndex").isValid())
@@ -2231,6 +2242,8 @@ bool MainWindow::handleKey (QKeyEvent* e, bool down)
         return true;
     }
     if (activeTracker() && trackerKey (e))
+        return true;
+    if (lastArea == Area::Song && songView && ! songView->visibleRegion().isEmpty() && songKey (e))
         return true;
     if (stepView && ! stepView->visibleRegion().isEmpty() && stepsKey (e))
         return true;
@@ -2911,6 +2924,11 @@ void MainWindow::showPatternState()
 
 void MainWindow::copySelection (bool cut)
 {
+    if (lastArea == Area::Song && songView && ! songView->visibleRegion().isEmpty())
+    {
+        songCopyBlocks (cut);
+        return;
+    }
     if (lastArea == Area::Pads)                      // pads choisis (sinon le dernier pad clique)
     {
         QList<int> sel = pads->selection();
@@ -2950,6 +2968,11 @@ void MainWindow::copySelection (bool cut)
 
 void MainWindow::paste()
 {
+    if (lastArea == Area::Song && songView && ! songView->visibleRegion().isEmpty())
+    {
+        songPasteBlocks();
+        return;
+    }
     if (lastArea == Area::Pads)
     {
         const QList<int> sel = pads->selection();
@@ -3292,10 +3315,17 @@ QWidget* MainWindow::buildPianoRoll()
     zoomLabel->setObjectName ("hint");
     auto* vLabel = new QLabel (tr ("V"));
     vLabel->setObjectName ("hint");
-    head->insertWidget (2, zoomLabel);
-    head->insertWidget (3, zoomH);
-    head->insertWidget (4, vLabel);
-    head->insertWidget (5, zoomV);
+    auto* zoomBox = new QWidget;                     // les 2 zooms ensemble, serres (rien ne s'etire entre eux)
+    auto* zoomRow = new QHBoxLayout (zoomBox);
+    zoomRow->setContentsMargins (0, 0, 0, 0);
+    zoomRow->setSpacing (6);
+    zoomRow->addWidget (zoomLabel);
+    zoomRow->addWidget (zoomH);
+    zoomRow->addSpacing (8);
+    zoomRow->addWidget (vLabel);
+    zoomRow->addWidget (zoomV);
+    zoomBox->setSizePolicy (QSizePolicy::Fixed, QSizePolicy::Preferred);
+    head->insertWidget (2, zoomBox);
     auto syncBars = [this, hBar, vBar, zoomH, zoomV]
     {
         const QSignalBlocker b1 (hBar), b2 (vBar), b3 (zoomH), b4 (zoomV);
@@ -3409,7 +3439,7 @@ QWidget* MainWindow::buildPianoRoll()
     for (auto* t : transposes)
         head->addWidget (t);
     head->addSpacing (8);
-    const QList<QWidget*> rollOnly { rollEditButton, rollSelectButton, zoomLabel, zoomH, vLabel, zoomV };
+    const QList<QWidget*> rollOnly { rollEditButton, rollSelectButton, zoomBox };
     const QList<QWidget*> trackOnly { trackEdit, stepLabel, trackStep };
     for (auto* w : rollOnly + trackOnly)
         head->addWidget (w);
@@ -5407,6 +5437,8 @@ bool MainWindow::trackerKey (QKeyEvent* e)
 
 void MainWindow::patternsChanged()
 {
+    if (songSceneListRefresh)
+        songSceneListRefresh();                      // les scenes de la vue Song
     if (palette)
         palette->update();
     if (sceneListRefresh)
@@ -6404,35 +6436,94 @@ QWidget* MainWindow::buildSong()
     auto* followBtn = button (tr ("Follow"), tr ("The view follows the playhead"), true);
     head->addStretch();
     auto* foot = new QHBoxLayout;                    // en bas : l'aide, puis les zooms
-    auto footButton = [&] (const QString& text, const QString& tip)
-    {
-        auto* b = new QPushButton (text);
-        b->setFocusPolicy (Qt::NoFocus);
-        b->setToolTip (tip);
-        b->setFixedWidth (30);
-        foot->addWidget (b);
-        return b;
-    };
-    auto zoomLabel = [&] (const QString& t) { auto* l = new QLabel (t); l->setObjectName ("hint"); foot->addWidget (l); };
-    QPushButton *zoomOut, *zoomIn, *zoomVOut, *zoomVIn;
+    // Zoom H / V : un curseur chacun, comme dans le Piano Roll
+    QSlider *zoomH = nullptr, *zoomV = nullptr;
     auto addZooms = [&]
     {
-        zoomLabel (tr ("ZOOM H"));
-        zoomOut = footButton (QStringLiteral ("\u2212"), tr ("Narrower bars (Cmd + wheel)"));
-        zoomIn = footButton (tr ("+"), tr ("Wider bars (Cmd + wheel)"));
-        zoomLabel (tr ("ZOOM V"));
-        zoomVOut = footButton (QStringLiteral ("\u2212"), tr ("Lower group rows"));
-        zoomVIn = footButton (tr ("+"), tr ("Taller group rows"));
+        auto* box = new QWidget;
+        auto* zr = new QHBoxLayout (box);
+        zr->setContentsMargins (0, 0, 0, 0);
+        zr->setSpacing (6);
+        auto* zl = new QLabel (tr ("Zoom  H"));
+        zl->setObjectName ("hint");
+        auto* vl = new QLabel (tr ("V"));
+        vl->setObjectName ("hint");
+        zoomH = new QSlider (Qt::Horizontal);
+        zoomV = new QSlider (Qt::Horizontal);
+        zoomH->setRange (16, 320);
+        zoomV->setRange (16, 64);
+        for (auto* z : { zoomH, zoomV })
+        {
+            z->setFixedWidth (110);
+            z->setFocusPolicy (Qt::NoFocus);
+        }
+        zoomH->setToolTip (tr ("Horizontal zoom: bar width (Cmd + wheel)"));
+        zoomV->setToolTip (tr ("Vertical zoom: height of the group rows"));
+        zr->addWidget (zl);
+        zr->addWidget (zoomH);
+        zr->addSpacing (8);
+        zr->addWidget (vl);
+        zr->addWidget (zoomV);
+        box->setSizePolicy (QSizePolicy::Fixed, QSizePolicy::Preferred);
+        foot->addWidget (box);
     };
     col->addLayout (head);
     songView = new SongView (sequencer, state);
     songView->isPlaying = [this] { return transport->playing(); };
+    // Liste des scenes, a gauche : on les glisse dans la timeline (double-clic = ajouter)
+    struct SceneDragList : QListWidget
+    {
+        using QListWidget::QListWidget;
+        QMimeData* mimeData (const QList<QListWidgetItem*>& items) const override
+        {
+            auto* m = new QMimeData;
+            if (! items.isEmpty())
+                m->setData ("application/x-fuzzy-scene", QByteArray::number (items.first()->data (Qt::UserRole).toInt()));
+            return m;
+        }
+        QStringList mimeTypes() const override { return { "application/x-fuzzy-scene" }; }
+    };
+    songSceneList = new SceneDragList;
+    songSceneList->setDragEnabled (true);
+    songSceneList->setDragDropMode (QAbstractItemView::DragOnly);
+    songSceneList->setFixedWidth (150);
+    songSceneList->setToolTip (tr ("Drag a scene into the song (double-click = add after the chosen block)"));
+    songSceneListRefresh = [this]
+    {
+        songSceneList->clear();
+        for (int i = 0; i < seq::kPatternSlots; ++i)
+        {
+            const seq::Scene sc = sequencer.scene (i);
+            if (! sc.used)
+                continue;
+            QPixmap swatch (10, 18);
+            swatch.fill (seq::sceneColor (i, sc.color));
+            auto* item = new QListWidgetItem (QIcon (swatch), QString ("S%1 %2").arg (i + 1).arg (QString::fromStdString (sc.name)));
+            item->setData (Qt::UserRole, i);
+            songSceneList->addItem (item);
+        }
+        if (songSceneList->count() == 0)
+        {
+            auto* item = new QListWidgetItem (tr ("(no scene yet)"));
+            item->setFlags (Qt::NoItemFlags);
+            songSceneList->addItem (item);
+        }
+    };
+    songSceneListRefresh();
+    connect (songSceneList, &QListWidget::itemDoubleClicked, this, [this] (QListWidgetItem* item)
+    {
+        if (item->data (Qt::UserRole).isValid())
+            addSongScene (item->data (Qt::UserRole).toInt(), -1);
+    });
     auto* songScroll = new QScrollArea;              // les lignes des groupes defilent en hauteur
     songScroll->setWidget (songView);
     songScroll->setWidgetResizable (true);
     songScroll->setHorizontalScrollBarPolicy (Qt::ScrollBarAlwaysOff);   // en largeur : la molette
     songScroll->setFrameShape (QFrame::NoFrame);
-    col->addWidget (songScroll, 1);
+    auto* songArea = new QHBoxLayout;                // la liste des scenes, puis la timeline
+    songArea->addWidget (songSceneList);
+    songArea->addWidget (songScroll, 1);
+    col->addLayout (songArea, 1);
     auto* hint = new QLabel (tr ("click a group cell = its pattern in the scene \u00B7 drag on the ruler = loop zone \u00B7 drag a block = move · drag its right edge = length · double-click = scene · "
                                  "right-click = repeats, length, duplicate, delete · click the ruler = play from there · 1 bar = 16 lines"));
     hint->setObjectName ("hint");
@@ -6472,9 +6563,15 @@ QWidget* MainWindow::buildSong()
         songView->update();
     });
     connect (songView, &SongView::cellClicked, this, &MainWindow::songCellMenu);
-    connect (zoomIn, &QPushButton::clicked, this, [this] { songView->zoom (1); });
-    connect (zoomVIn, &QPushButton::clicked, this, [this] { songView->zoomV (1); });
-    connect (zoomVOut, &QPushButton::clicked, this, [this] { songView->zoomV (-1); });
+    zoomH->setValue (songView->barWidth());
+    zoomV->setValue (songView->laneHeight());
+    connect (zoomH, &QSlider::valueChanged, this, [this] (int v) { songView->setBarWidth (v); });
+    connect (zoomV, &QSlider::valueChanged, this, [this] (int v) { songView->setLaneHeight (v); });
+    connect (songView, &SongView::zoomChanged, this, [this, zoomH]
+    {
+        const QSignalBlocker block (zoomH);
+        zoomH->setValue (songView->barWidth());
+    });
     // Songs : liste a jour, choisir, menu
     songsRefresh = [this, songList]
     {
@@ -6486,8 +6583,7 @@ QWidget* MainWindow::buildSong()
         songList->setCurrentIndex (sequencer.currentSong());
         if (loopButton)
             loopButton->setChecked (sequencer.songLoop());
-        songView->selected = 0;
-        songView->update();
+        songView->selectOnly (0);
     };
     connect (songList, &QComboBox::currentIndexChanged, this, [this] (int i)
     {
@@ -6578,7 +6674,6 @@ QWidget* MainWindow::buildSong()
             toast ("LOOP ZONE CLEARED");
         }
     });
-    connect (zoomOut, &QPushButton::clicked, this, [this] { songView->zoom (-1); });
     connect (from, &QPushButton::clicked, this, [this]
     {
         if (sequencer.song().empty())
@@ -6592,43 +6687,54 @@ QWidget* MainWindow::buildSong()
     {
         songSceneMenu (add->mapToGlobal (QPoint (0, add->height())), [this] (int scene) { addSongScene (scene, -1); });
     });
-    connect (dup, &QPushButton::clicked, this, [this]
-    {
-        const int i = songView->selected;
-        songEdit (tr ("Duplicate block"), [i] (std::vector<seq::SongEntry>& s)
-        {
-            if (i >= 0 && i < (int) s.size() && (int) s.size() < seq::kSongMax)
-                s.insert (s.begin() + i + 1, s[(size_t) i]);
-        });
-        songView->selected = i + 1;
-    });
-    connect (del, &QPushButton::clicked, this, [this]
-    {
-        const int i = songView->selected;
-        songEdit (tr ("Delete block"), [i] (std::vector<seq::SongEntry>& s)
-        {
-            if (i >= 0 && i < (int) s.size())
-                s.erase (s.begin() + i);
-        });
-        songView->selected = std::max (0, i - 1);
-    });
+    connect (dup, &QPushButton::clicked, this, [this] { songDuplicateBlocks(); });
+    connect (del, &QPushButton::clicked, this, [this] { songDeleteBlocks(); });
     connect (songView, &SongView::startFrom, this, [this] (int i)
     {
-        songView->selected = i;
+        songView->selectOnly (i);
         const bool playing = transport->playing() && sequencer.songMode();
         sequencer.songStartFrom (i, playing);        // en lecture : a la fin de la mesure, sans a-coup
         toast (QString ("SONG FROM BLOCK %1%2").arg (i + 1).arg (playing ? " (next bar)" : ""));
     });
-    connect (songView, &SongView::moveEntry, this, [this] (int from, int to)
+    connect (songView, &SongView::moveEntries, this, [this] (const QList<int>& list, int before, bool copy)
     {
-        songEdit (tr ("Move block"), [from, to] (std::vector<seq::SongEntry>& s)
+        // Deplacer (ou copier, Option) plusieurs blocs : ils arrivent ensemble, dans leur ordre
+        if (list.isEmpty())
+            return;
+        int at = before;
+        songEdit (copy ? tr ("Copy blocks") : tr ("Move blocks"), [list, &at, copy] (std::vector<seq::SongEntry>& s)
         {
-            const seq::SongEntry e = s[(size_t) from];
-            s.erase (s.begin() + from);
-            s.insert (s.begin() + std::clamp (to, 0, (int) s.size()), e);
+            std::vector<seq::SongEntry> moved;
+            for (int i : list)
+                moved.push_back (s[(size_t) i]);
+            if (! copy)
+            {
+                for (int k = (int) list.size() - 1; k >= 0; --k)
+                {
+                    if (list[k] < at)
+                        --at;
+                    s.erase (s.begin() + list[k]);
+                }
+            }
+            at = std::clamp (at, 0, (int) s.size());
+            if ((int) (s.size() + moved.size()) > seq::kSongMax)
+                moved.resize ((size_t) std::max (0, seq::kSongMax - (int) s.size()));
+            s.insert (s.begin() + at, moved.begin(), moved.end());
         });
-        songView->selected = to;
+        songView->chosen.clear();
+        for (int k = 0; k < list.size(); ++k)
+            songView->chosen.insert (at + k);
+        songView->selected = at;
+        songView->update();
     });
+    connect (songView, &SongView::laneMuteSolo, this, [this] (int g, bool solo)
+    {
+        auto& flag = solo ? state.groupSolo[(size_t) g] : state.groupMute[(size_t) g];
+        flag = ! flag;
+        refreshMuteSolo();
+        songView->update();
+    });
+    songView->bpm = [this] { return bpmBox ? (double) bpmBox->value() : 120.0; };
     connect (songView, &SongView::lengthChanged, this, [this] (int i, double bars)
     {
         songEdit (tr ("Block length"), [i, bars] (std::vector<seq::SongEntry>& s)
@@ -6696,6 +6802,7 @@ QWidget* MainWindow::buildSong()
         auto* change = menu.addAction (tr ("Change scene..."));
         auto* copyScene = menu.addAction (tr ("New scene from this one (copy)"));
         auto* renameScene = menu.addAction (tr ("Rename scene S%1...").arg (e.scene + 1));
+        sceneColorMenu (menu.addMenu (tr ("Scene S%1 color").arg (e.scene + 1)), e.scene);
         auto* before = menu.addAction (tr ("Insert a scene before..."));
         auto* dupA = menu.addAction (tr ("Duplicate"));
         auto* play = menu.addAction (tr ("Play from here"));
@@ -6735,11 +6842,7 @@ QWidget* MainWindow::buildSong()
         else if (picked == before)
             songSceneMenu (at, [this, i] (int scene) { addSongScene (scene, i); });
         else if (picked == dupA)
-            songEdit (tr ("Duplicate block"), [i] (std::vector<seq::SongEntry>& s)
-            {
-                if ((int) s.size() < seq::kSongMax)
-                    s.insert (s.begin() + i + 1, s[(size_t) i]);
-            });
+            songDuplicateBlocks();
         else if (picked == play)
         {
             sequencer.songStartFrom (i);
@@ -6748,7 +6851,7 @@ QWidget* MainWindow::buildSong()
                 transport->play();
         }
         else if (picked == delA)
-            songEdit (tr ("Delete block"), [i] (std::vector<seq::SongEntry>& s) { s.erase (s.begin() + i); });
+            songDeleteBlocks();
     });
     connect (transport, &Transport::row, songView, [this] { songView->followPlayhead(); songView->update(); });
     return panel;
@@ -6804,8 +6907,7 @@ void MainWindow::addSongScene (int scene, int before)
         e.scene = scene;
         s.insert (s.begin() + at, e);
     });
-    songView->selected = at;
-    songView->update();
+    songView->selectOnly (at);
     toast (QString ("SONG + S%1").arg (scene + 1));
 }
 
@@ -6874,7 +6976,7 @@ bool MainWindow::arrangerButton (const QString& name)
             if ((int) s.size() < seq::kSongMax)
                 s.insert (s.begin() + sel + 1, s[(size_t) sel]);
         });
-        songView->selected = sel + 1;
+        songView->selectOnly (sel + 1);
     }
     else if (name == "nav_prev" || name == "nav_next")
     {
@@ -6903,7 +7005,7 @@ void MainWindow::arrangerKnob (int index, int delta)
     const double unit = songHalf ? 0.5 : 1;
     if (index == 0)
     {
-        songView->selected = std::clamp (sel + steps, 0, (int) song.size() - 1);
+        songView->selectOnly (std::clamp (sel + steps, 0, (int) song.size() - 1));
         toast (QString ("BLOCK %1  S%2").arg (songView->selected + 1).arg (song[(size_t) songView->selected].scene + 1));
     }
     else if (index == 1)                             // scene suivante / precedente (faites seulement)
@@ -7166,4 +7268,145 @@ void MainWindow::showShortcuts()
         "<tr><td><b>%1 + wheel</b></td><td>Zoom (Song) / value (Tracker)</td></tr>"
         "</table>").arg (mod));
     box.exec();
+}
+
+// ------------------------------------------------------------ Song : blocs choisis, clavier, couleurs
+
+void MainWindow::songDuplicateBlocks()
+{
+    const QList<int> list = songView->chosenList();
+    if (list.isEmpty())
+        return;
+    const int at = list.last() + 1;
+    songEdit (tr ("Duplicate blocks"), [list, at] (std::vector<seq::SongEntry>& s)
+    {
+        std::vector<seq::SongEntry> copy;
+        for (int i : list)
+            copy.push_back (s[(size_t) i]);
+        if ((int) (s.size() + copy.size()) > seq::kSongMax)
+            copy.resize ((size_t) std::max (0, seq::kSongMax - (int) s.size()));
+        s.insert (s.begin() + std::min (at, (int) s.size()), copy.begin(), copy.end());
+    });
+    songView->chosen.clear();
+    for (int k = 0; k < list.size(); ++k)
+        songView->chosen.insert (at + k);
+    songView->selected = at;
+    songView->update();
+}
+
+void MainWindow::songDeleteBlocks()
+{
+    const QList<int> list = songView->chosenList();
+    if (list.isEmpty())
+        return;
+    songEdit (list.size() > 1 ? tr ("Delete blocks") : tr ("Delete block"), [list] (std::vector<seq::SongEntry>& s)
+    {
+        for (int k = (int) list.size() - 1; k >= 0; --k)
+            if (list[k] < (int) s.size())
+                s.erase (s.begin() + list[k]);
+    });
+    songView->selectOnly (std::max (0, list.first() - 1));
+    toast (QString ("%1 BLOCK(S) DELETED").arg (list.size()));
+}
+
+void MainWindow::songCopyBlocks (bool cut)
+{
+    const auto song = sequencer.song();
+    songClip.clear();
+    for (int i : songView->chosenList())
+        songClip.push_back (song[(size_t) i]);
+    toast (QString ("%1 BLOCK(S) %2").arg (songClip.size()).arg (cut ? "CUT" : "COPIED"));
+    if (cut)
+        songDeleteBlocks();
+}
+
+void MainWindow::songPasteBlocks()
+{
+    if (songClip.empty())
+        return;
+    const int n = (int) sequencer.song().size();
+    const int at = n == 0 ? 0 : std::clamp (songView->selected + 1, 0, n);
+    const auto clip = songClip;
+    songEdit (tr ("Paste blocks"), [clip, at] (std::vector<seq::SongEntry>& s)
+    {
+        auto add = clip;
+        if ((int) (s.size() + add.size()) > seq::kSongMax)
+            add.resize ((size_t) std::max (0, seq::kSongMax - (int) s.size()));
+        s.insert (s.begin() + std::min (at, (int) s.size()), add.begin(), add.end());
+    });
+    songView->chosen.clear();
+    for (int k = 0; k < (int) clip.size(); ++k)
+        songView->chosen.insert (at + k);
+    songView->selected = at;
+    songView->update();
+}
+
+bool MainWindow::songKey (QKeyEvent* e)
+{
+    // La Song a la main (derniere zone cliquee, vue montree) : Del, fleches, Entree
+    const int n = (int) sequencer.song().size();
+    switch (e->key())
+    {
+        case Qt::Key_Delete:
+        case Qt::Key_Backspace:
+            songDeleteBlocks();
+            return true;
+        case Qt::Key_Left:
+        case Qt::Key_Right:
+            if (n > 0)
+            {
+                songView->selectOnly (std::clamp (songView->selected + (e->key() == Qt::Key_Right ? 1 : -1), 0, n - 1));
+                emit songView->selectedChanged (songView->selected);
+            }
+            return true;
+        case Qt::Key_Return:
+        case Qt::Key_Enter:
+            if (n > 0)
+            {
+                sequencer.songStartFrom (songView->selected, transport->playing() && sequencer.songMode());
+                setSongMode (true);
+                if (! transport->playing())
+                    transport->play();
+            }
+            return true;
+        default:
+            return false;
+    }
+}
+
+void MainWindow::sceneColorMenu (QMenu* menu, int scene)
+{
+    // 12 teintes + automatique ; s'applique aux vues Song et Scenes
+    const seq::Scene sc = sequencer.scene (scene);
+    auto* autoA = menu->addAction (tr ("Automatic"));
+    autoA->setCheckable (true);
+    autoA->setChecked (sc.color < 0);
+    connect (autoA, &QAction::triggered, this, [this, scene]
+    {
+        seq::Scene s = sequencer.scene (scene);
+        rememberPatterns (-1, tr ("Scene color"));
+        s.color = -1;
+        sequencer.setScene (scene, s);
+        patternsChanged();
+        songView->update();
+    });
+    static const char* names[12] { "Red", "Orange", "Yellow", "Lime", "Green", "Teal", "Cyan", "Sky", "Blue", "Violet", "Magenta", "Pink" };
+    for (int k = 0; k < 12; ++k)
+    {
+        const int hue = k * 30;
+        QPixmap swatch (14, 14);
+        swatch.fill (seq::sceneColor (0, hue));
+        auto* a = menu->addAction (QIcon (swatch), names[k]);
+        a->setCheckable (true);
+        a->setChecked (sc.color == hue);
+        connect (a, &QAction::triggered, this, [this, scene, hue]
+        {
+            seq::Scene s = sequencer.scene (scene);
+            rememberPatterns (-1, tr ("Scene color"));
+            s.color = hue;
+            sequencer.setScene (scene, s);
+            patternsChanged();
+            songView->update();
+        });
+    }
 }

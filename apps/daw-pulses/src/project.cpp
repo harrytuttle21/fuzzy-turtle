@@ -191,6 +191,8 @@ QJsonObject build (QJsonObject d, const QString& name, const seq::Sequencer& seq
         QJsonObject so { { "index", i }, { "name", QString::fromStdString (sc.name) }, { "groups", combo } };
         if (sc.locked)
             so["locked"] = true;                     // meme cle que le pilote
+        if (sc.color >= 0)
+            so["color"] = sc.color;                  // couleur choisie (l'app)
         scenes.append (so);
     }
     d["scenes"] = scenes;
@@ -354,6 +356,7 @@ void Project::toApp (seq::Sequencer& sequencer, session::State& state, int& bpm)
         sc.used = true;
         sc.name = sd["name"].toString().toStdString();
         sc.locked = sd["locked"].toBool (false);
+        sc.color = std::clamp (sd["color"].toInt (-1), -1, 359);
         const QJsonObject combo = sd["groups"].toObject();
         for (int g = 0; g < session::kGroups; ++g)
         {

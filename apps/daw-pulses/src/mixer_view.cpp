@@ -87,7 +87,10 @@ void MixerView::setPanFromX (int strip, double x)
     if (g < 0)
         return;
     const QRectF r = panRect (strip);
-    st.groupPan[(size_t) g] = std::clamp ((int) std::lround ((x - r.left()) / r.width() * 127.0), 0, 127);
+    int v = std::clamp ((int) std::lround ((x - r.left()) / r.width() * 127.0), 0, 127);
+    if (std::abs (v - 64) <= 5)                             // aimant : colle au centre
+        v = 64;
+    st.groupPan[(size_t) g] = v;
     emit volumeChanged();
     update();
 }
@@ -196,6 +199,12 @@ void MixerView::paintEvent (QPaintEvent*)
             g.setPen (QColor (120, 120, 130));
             g.drawText (QRectF (pr.left() - 12, pr.top() - 2, 10, 16), Qt::AlignCenter, "L");
             g.drawText (QRectF (pr.right() + 2, pr.top() - 2, 10, 16), Qt::AlignCenter, "R");
+            if (panDrag && dragging == s)                    // valeur pendant qu'on tire : C, L 20, R 35
+            {
+                g.setPen (QColor (245, 201, 160));
+                g.drawText (QRectF (pr.center().x() - 30, pr.bottom() + 1, 60, 14), Qt::AlignCenter,
+                            pan == 64 ? QString ("C") : pan < 64 ? QString ("L %1").arg (64 - pan) : QString ("R %1").arg (pan - 64));
+            }
         }
     }
 }
@@ -215,6 +224,13 @@ void MixerView::mousePressEvent (QMouseEvent* e)
     for (int strip = 0; strip < 8; ++strip)              // pan : barre gauche / droite
         if (panRect (strip).adjusted (-4, -4, 4, 4).contains (e->position()))
         {
+            if (e->modifiers() & Qt::AltModifier)            // Option + clic : au centre
+            {
+                st.groupPan[(size_t) groupOf (strip)] = 64;
+                emit volumeChanged();
+                update();
+                return;
+            }
             dragging = strip;
             panDrag = true;
             setPanFromX (strip, e->position().x());
@@ -261,5 +277,12 @@ void MixerView::wheelEvent (QWheelEvent* e)
     const int step = e->angleDelta().y() > 0 ? 2 : -2;
     volumeOf (s) = std::clamp (volumeOf (s) + step, 0, 127);
     emit volumeChanged();
+    update();
+}
+
+void MixerView::mouseReleaseEvent (QMouseEvent*)
+{
+    dragging = -1;
+    panDrag = false;
     update();
 }

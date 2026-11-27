@@ -198,7 +198,7 @@ void SceneView::paintEvent (QPaintEvent*)
     {
         const QRectF c = groupCell (hoverGroup);
         p.fillRect (rotated ? QRectF (0, c.top() - 1, width(), groupH()) : QRectF (c.left() - 1, 0, cellW(), height()),
-                    QColor (255, 255, 255, 16));
+                    QColor (255, 255, 255, 30));      // aussi clair que dans la Song
     }
     // Scenes
     const int vis = visibleScenes();
@@ -214,6 +214,12 @@ void SceneView::paintEvent (QPaintEvent*)
         p.setPen (i == now ? QPen (QColor (232, 232, 240), 2) : i == editScene && editMode ? QPen (QColor (252, 140, 40), 2) : QPen (Qt::NoPen));
         p.setBrush (i == now && matches ? QColor (232, 232, 240) : sc.used ? QColor (44, 44, 54) : QColor (22, 22, 27));
         p.drawRoundedRect (nameBox, 4, 4);
+        if (sc.used)                                 // la couleur de la scene (vue Song) : un trait
+        {
+            p.setPen (Qt::NoPen);
+            p.setBrush (seq::sceneColor (i, sc.color));
+            p.drawRoundedRect (QRectF (nameBox.left() + 2, nameBox.top() + 3, 4, nameBox.height() - 6), 2, 2);
+        }
         p.setPen (i == now && matches ? QColor (15, 15, 18) : sc.used ? QColor (235, 235, 242) : QColor (80, 80, 90));
         const QString label = QString ("S%1").arg (i + 1) + (sc.name.empty() ? QString() : " " + QString::fromStdString (sc.name));
         p.drawText (nameBox.adjusted (6, 0, sc.used ? -22 : -4, 0), Qt::AlignVCenter | (rotated ? Qt::AlignHCenter : Qt::AlignLeft),

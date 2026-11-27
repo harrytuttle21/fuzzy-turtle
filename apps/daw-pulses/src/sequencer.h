@@ -9,6 +9,8 @@
 #pragma once
 #include "session.h"
 
+#include <QColor>
+
 #include <array>
 #include <chrono>
 #include <memory>
@@ -47,6 +49,7 @@ struct Scene
 {
     bool used = false;
     bool locked = false;                             // cadenas : se lance, ne se modifie plus
+    int color = -1;                                  // teinte choisie (0-359), -1 : automatique
     std::string name;
     std::array<int, session::kGroups> pattern {};
     Scene() { pattern.fill (kFree); }
@@ -70,6 +73,11 @@ struct SongEntry
     double bars = 0;
     bool operator== (const SongEntry& o) const { return scene == o.scene && repeats == o.repeats && bars == o.bars; }
 };
+// Couleur d'une scene : la sienne, sinon une teinte douce selon son numero
+inline QColor sceneColor (int index, int hue)
+{
+    return QColor::fromHsv (hue >= 0 ? hue : (index * 47) % 360, 120, 200);
+}
 constexpr int kSongMax = 64;                          // entrees au plus (comme le pilote)
 constexpr int kSongsMax = 16;                         // songs (versions) par projet
 // Une song (version du morceau) : la song choisie est celle qui joue
