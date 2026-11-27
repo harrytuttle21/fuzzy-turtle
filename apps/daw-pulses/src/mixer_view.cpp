@@ -20,7 +20,7 @@ double meterPos (float level)
 }
 } // namespace
 
-MixerView::MixerView (session::State& state, QWidget* parent) : QWidget (parent), st (state)
+MixerView::MixerView (session::State& state, bool sounds, QWidget* parent) : QWidget (parent), soundsMode (sounds), st (state)
 {
     setMinimumHeight (150);
     setMouseTracking (false);
@@ -47,7 +47,31 @@ MixerView::MixerView (session::State& state, QWidget* parent) : QWidget (parent)
     });
 }
 
+void MixerView::setSoundLevels (const std::vector<float>& peaks)
+{
+    if (! soundsMode || peaks.size() < 256)
+        return;
+    const int g = st.group;
+    if (g != shownGroup)                                    // autre groupe : on repart de zero
+    {
+        shown.fill (0);
+        hold.fill (0);
+        shownGroup = g;
+    }
+    std::array<float, 17> p {};
+    for (size_t k = 0; k < 16; ++k)
+        p[k] = peaks[(size_t) g * 16 + k];
+    applyLevels (p);
+}
+
 void MixerView::setLevels (const std::array<float, 17>& peaks)
+{
+    if (soundsMode)
+        return;
+    applyLevels (peaks);
+}
+
+void MixerView::applyLevels (const std::array<float, 17>& peaks)
 {
     for (size_t i = 0; i < 17; ++i)
     {
@@ -67,20 +91,46 @@ void MixerView::setLevels (const std::array<float, 17>& peaks)
 
 int MixerView::groupOf (int strip) const
 {
+    if (soundsMode)
+        return strip;
     return strip >= 8 ? -1 : (st.group >= 8 ? 8 : 0) + strip;
 }
 
 std::atomic<int>& MixerView::volumeOf (int strip)
 {
+    if (soundsMode)
+        return st.soundVolume[(size_t) (st.group * 16 + strip)];
     const int g = groupOf (strip);
     return g < 0 ? st.masterVolume : st.groupVolume[(size_t) g];
 }
 
+std::atomic<int>& MixerView::panOf (int strip)
+{
+    return soundsMode ? st.soundPan[(size_t) (st.group * 16 + strip)] : st.groupPan[(size_t) groupOf (strip)];
+}
+
+std::atomic<bool>& MixerView::muteOf (int strip)
+{
+    return soundsMode ? st.soundMute[(size_t) (st.group * 16 + strip)] : st.groupMute[(size_t) groupOf (strip)];
+}
+
+std::atomic<bool>& MixerView::soloOf (int strip)
+{
+    return soundsMode ? st.soundSolo[(size_t) (st.group * 16 + strip)] : st.groupSolo[(size_t) groupOf (strip)];
+}
+
+double MixerView::stripLeft (int strip) const
+{
+    if (soundsMode)
+        return strip * width() / 16.0;
+    const double w = width() / 9.4;                         // 8 voies + master un peu a part
+    return strip < 8 ? strip * w : 8.4 * w;
+}
+
 QRectF MixerView::meterRect (int strip) const
 {
-    const double w = width() / 9.4;                         // 8 voies + master un peu a part
-    const double x = strip < 8 ? strip * w : 8.4 * w;
-    return { x + w * 0.28, 22.0, w * 0.44, height() - 92.0 };
+    const double w = soundsMode ? width() / 16.0 : width() / 9.4;
+    return { stripLeft (strip) + w * 0.28, 22.0, w * 0.44, height() - 92.0 };
 }
 
 QRectF MixerView::buttonRect (int strip, bool solo) const
@@ -93,7 +143,7 @@ QRectF MixerView::buttonRect (int strip, bool solo) const
 QRectF MixerView::panRect (int strip) const
 {
     const QRectF m = meterRect (strip);
-    const double w = std::min (64.0, width() / 9.4 * 0.8);
+    const double w = std::min (64.0, (soundsMode ? width() / 16.0 : width() / 9.4) * 0.8);
     return { m.center().x() - w / 2, m.bottom() + 30, w, 12.0 };
 }
 
@@ -106,16 +156,16 @@ void MixerView::setPanFromX (int strip, double x)
     int v = std::clamp ((int) std::lround ((x - r.left()) / r.width() * 127.0), 0, 127);
     if (std::abs (v - 64) <= 5)                             // aimant : colle au centre
         v = 64;
-    st.groupPan[(size_t) g] = v;
+    panOf (strip) = v;
     emit volumeChanged();
     update();
 }
 
 int MixerView::stripAt (double x) const
 {
-    for (int s = 0; s < 9; ++s)
+    for (int s = 0; s < total(); ++s)
     {
-        const QRectF r = meterRect (s).adjusted (-width() / 30.0, 0, width() / 30.0, 0);
+        const QRectF r = meterRect (s).adjusted (-width() / (soundsMode ? 50.0 : 30.0), 0, width() / (soundsMode ? 50.0 : 30.0), 0);
         if (x >= r.left() && x <= r.right())
             return s;
     }
@@ -138,16 +188,28 @@ void MixerView::paintEvent (QPaintEvent*)
     QFont f = font();
     f.setPixelSize (11);
     g.setFont (f);
-    for (int s = 0; s < 9; ++s)
+    for (int s = 0; s < total(); ++s)
     {
         const int grp = groupOf (s);
-        const bool silent = grp >= 0 && ! st.groupAudible (grp);       // coupe / hors solo
-        const QColor color = grp < 0 ? kAccent : silent ? QColor (90, 90, 98) : groupColor (grp);
+        // Sounds : son s + 1 du groupe choisi (muet si coupe, hors solo, ou groupe coupe)
+        const bool silent = soundsMode ? ! st.audible (st.group, s + 1) : grp >= 0 && ! st.groupAudible (grp);
+        const QColor color = grp < 0 ? kAccent : silent ? QColor (90, 90, 98) : groupColor (soundsMode ? st.group.load() : grp);
         const QRectF r = meterRect (s);
         // Nom au-dessus, centre
-        g.setPen (grp == st.group ? QColor (Qt::white) : color);
-        g.drawText (QRectF (r.center().x() - 34, 2, 68, 16), Qt::AlignCenter,
-                    grp < 0 ? QString ("MASTER") : g.fontMetrics().elidedText (session::groupTitle (st, grp), Qt::ElideRight, 68));
+        const double nameW = soundsMode ? width() / 16.0 - 4 : 68;
+        if (soundsMode)
+        {
+            const QString name = soundName ? soundName (s + 1) : QString::number (s + 1);
+            g.setPen (s + 1 == st.sound ? QColor (Qt::white) : color);
+            g.drawText (QRectF (r.center().x() - nameW / 2, 2, nameW, 16), Qt::AlignCenter,
+                        g.fontMetrics().elidedText (QString ("%1 %2").arg (s + 1).arg (name), Qt::ElideRight, (int) nameW));
+        }
+        else
+        {
+            g.setPen (grp == st.group ? QColor (Qt::white) : color);
+            g.drawText (QRectF (r.center().x() - 34, 2, 68, 16), Qt::AlignCenter,
+                        grp < 0 ? QString ("MASTER") : g.fontMetrics().elidedText (session::groupTitle (st, grp), Qt::ElideRight, 68));
+        }
         // Fond du vumetre
         g.setPen (QColor (40, 40, 48));
         g.setBrush (QColor (14, 14, 18));
@@ -181,7 +243,7 @@ void MixerView::paintEvent (QPaintEvent*)
             const double my = r.bottom() - r.height() * mark / 127.0;
             g.drawLine (QPointF (r.left() - 4, my), QPointF (r.left() - 1, my));
             g.drawLine (QPointF (r.right() + 1, my), QPointF (r.right() + 4, my));
-            if (r.left() - 26 > (s < 8 ? s * width() / 9.4 : 8.4 * width() / 9.4) - 2)
+            if (r.left() - 26 > stripLeft (s) - 2)
                 g.drawText (QRectF (r.left() - 28, my - 7, 22, 14), Qt::AlignRight | Qt::AlignVCenter, QString::number (mark));
         }
         // Volume : le petit trait blanc
@@ -197,7 +259,7 @@ void MixerView::paintEvent (QPaintEvent*)
             for (const bool solo : { false, true })
             {
                 const QRectF b = buttonRect (s, solo);
-                const bool on = solo ? st.groupSolo[(size_t) grp].load() : st.groupMute[(size_t) grp].load();
+                const bool on = solo ? soloOf (s).load() : muteOf (s).load();
                 g.setPen (QColor (60, 60, 70));
                 g.setBrush (on ? (solo ? QColor (232, 192, 64) : QColor (208, 72, 72)) : QColor (22, 22, 27));
                 g.drawRoundedRect (b, 3, 3);
@@ -208,7 +270,7 @@ void MixerView::paintEvent (QPaintEvent*)
         if (grp >= 0)
         {
             const QRectF pr = panRect (s);
-            const int pan = st.groupPan[(size_t) grp];
+            const int pan = panOf (s);
             g.setPen (QColor (60, 60, 70));
             g.setBrush (QColor (22, 22, 27));
             g.drawRoundedRect (pr, 3, 3);
@@ -235,22 +297,29 @@ void MixerView::paintEvent (QPaintEvent*)
 
 void MixerView::mousePressEvent (QMouseEvent* e)
 {
-    for (int strip = 0; strip < 8; ++strip)              // M / S : couper, solo
+    if (soundsMode && e->position().y() < 20 && soundClicked)   // nom du son : il passe au clavier
+    {
+        const int s = (int) (e->position().x() / (width() / 16.0));
+        if (s >= 0 && s < 16)
+            soundClicked (s + 1);
+        return;
+    }
+    for (int strip = 0; strip < strips(); ++strip)       // M / S : couper, solo
         for (const bool solo : { false, true })
             if (buttonRect (strip, solo).contains (e->position()))
             {
-                auto& flag = solo ? st.groupSolo[(size_t) groupOf (strip)] : st.groupMute[(size_t) groupOf (strip)];
+                auto& flag = solo ? soloOf (strip) : muteOf (strip);
                 flag = ! flag;
                 emit muteSoloChanged();
                 update();
                 return;
             }
-    for (int strip = 0; strip < 8; ++strip)              // pan : barre gauche / droite
+    for (int strip = 0; strip < strips(); ++strip)       // pan : barre gauche / droite
         if (panRect (strip).adjusted (-4, -4, 4, 4).contains (e->position()))
         {
             if (e->modifiers() & Qt::AltModifier)            // Option + clic : au centre
             {
-                st.groupPan[(size_t) groupOf (strip)] = 64;
+                panOf (strip) = 64;
                 emit volumeChanged();
                 update();
                 return;
@@ -276,10 +345,10 @@ void MixerView::mouseMoveEvent (QMouseEvent* e)
 
 void MixerView::mouseDoubleClickEvent (QMouseEvent* e)
 {
-    for (int strip = 0; strip < 8; ++strip)              // pan : double-clic = centre
+    for (int strip = 0; strip < strips(); ++strip)       // pan : double-clic = centre
         if (panRect (strip).adjusted (-4, -4, 4, 4).contains (e->position()))
         {
-            st.groupPan[(size_t) groupOf (strip)] = 64;
+            panOf (strip) = 64;
             emit volumeChanged();
             update();
             return;

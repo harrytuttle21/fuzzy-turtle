@@ -466,12 +466,15 @@ public:
             hits.fetch_add (1);
         }
         std::array<float, 16> groupPeak {};
+        std::array<float, 48> voicePeak {};             // crete de chaque voix (vumetres des sons)
         float masterPeak = 0;
         for (int i = 0; i < numSamples; ++i)
         {
             float left = 0, right = 0;
             std::array<float, 16> group {};              // vumetres : somme par groupe
-            for (auto& v : voices)
+            for (size_t k = 0; k < voices.size(); ++k)
+            {
+                auto& v = voices[k];
                 if (v.active)
                 {
                     const float s = v.render (sampleRate);
@@ -479,7 +482,9 @@ public:
                     right += s * v.gainR;
                     if (v.tag >= 0 && v.tag < 16)
                         group[(size_t) v.tag] += s;
+                    voicePeak[k] = std::max (voicePeak[k], std::abs (s));   // vumetre du son
                 }
+            }
             for (size_t g = 0; g < 16; ++g)
                 groupPeak[g] = std::max (groupPeak[g], std::abs (group[g]));
             left = std::tanh (left);                     // securite si beaucoup de notes s'empilent
@@ -493,7 +498,12 @@ public:
         for (size_t g = 0; g < 16; ++g)
             raiseMeter (meters[g], groupPeak[g]);
         raiseMeter (meters[16], masterPeak);
+        for (size_t k = 0; k < voices.size(); ++k)       // sons : groupe x 16 + pad - 1
+            if (voicePeak[k] > 0 && voices[k].tag >= 0 && voices[k].tag < 16 && voices[k].pad >= 1 && voices[k].pad <= 16)
+                raiseMeter (soundMeters[(size_t) (voices[k].tag * 16 + voices[k].pad - 1)], voicePeak[k]);
     }
+    // Vumetres des sons (vue Sounds) : 16 groupes x 16 sons
+    std::array<std::atomic<float>, 256> soundMeters {};
 
     // Vumetres : groupes A-H, A2-H2 puis master. Lus (et remis a zero) par le fil principal.
     std::array<std::atomic<float>, 17> meters {};
@@ -871,7 +881,7 @@ int main (int argc, char* argv[])
     else
         reader = std::thread (readPads, dev, std::ref (queue));
     int seen = 0, loops = 0, rescans = 0;
-    bool metersWereOn = false;
+    bool metersWereOn = false, soundMetersWereOn = false;
     while (gRunning.load())
     {
         std::this_thread::sleep_for (std::chrono::milliseconds (50));
@@ -959,6 +969,18 @@ int main (int argc, char* argv[])
             if (any || metersWereOn)
                 sendUi (mt);
             metersWereOn = any;
+            // Les 256 sons (groupe x 16 + pad - 1) : /fuzzy/proto/soundmeters
+            juce::OSCMessage ms ("/fuzzy/proto/soundmeters");
+            bool anySound = false;
+            for (auto& m : engine.soundMeters)
+            {
+                const float v = m.exchange (0.0f);
+                anySound |= v > 0.0005f;
+                ms.addFloat32 (v);
+            }
+            if (anySound || soundMetersWereOn)
+                sendUi (ms);
+            soundMetersWereOn = anySound;
         }
 
         // Etat pour l'interface, deux fois par seconde

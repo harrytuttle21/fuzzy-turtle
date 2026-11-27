@@ -70,6 +70,10 @@ private:
     QWidget* buildGroupBlock();
     QWidget* buildTransportBar();
     QWidget* buildMixer();
+    QWidget* buildSoundMixer();                      // onglet Sounds : les 16 sons du groupe choisi
+    MixerView* soundMixer = nullptr;
+    std::function<void()> soundMixRefresh;
+    QDockWidget* soundMixDock = nullptr;
     QWidget* buildLeftPanel();                   // onglets MIXER / PATTERN
     void showLeftTab (int index);
     void openSettings (int page = 0);

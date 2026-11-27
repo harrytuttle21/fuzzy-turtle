@@ -229,5 +229,12 @@ void EngineLink::readReplies()
                 peaks[i] = (float) a[(int) i].toDouble();
             emit meters (peaks);
         }
+        else if (address == "/fuzzy/proto/soundmeters" && a.size() >= 256)
+        {
+            std::vector<float> peaks (256);
+            for (int i = 0; i < 256; ++i)
+                peaks[(size_t) i] = (float) a[i].toDouble();
+            emit soundMeters (peaks);
+        }
     }
 }

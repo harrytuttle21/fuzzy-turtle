@@ -178,8 +178,10 @@ MainWindow::MainWindow (const Options& options, QWidget* parent) : QMainWindow (
     tabifyDockWidget (patternDock, rollDock);       // onglets : Pattern, Piano Roll, Tracker, Mixer
     tabifyDockWidget (rollDock, trackerDock);
     tabifyDockWidget (trackerDock, mixerDock);
+    soundMixDock = makeDock (tr ("Sounds"), "soundMixerDock", buildSoundMixer());
+    tabifyDockWidget (mixerDock, soundMixDock);     // onglet Sounds (mixeur des sons), apres le Mixer
     sceneDock = makeDock (tr ("Scenes"), "scenesDock", buildScenes());
-    tabifyDockWidget (mixerDock, sceneDock);        // onglet Scenes, apres le Mixer
+    tabifyDockWidget (soundMixDock, sceneDock);     // onglet Scenes, apres Sounds
     songDock = makeDock (tr ("Song"), "songDock", buildSong());
     tabifyDockWidget (sceneDock, songDock);         // onglet Song, apres Scenes
     groupsDock = makeDock (tr ("Groups (Maschine layout)"), "groupsDock", buildGroupBlock());
@@ -696,6 +698,7 @@ MainWindow::MainWindow (const Options& options, QWidget* parent) : QMainWindow (
         statusBar()->showMessage (tr ("Unreadable sample: %1").arg (QFileInfo (path).fileName()), 4000);
     });
     connect (engine, &EngineLink::meters, mixer, &MixerView::setLevels);
+    connect (engine, &EngineLink::soundMeters, soundMixer, &MixerView::setSoundLevels);
     connect (engine, &EngineLink::stopped, this, [this] (const QString& why)
     {
         engineLabel->setText (why);
@@ -1134,6 +1137,38 @@ QWidget* MainWindow::buildMixer()
     });
     col->addLayout (head);
     col->addWidget (mixer, 1);
+    return panel;
+}
+
+QWidget* MainWindow::buildSoundMixer()
+{
+    // Onglet Sounds : volume, pan, M / S et vumetre de chacun des 16 sons du groupe choisi
+    auto* panel = new QFrame;
+    panel->setObjectName ("panel");
+    auto* col = new QVBoxLayout (panel);
+    col->setContentsMargins (10, 6, 10, 6);
+    auto* head = new QHBoxLayout;
+    auto* title = new QLabel;
+    title->setObjectName ("hint");
+    auto* hint = new QLabel (tr ("click a name = play it on the keyboard \u00B7 drag = volume \u00B7 double-click = 100"));
+    hint->setObjectName ("hint");
+    head->addWidget (title);
+    head->addStretch();
+    head->addWidget (hint);
+    col->addLayout (head);
+    soundMixer = new MixerView (state, true);
+    soundMixer->soundName = [this] (int pad) { return padName (state.group, pad); };
+    soundMixer->soundClicked = [this] (int pad) { selectSound (pad); soundMixer->update(); };
+    connect (soundMixer, &MixerView::muteSoloChanged, this, [this] { refreshMuteSolo(); });
+    connect (soundMixer, &MixerView::volumeChanged, this, [this] { refreshSoundPanel(); });   // fiche Sound a jour
+    col->addWidget (soundMixer, 1);
+    soundMixRefresh = [this, title]
+    {
+        title->setText (tr ("SOUNDS OF GROUP %1").arg (groupTitle (state, state.group)));
+        title->setStyleSheet (QString ("color: %1; font-weight: bold;").arg (css (groupColor (state.group))));
+        soundMixer->update();
+    };
+    QTimer::singleShot (0, this, [this] { soundMixRefresh(); });
     return panel;
 }
 
@@ -1752,7 +1787,7 @@ void MainWindow::recordEnd (RecNote& slot)
 
 void MainWindow::selectGroup (int group)
 {
-    QTimer::singleShot (0, this, [this] { if (patternManagerRefresh) patternManagerRefresh(); if (palette) palette->update(); });   // la liste suit le groupe
+    QTimer::singleShot (0, this, [this] { if (patternManagerRefresh) patternManagerRefresh(); if (palette) palette->update(); if (soundMixRefresh) soundMixRefresh(); });   // la liste suit le groupe
     state.group = qBound (0, group, kGroups - 1);
     if (patternBar)
         patternBar->refresh();
@@ -1763,6 +1798,8 @@ void MainWindow::selectGroup (int group)
 
 void MainWindow::selectSound (int sound)
 {
+    if (soundMixer)
+        QTimer::singleShot (0, soundMixer, [this] { soundMixer->update(); });   // nom du son joue en blanc
     state.sound = qBound (1, sound, 16);
     refreshAll();
 }
@@ -1847,6 +1884,7 @@ void MainWindow::refreshGroups()
     }
     if (mixer)
         mixer->update();
+        if (soundMixer) soundMixer->update();
     if (patternView)
     {
         patternView->clearSelection();               // autre groupe : autre pattern
@@ -2391,6 +2429,7 @@ void MainWindow::projectChanged()
     // Tempo, volumes et patterns viennent d'etre remplaces : l'affichage suit
     if (mixer)
         mixer->update();
+        if (soundMixer) soundMixer->update();
     {
         const QSignalBlocker block (lengthBox);
         lengthBox->setValue (sequencer.patternLength (state.group));
@@ -3108,6 +3147,7 @@ void MainWindow::refreshMuteSolo()
     pads->setTags (tags);
     patternView->update();
     mixer->update();
+    if (soundMixer) soundMixer->update();
     // Boutons de groupes (sans toucher au reste de l'affichage du groupe)
     const int bank = state.group >= 8 ? 8 : 0;
     for (int i = 0; i < 8; ++i)
@@ -7733,11 +7773,10 @@ void MainWindow::refreshCounter (int row)
 
 void MainWindow::updateColumnFor()
 {
-    // Choix A : Mixer devant = colonne et cases cachees ; Scenes / Song devant = liste des groupes
-    // cachee (ces vues ont deja une ligne par groupe), les cases des patterns restent
+    // Scenes / Song devant : liste des groupes cachee (ces vues ont deja une ligne par groupe) ;
+    // les cases des patterns restent. Mixer et Sounds : tout reste (choisir le groupe, ses patterns)
     auto front = [] (QDockWidget* d) { return d && d->property ("front").toBool() && ! d->isFloating(); };
-    const bool mixer = front (mixerDock);
-    const bool rows = mixer || front (sceneDock) || front (songDock);
+    const bool rows = front (sceneDock) || front (songDock);
     auto apply = [] (QDockWidget* d, bool hide)
     {
         if (! d)
@@ -7754,5 +7793,5 @@ void MainWindow::updateColumnFor()
         }
     };
     apply (groupColDock, rows);
-    apply (patternSelDock, mixer);
+    apply (patternSelDock, false);
 }

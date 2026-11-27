@@ -140,7 +140,7 @@ std::vector<int> SongView::lanes() const
 QRectF SongView::muteBox (int lane, bool solo) const
 {
     const double y = kRulerH + kSongH + lane * laneH;
-    return QRectF (kLabelW - (solo ? 22 : 44), y + (laneH - 16) / 2.0, 19, 16);
+    return QRectF (solo ? 26 : 4, y + (laneH - 16) / 2.0, 19, 16);   // a gauche, comme la colonne des groupes
 }
 
 QRectF SongView::entryRect (int i) const
@@ -312,10 +312,17 @@ void SongView::paintEvent (QPaintEvent*)
         const int g = groups[k];
         if (g == hoverLane)
             p.fillRect (QRectF (0, laneTop + k * laneH, kLabelW, laneH), QColor (255, 255, 255, 30));
-        p.setPen (state.groupAudible (g) ? groupColor (g) : QColor (90, 90, 98));
+        // Nom dans une case de la couleur du groupe (comme la colonne des groupes)
+        const QColor c = state.groupAudible (g) ? groupColor (g) : QColor (90, 90, 98);
+        const double nh = std::min (18.0, laneH - 2.0);
+        const QRectF nameBox (48, laneTop + k * laneH + (laneH - nh) / 2.0, kLabelW - 52, nh);
+        p.setPen (QPen (c.darker (200), 1));
+        p.setBrush (c.darker (330));
+        p.drawRoundedRect (nameBox, 3, 3);
+        p.setPen (c.lighter (130));
         p.setFont (bold);
-        p.drawText (QRectF (8, laneTop + k * laneH, kLabelW - 56, laneH), Qt::AlignVCenter | Qt::AlignLeft,
-                    p.fontMetrics().elidedText (groupTitle (state, g), Qt::ElideRight, kLabelW - 58));
+        p.drawText (nameBox.adjusted (5, 0, -2, 0), Qt::AlignVCenter | Qt::AlignLeft,
+                    p.fontMetrics().elidedText (groupTitle (state, g), Qt::ElideRight, (int) nameBox.width() - 8));
         p.setFont (f);
         for (const bool solo : { false, true })      // M rouge = muet, S jaune = solo (norme de l'app)
         {

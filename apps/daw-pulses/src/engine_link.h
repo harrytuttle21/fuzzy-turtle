@@ -8,6 +8,7 @@
 #include <QStringList>
 
 #include <array>
+#include <vector>
 #include <atomic>
 
 class QUdpSocket;
@@ -64,6 +65,7 @@ public:
 signals:
     void stateChanged();                          // nouvel etat audio recu
     void meters (const std::array<float, 17>& peaks);   // vumetres : groupes 0-15 + master
+    void soundMeters (const std::vector<float>& peaks); // vumetres des 256 sons (groupe x 16 + son - 1)
     void stopped (const QString& why);
     void sampleError (const QString& path);       // fichier illisible
     void samplePeaks (int group, int sound, double seconds, const QList<float>& peaks);   // 0-1
