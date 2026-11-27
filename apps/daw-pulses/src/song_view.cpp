@@ -316,10 +316,11 @@ void SongView::paintEvent (QPaintEvent*)
         const QColor c = state.groupAudible (g) ? groupColor (g) : QColor (90, 90, 98);
         const double nh = std::min (18.0, laneH - 2.0);
         const QRectF nameBox (48, laneTop + k * laneH + (laneH - nh) / 2.0, kLabelW - 52, nh);
-        p.setPen (QPen (c.darker (200), 1));
-        p.setBrush (c.darker (330));
+        const bool chosen = g == state.group;            // groupe choisi : case pleine, cadre blanc
+        p.setPen (chosen ? QPen (Qt::white, 2) : QPen (c.darker (200), 1));
+        p.setBrush (chosen ? c : c.darker (330));
         p.drawRoundedRect (nameBox, 3, 3);
-        p.setPen (c.lighter (130));
+        p.setPen (chosen ? QColor (17, 17, 17) : c.lighter (130));
         p.setFont (bold);
         p.drawText (nameBox.adjusted (5, 0, -2, 0), Qt::AlignVCenter | Qt::AlignLeft,
                     p.fontMetrics().elidedText (groupTitle (state, g), Qt::ElideRight, (int) nameBox.width() - 8));
@@ -539,7 +540,9 @@ void SongView::mousePressEvent (QMouseEvent* e)
                 {
                     emit laneMuteSolo (groups[(size_t) lane], solo);
                     update();
+                    return;
                 }
+            emit laneSelected (groups[(size_t) lane]);   // clic sur le nom : choisir le groupe
             return;
         }
         const int i = entryAtX (pressPos.x());       // une case groupe x bloc : son pattern dans la scene

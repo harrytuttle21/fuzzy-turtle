@@ -46,6 +46,7 @@ signals:
     void loopRegion (int from, int to);              // zone de boucle glissee sur la regle (-1 : effacer)
     void rulerMenu (const QPoint& globalPos);        // clic droit sur la regle (effacer la zone)
     void laneMuteSolo (int group, bool solo);        // M / S d'une ligne de groupe
+    void laneSelected (int group);                   // clic sur le nom : ce groupe est choisi
     void zoomChanged();                              // Cmd + molette : les curseurs suivent
 
 protected:
@@ -64,7 +65,7 @@ protected:
     void dropEvent (QDropEvent*) override;
 
 private:
-    static constexpr int kLabelW = 112, kTop = 18, kRulerH = 18 + 24, kSongH = 40;   // kRulerH : apercu + regle
+    static constexpr int kLabelW = 160, kTop = 18, kRulerH = 18 + 24, kSongH = 40;   // kRulerH : apercu + regle
     int laneH = 24;                                  // hauteur des lignes de groupes (ZOOM V)
     int hoverLane = -1;                              // groupe sous la souris (surligne)
     enum class Edge { None, Left, Right } edge = Edge::None;   // bord de la zone de boucle tire

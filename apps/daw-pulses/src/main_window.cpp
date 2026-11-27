@@ -178,7 +178,7 @@ MainWindow::MainWindow (const Options& options, QWidget* parent) : QMainWindow (
     tabifyDockWidget (patternDock, rollDock);       // onglets : Pattern, Piano Roll, Tracker, Mixer
     tabifyDockWidget (rollDock, trackerDock);
     tabifyDockWidget (trackerDock, mixerDock);
-    soundMixDock = makeDock (tr ("Sounds"), "soundMixerDock", buildSoundMixer());
+    soundMixDock = makeDock (tr ("Mix Sounds"), "soundMixerDock", buildSoundMixer());
     tabifyDockWidget (mixerDock, soundMixDock);     // onglet Sounds (mixeur des sons), apres le Mixer
     sceneDock = makeDock (tr ("Scenes"), "scenesDock", buildScenes());
     tabifyDockWidget (soundMixDock, sceneDock);     // onglet Scenes, apres Sounds
@@ -1363,6 +1363,32 @@ void MainWindow::placeTracker()
                 d->raise();
         break;
     }
+    // Onglet Mix Sounds : juste apres le Mixer (une disposition d'avant ne le connait pas)
+    if (soundMixDock && ! soundMixDock->isFloating() && ! mixerDock->isFloating())
+    {
+        bool placed = false;
+        QString front;
+        for (auto* bar : findChildren<QTabBar*>())
+        {
+            QStringList titles;
+            for (int k = 0; k < bar->count(); ++k)
+                titles << bar->tabText (k);
+            const int mix = (int) titles.indexOf (mixerDock->windowTitle()), snd = (int) titles.indexOf (soundMixDock->windowTitle());
+            if (mix >= 0 && snd == mix + 1)
+                placed = true;
+            if (mix >= 0)
+                front = bar->tabText (bar->currentIndex());
+        }
+        if (! placed && (soundMixDock->isVisible() || ! soundMixDock->property ("closedByUser").toBool()))
+        {
+            removeDockWidget (soundMixDock);
+            tabifyDockWidget (mixerDock, soundMixDock);
+            soundMixDock->show();
+            for (auto* d : { patternDock, rollDock, trackerDock, mixerDock, soundMixDock, sceneDock, songDock })
+                if (d->windowTitle() == front)
+                    d->raise();
+        }
+    }
 }
 
 bool MainWindow::patternShown() const
@@ -1787,7 +1813,7 @@ void MainWindow::recordEnd (RecNote& slot)
 
 void MainWindow::selectGroup (int group)
 {
-    QTimer::singleShot (0, this, [this] { if (patternManagerRefresh) patternManagerRefresh(); if (palette) palette->update(); if (soundMixRefresh) soundMixRefresh(); });   // la liste suit le groupe
+    QTimer::singleShot (0, this, [this] { if (patternManagerRefresh) patternManagerRefresh(); if (palette) palette->update(); if (soundMixRefresh) soundMixRefresh(); if (songView) songView->update(); });   // la liste suit le groupe
     state.group = qBound (0, group, kGroups - 1);
     if (patternBar)
         patternBar->refresh();
@@ -6792,6 +6818,7 @@ QWidget* MainWindow::buildSong()
         songView->selected = at;
         songView->update();
     });
+    connect (songView, &SongView::laneSelected, this, [this] (int g) { selectGroup (g); songView->update(); });   // clic sur le nom
     connect (songView, &SongView::laneMuteSolo, this, [this] (int g, bool solo)
     {
         auto& flag = solo ? state.groupSolo[(size_t) g] : state.groupMute[(size_t) g];
