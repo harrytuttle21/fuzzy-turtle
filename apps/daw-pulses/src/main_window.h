@@ -278,6 +278,11 @@ private:
     // puis les 16 patterns de la banque du groupe choisi
     QWidget* buildGroupColumn();
     QDockWidget* groupColDock = nullptr;
+    QDockWidget* patternSelDock = nullptr;           // les 16 cases de patterns (sous la colonne, detachable)
+    QWidget* patternSelPanel = nullptr;
+    void updateColumnFor();
+    // ^ colonne selon la vue de devant (Mixer / Scenes / Song)
+    int counterRow = 0;
     std::function<void()> groupColRefresh;
     QPushButton *colUnmute = nullptr, *colUnsolo = nullptr;
     QToolBar* transportTool = nullptr;               // le Transport : barre en haut (detachable, flottante)

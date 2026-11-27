@@ -43,6 +43,8 @@ private:
     void setVolumeFromY (int strip, double y);
 
     session::State& st;
+    std::array<float, 17> hold {};                          // trait de crete (reste ~1 s)
+    std::array<int, 17> holdTicks {};
     std::array<float, 17> shown {};                         // niveaux affiches (retombent doucement)
     QTimer fall;
     int dragging = -1;

@@ -50,6 +50,7 @@
 #include <QScrollBar>
 #include <QScreen>
 #include <QGuiApplication>
+#include <QTextDocument>
 #include <QRandomGenerator>
 #include <QDateTime>
 #include <QActionGroup>
@@ -86,7 +87,7 @@ using namespace session;
 namespace fc = fuzzy::control;
 
 namespace {
-constexpr int kLayoutVersion = 9;                  // disposition des panneaux (2 : Pattern et Mixer en panneaux)
+constexpr int kLayoutVersion = 10;                  // disposition des panneaux (2 : Pattern et Mixer en panneaux)
 
 // Clavier musical de l'ordinateur : rangee du milieu = touches blanches, rangee du haut = noires.
 struct KeyLayout { const char* notes; char octDown, octUp, velDown, velUp; };
@@ -258,27 +259,29 @@ MainWindow::MainWindow (const Options& options, QWidget* parent) : QMainWindow (
         helpBar->setStyleSheet ("QToolBar { background: #1c1c22; border: none; border-top: 1px solid #6a6a76; margin-top: 6px; spacing: 0; padding: 0; }");   // de l'air, puis un trait
         addToolBar (Qt::BottomToolBarArea, helpBar);
     }
-    // Transport : sa propre fenetre, sous les groupes (detachable a part)
-    // Colonne des groupes : a gauche des onglets (le coin haut-gauche est a elle)
+    // Colonne des groupes : a gauche, sur toute la hauteur (les coins de gauche sont a elle),
+    // et sous elle les cases des patterns (panneau a part, detachable)
     groupColDock = makeDock (tr ("Groups"), "groupColumnDock", buildGroupColumn());
-    setCorner (Qt::TopLeftCorner, Qt::LeftDockWidgetArea);
-    addDockWidget (Qt::LeftDockWidgetArea, groupColDock);
-    // Mixer devant (et pas detache) : la colonne se cache (les groupes y sont deja en voies)
-    connect (mixerDock, &QDockWidget::visibilityChanged, this, [this] (bool shown)
+    patternSelDock = makeDock (tr ("Pattern select"), "patternSelectDock", patternSelPanel);
+    // Zone centrale vide (0 x 0) : sans elle, Qt elargit la colonne de gauche de quelques pixels
+    // a chaque remise en page (la fenetre « glissait » toute seule, chaque seconde)
     {
-        if (mixerDock->isFloating())
-            return;
-        if (shown && groupColDock->isVisible() && ! groupColDock->isFloating())
+        auto* centre = new QWidget;
+        centre->setMaximumHeight (0);            // largeur libre : la place en plus va aux onglets, pas a la colonne
+        setCentralWidget (centre);
+    }
+    setAnimated (false);                             // pas d'animation : les largeurs restent stables
+    setCorner (Qt::TopLeftCorner, Qt::LeftDockWidgetArea);
+    setCorner (Qt::BottomLeftCorner, Qt::LeftDockWidgetArea);
+    addDockWidget (Qt::LeftDockWidgetArea, groupColDock);
+    splitDockWidget (groupColDock, patternSelDock, Qt::Vertical);
+    // Vue de devant : Mixer = colonne et cases cachees ; Scenes / Song = groupes caches (deja en lignes)
+    for (auto* d : { patternDock, rollDock, trackerDock, mixerDock, sceneDock, songDock })
+        connect (d, &QDockWidget::visibilityChanged, this, [this, d] (bool shown)
         {
-            groupColDock->hide();
-            groupColDock->setProperty ("autoHidden", true);
-        }
-        else if (! shown && groupColDock->property ("autoHidden").toBool())
-        {
-            groupColDock->setProperty ("autoHidden", false);
-            groupColDock->show();
-        }
-    });
+            d->setProperty ("front", shown);
+            QTimer::singleShot (0, this, [this] { updateColumnFor(); });
+        });
     addDockWidget (Qt::BottomDockWidgetArea, padsDock);
     splitDockWidget (keysTabDock, padsDock, Qt::Horizontal);
     tabifyDockWidget (keysTabDock, soundDock);       // Keyboard et Sound en onglets (apres les pads)
@@ -392,11 +395,23 @@ MainWindow::MainWindow (const Options& options, QWidget* parent) : QMainWindow (
     {
         resizeDocks ({ groupsDock, keysTabDock, padsDock }, { width() * 25 / 100, width() * 50 / 100, width() * 25 / 100 }, Qt::Horizontal);
         resizeDocks ({ patternDock, padsDock }, { height() * 57 / 100, height() * 43 / 100 }, Qt::Vertical);   // vue d'usine (mesuree sur la capture de reference)
-        resizeDocks ({ groupColDock, patternDock }, { 210, width() - 210 }, Qt::Horizontal);
+        resizeDocks ({ groupColDock, patternSelDock }, { height() * 60 / 100, height() * 40 / 100 }, Qt::Vertical);
         resizeDocks ({ keysTabDock, padsDock }, { width() * 66 / 100, width() * 34 / 100 }, Qt::Horizontal);
+        for (auto* d : { groupColDock, patternSelDock })
+            d->setFixedWidth (210);                  // colonne de gauche : 210 px au depart (puis libre)
         groupsDock->setFloating (true);              // bloc 2 x 4 (Maschine) : en option, ferme
+        groupsDock->resize (410, 250);
         groupsDock->hide();
         patternsToolBar->hide();                     // barre PATTERNS / SCENES : en option
+        QTimer::singleShot (150, this, [this]
+        {
+            resizeDocks ({ groupColDock }, { 210 }, Qt::Horizontal);   // Qt garde 210 en memoire
+            for (auto* d : { groupColDock, patternSelDock })
+            {
+                d->setMinimumWidth (120);
+                d->setMaximumWidth (QWIDGETSIZE_MAX);
+            }
+        });
         defaultLayout = factoryLayout = saveState (kLayoutVersion);   // vue Default (d'usine)
         if (QSettings().contains ("layout/default"))  // « Save as Default » : la sienne
             defaultLayout = QSettings().value ("layout/default").toByteArray();
@@ -960,6 +975,7 @@ QWidget* MainWindow::buildTopBar()
     title->setObjectName ("title");
     statsLabel = new QLabel;
     statsLabel->setObjectName ("stats");
+    statsLabel->setAlignment (Qt::AlignRight | Qt::AlignVCenter);
     statsLabel->setToolTip (tr ("Computer CPU and memory, audio engine load, memory of this app"));
     projectLabel = new QLabel;
     projectLabel->setObjectName ("projectName");
@@ -1392,8 +1408,6 @@ QWidget* MainWindow::buildTransportBar()
         refreshMaschine();
     });
     row->addWidget (swingBox);
-    top->addWidget (beatLabel);
-    top->addSpacing (8);
 
     metroButton = new QPushButton (QStringLiteral ("♩  ") + tr ("METRO"));
     metroButton->setCheckable (true);
@@ -1419,8 +1433,20 @@ QWidget* MainWindow::buildTransportBar()
         QSettings().setValue ("metronomeVolume", v);
         refreshMaschine();
     });
-    top->addWidget (metroButton);
-    top->addWidget (metroVolume);
+    // Metronome : bouton, les 4 temps et le volume, dans un meme bloc
+    auto* metroBox = new QFrame;
+    metroBox->setObjectName ("metroBox");
+    metroBox->setStyleSheet ("QFrame#metroBox { border: 1px solid #34343e; border-radius: 6px; background: #141418; }");
+    auto* mb = new QHBoxLayout (metroBox);
+    mb->setContentsMargins (3, 2, 8, 2);
+    mb->setSpacing (8);
+    mb->addWidget (metroButton);
+    mb->addWidget (beatLabel);
+    mb->addWidget (metroVolume);
+    metroBox->setSizePolicy (QSizePolicy::Maximum, QSizePolicy::Preferred);
+    beatLabel->setSizePolicy (QSizePolicy::Maximum, QSizePolicy::Preferred);
+    top->addWidget (metroBox);
+    top->addSpacing (6);
     songTransportButton = new QPushButton (tr ("SONG"));   // la lecture suit le morceau (vue Song)
     songTransportButton->setCheckable (true);
     songTransportButton->setObjectName ("keys");
@@ -1523,7 +1549,7 @@ void MainWindow::applyTheme()
         QMainWindow::separator { background: #1c1c22; width: 5px; height: 5px; }
         QMainWindow::separator:hover { background: %1; }
         #screen { background: #0b0b0e; border: 1px solid #2a2a33; border-top: 3px solid %1; border-radius: 6px; }
-        #stats { color: #9a9aa4; font-family: monospace; background: transparent; }
+        #stats { color: #9a9aa4; font-family: Menlo, Monaco, monospace; background: transparent; }
         #transport { background: #17171c; border: 1px solid #26262e; border-radius: 8px; }
         #transport QPushButton { font-size: 15px; padding: 0; }
         QPushButton#tab { background: transparent; border: none; color: #8a8a92; font-weight: bold; padding: 2px 8px; }
@@ -1846,14 +1872,23 @@ void MainWindow::refreshStats()
     QStringList parts;
     if (stats.valid())
     {
-        parts << colored (tr ("CPU %1 %").arg (stats.cpuPercent(), 0, 'f', 0), stats.cpuPercent())
+        parts << colored (tr ("CPU %1 %").arg (stats.cpuPercent(), 3, 'f', 0, QChar (0xA0)), stats.cpuPercent())
               << colored (tr ("RAM %1 / %2 GB").arg (stats.memUsedGB(), 0, 'f', 1).arg (stats.memTotalGB(), 0, 'f', 0),
                           100.0 * stats.memUsedGB() / stats.memTotalGB());
     }
     if (engine->state().cpu >= 0)
-        parts << colored (tr ("Audio %1 %").arg (engine->state().cpu, 0, 'f', 0), engine->state().cpu);
-    parts << tr ("App %1 MB").arg (stats.appMB(), 0, 'f', 0);
+        parts << colored (tr ("Audio %1 %").arg (engine->state().cpu, 3, 'f', 0, QChar (0xA0)), engine->state().cpu);
+    parts << tr ("App %1 MB").arg (stats.appMB(), 5, 'f', 0, QChar (0xA0));
     statsLabel->setText (parts.join ("<span style='color:#55555e'> &nbsp;|&nbsp; </span>"));
+    // Largeur fixe : chiffres sur une largeur constante, et la zone ne retrecit jamais (pas de saut)
+    {
+        // mesure sur le texte seul (sizeHint grandirait avec la largeur minimale : la fenetre glissait)
+        QTextDocument doc;
+        doc.setHtml (statsLabel->text());
+        const int w = statsLabel->fontMetrics().horizontalAdvance (doc.toPlainText()) + 12;
+        if (w > statsLabel->minimumWidth() && w < 900)
+            statsLabel->setMinimumWidth (w);
+    }
 }
 
 void MainWindow::refreshMaschine()
@@ -2623,7 +2658,7 @@ void MainWindow::buildViewMenu (QMenu* menu)
     // Panneaux : coche = visible
     struct Item { QDockWidget* dock; QKeySequence key; };
     for (const auto& item : { Item { padsDock, QKeySequence ("Ctrl+1") }, Item { groupsDock, QKeySequence ("Ctrl+2") },
-                              Item { groupColDock, QKeySequence() }, Item { statusDock, QKeySequence ("Ctrl+I") } })
+                              Item { groupColDock, QKeySequence() }, Item { patternSelDock, QKeySequence() }, Item { statusDock, QKeySequence ("Ctrl+I") } })
     {
         auto* a = item.dock->toggleViewAction();
         a->setShortcut (item.key);
@@ -3066,6 +3101,7 @@ void MainWindow::refreshMuteSolo()
     }
     if (groupColRefresh)
         groupColRefresh();                           // colonne des groupes : M / S, noms, patterns
+    refreshCounter (counterRow);                     // scene / song en cours
     std::array<char, 16> tags {};
     for (int p = 1; p <= 16; ++p)
         tags[(size_t) p - 1] = state.soundTag (state.group, p);
@@ -7466,6 +7502,32 @@ void MainWindow::groupContextMenu (int g, const QPoint& at)
 
 // ------------------------------------------------------------ colonne des groupes (a gauche)
 
+namespace
+{
+// 16 cases carrees (4 x 4) qui suivent la largeur (et la hauteur) du panneau
+class SquareGrid : public QWidget
+{
+public:
+    std::array<QPushButton*, 16> cells {};
+    explicit SquareGrid (QWidget* parent = nullptr) : QWidget (parent)
+    {
+        setSizePolicy (QSizePolicy::Expanding, QSizePolicy::Expanding);
+        setMinimumSize (4 * 24 + 9, 4 * 24 + 9);
+    }
+    QSize sizeHint() const override { return { 200, 200 }; }
+protected:
+    void resizeEvent (QResizeEvent*) override
+    {
+        const int gap = 3;
+        const int side = std::max (16, std::min ((width() - 3 * gap) / 4, (height() - 3 * gap) / 4));
+        const int x0 = (width() - (4 * side + 3 * gap)) / 2;
+        for (int k = 0; k < 16; ++k)
+            if (cells[(size_t) k])
+                cells[(size_t) k]->setGeometry (x0 + (k % 4) * (side + gap), (k / 4) * (side + gap), side, side);
+    }
+};
+} // namespace
+
 QWidget* MainWindow::buildGroupColumn()
 {
     auto* panel = new QFrame;
@@ -7547,13 +7609,11 @@ QWidget* MainWindow::buildGroupColumn()
     phead->addWidget (bankLabel);
     phead->addWidget (next);
     pcol->addLayout (phead);
-    auto* pgrid = new QGridLayout;
-    pgrid->setSpacing (3);
+    auto* squares = new SquareGrid;
     auto cells = std::make_shared<std::array<QPushButton*, 16>>();
     for (int k = 0; k < 16; ++k)
     {
-        auto* c = new QPushButton;
-        c->setFixedHeight (26);
+        auto* c = new QPushButton (squares);
         c->setFocusPolicy (Qt::NoFocus);
         c->setContextMenuPolicy (Qt::CustomContextMenu);
         const int slot = k;                          // case 0-15 de la banque (rangees de 4)
@@ -7562,10 +7622,10 @@ QWidget* MainWindow::buildGroupColumn()
         {
             patternBar->patternMenu (patternBar->patternBank * 16 + slot, c->mapToGlobal (p));
         });
-        pgrid->addWidget (c, k / 4, k % 4);
         (*cells)[(size_t) k] = c;
+        squares->cells[(size_t) k] = c;
     }
-    pcol->addLayout (pgrid);
+    pcol->addWidget (squares, 1);
     connect (prev, &QPushButton::clicked, this, [this] { patternBar->patternBank = (patternBar->patternBank + 3) % 4; patternBar->refresh (true); if (groupColRefresh) groupColRefresh(); });
     connect (next, &QPushButton::clicked, this, [this] { patternBar->patternBank = (patternBar->patternBank + 1) % 4; patternBar->refresh (true); if (groupColRefresh) groupColRefresh(); });
 
@@ -7600,13 +7660,13 @@ QWidget* MainWindow::buildGroupColumn()
             QString name = QString::fromStdString (sequencer.patternName (g, i));
             b->setText (exists && ! name.isEmpty() ? name.left (6) : QString::number (i + 1));
             b->setToolTip (exists ? QString ("%1 %2").arg (i + 1).arg (PatternBar::patternName (sequencer, g, i)) : tr ("Empty: click = new pattern"));
-            b->setStyleSheet (QString ("QPushButton { font-size: 11px; padding: 0; color: %1; background: %2; border: %3; }")
+            b->setStyleSheet (QString ("QPushButton { font-size: 11px; padding: 0; border-radius: 4px; color: %1; background: %2; border: %3; }")
                                   .arg (i == cur ? "#111" : exists ? "#f0f0f5" : "#5a5a64",
                                         i == cur ? css (c) : exists ? css (c.darker (260)) : "#141418",
                                         i == queued ? "2px dashed #fc8c28" : i == cur ? "2px solid #ffffff" : exists ? "1px solid " + css (c.darker (180)) : "1px solid #26262e"));
         }
     };
-    connect (patternBar, &PatternBar::changed, this, [this] { if (groupColRefresh) groupColRefresh(); });
+    connect (patternBar, &PatternBar::changed, this, [this] { if (groupColRefresh) groupColRefresh(); refreshCounter (counterRow); });
     QTimer::singleShot (0, this, [this] { if (groupColRefresh) groupColRefresh(); });
     auto* scroll = new QScrollArea;                  // si la fenetre est basse : la colonne defile
     scroll->setWidget (panel);
@@ -7618,7 +7678,7 @@ QWidget* MainWindow::buildGroupColumn()
     ov->setContentsMargins (0, 0, 0, 0);
     ov->setSpacing (4);
     ov->addWidget (scroll, 1);
-    ov->addWidget (ppanel);
+    patternSelPanel = ppanel;                        // va dans son propre panneau (Pattern select)
     return outer;
 }
 
@@ -7627,6 +7687,7 @@ void MainWindow::refreshCounter (int row)
     // Position : mesure.temps (16 lignes = 1 mesure), temps ecoule ; en Song : dans le morceau
     if (! counterLabel)
         return;
+    counterRow = row;
     const double bpm = bpmBox ? std::max (1, bpmBox->value()) : 120;
     auto clock = [bpm] (int rows, bool tenths)
     {
@@ -7649,9 +7710,49 @@ void MainWindow::refreshCounter (int row)
                 before += len;
             total += len;
         }
-        text += QString ("&nbsp;&nbsp;<span style='color:#f5c9a0'>SONG %1 / %2 \u00B7 Block %3/%4</span>")
-                    .arg (clock (std::min (total, before + inEntry), false), clock (total, false))
-                    .arg (std::min (entry + 1, (int) song.size())).arg (song.size());
+        const auto songs = sequencer.allSongs();
+        const int cs = sequencer.currentSong();
+        const QString songName = cs >= 0 && cs < (int) songs.size() ? QString::fromStdString (songs[(size_t) cs].name) : QString();
+        const int sc = song[(size_t) std::clamp (entry, 0, (int) song.size() - 1)].scene;
+        const QString scName = QString::fromStdString (sequencer.scene (sc).name).toHtmlEscaped();
+        text += QString ("&nbsp;&nbsp;<span style='color:#f5c9a0'>SONG <b>%1</b> %2 / %3 \u00B7 Block %4/%5 \u00B7 SCENE %6%7</span>")
+                    .arg (songName.toHtmlEscaped(), clock (std::min (total, before + inEntry), false), clock (total, false))
+                    .arg (std::min (entry + 1, (int) song.size())).arg (song.size())
+                    .arg (sc + 1, 2, 10, QChar ('0')).arg (scName.isEmpty() ? QString() : " " + scName);
+    }
+    else if (sequencer.currentScene() >= 0)          // mode Patterns : la derniere scene lancee
+    {
+        const int sc = sequencer.currentScene();
+        const QString scName = QString::fromStdString (sequencer.scene (sc).name).toHtmlEscaped();
+        text += QString ("&nbsp;&nbsp;<span style='color:%1'>SCENE %2%3</span>")
+                    .arg (css (seq::sceneColor (sc, sequencer.scene (sc).color).lighter (140)))
+                    .arg (sc + 1, 2, 10, QChar ('0')).arg (scName.isEmpty() ? QString() : " " + scName);
     }
     counterLabel->setText (text);
+}
+
+void MainWindow::updateColumnFor()
+{
+    // Choix A : Mixer devant = colonne et cases cachees ; Scenes / Song devant = liste des groupes
+    // cachee (ces vues ont deja une ligne par groupe), les cases des patterns restent
+    auto front = [] (QDockWidget* d) { return d && d->property ("front").toBool() && ! d->isFloating(); };
+    const bool mixer = front (mixerDock);
+    const bool rows = mixer || front (sceneDock) || front (songDock);
+    auto apply = [] (QDockWidget* d, bool hide)
+    {
+        if (! d)
+            return;
+        if (hide && d->isVisible() && ! d->isFloating())
+        {
+            d->hide();
+            d->setProperty ("autoHidden", true);
+        }
+        else if (! hide && d->property ("autoHidden").toBool())
+        {
+            d->setProperty ("autoHidden", false);
+            d->show();
+        }
+    };
+    apply (groupColDock, rows);
+    apply (patternSelDock, mixer);
 }

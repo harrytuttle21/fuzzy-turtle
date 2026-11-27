@@ -27,12 +27,19 @@ MixerView::MixerView (session::State& state, QWidget* parent) : QWidget (parent)
     fall.setInterval (33);                                  // les barres retombent en douceur
     connect (&fall, &QTimer::timeout, this, [this]
     {
+        // Retombee lente (~ 15 dB / s), comme un vrai vumetre ; la crete reste ~1 s puis retombe
         bool moving = false;
-        for (auto& v : shown)
+        for (size_t i = 0; i < 17; ++i)
         {
-            v *= 0.82f;
+            float& v = shown[i];
+            v *= 0.94f;
             if (v < 0.0005f) v = 0;
-            moving |= v > 0;
+            if (holdTicks[i] > 0)
+                --holdTicks[i];
+            else
+                hold[i] *= 0.88f;
+            if (hold[i] < 0.0005f) hold[i] = 0;
+            moving |= v > 0 || hold[i] > 0;
         }
         update();
         if (! moving)
@@ -43,7 +50,16 @@ MixerView::MixerView (session::State& state, QWidget* parent) : QWidget (parent)
 void MixerView::setLevels (const std::array<float, 17>& peaks)
 {
     for (size_t i = 0; i < 17; ++i)
-        shown[i] = std::max (shown[i], peaks[i]);
+    {
+        // Montee adoucie (pas de saut brutal a chaque message) ; descente : par la minuterie
+        if (peaks[i] > shown[i])
+            shown[i] += (peaks[i] - shown[i]) * 0.6f;
+        if (peaks[i] >= hold[i])
+        {
+            hold[i] = peaks[i];
+            holdTicks[i] = 30;                      // ~1 s (minuterie 33 ms)
+        }
+    }
     if (! fall.isActive())
         fall.start();
     update();
@@ -149,6 +165,14 @@ void MixerView::paintEvent (QPaintEvent*)
             g.setPen (Qt::NoPen);
             g.setBrush (grad);
             g.drawRect (bar);
+        }
+        // Trait de crete
+        const double hp = meterPos (hold[(size_t) (grp < 0 ? 16 : grp)]);
+        if (hp > 0)
+        {
+            const double hy = r.bottom() - 2 - (r.height() - 4) * hp;
+            g.setPen (QPen (hp > 0.9 ? QColor (240, 60, 50) : QColor (235, 235, 240), 2));
+            g.drawLine (QPointF (r.left() + 2, hy), QPointF (r.right() - 2, hy));
         }
         // Graduations 25, 50, 75, 100 (100 = niveau normal)
         g.setPen (QColor (95, 95, 105));

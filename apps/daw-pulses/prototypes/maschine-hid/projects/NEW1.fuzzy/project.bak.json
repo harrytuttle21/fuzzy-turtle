@@ -1,0 +1,880 @@
+{
+    "bpm": 90,
+    "format": "fuzzy-proto",
+    "groups": {
+        "A": {
+            "current": 0,
+            "name": "DRUMS",
+            "off": false,
+            "pan": 64,
+            "patterns": [
+                {
+                    "cells": [
+                        [
+                            0,
+                            0,
+                            60,
+                            100
+                        ],
+                        [
+                            4,
+                            0,
+                            60,
+                            100
+                        ],
+                        [
+                            8,
+                            0,
+                            60,
+                            100
+                        ],
+                        [
+                            12,
+                            0,
+                            60,
+                            100
+                        ]
+                    ],
+                    "index": 0,
+                    "length": 16,
+                    "name": ""
+                }
+            ],
+            "sounds": {
+                "1": {
+                },
+                "10": {
+                },
+                "11": {
+                },
+                "12": {
+                },
+                "13": {
+                },
+                "14": {
+                },
+                "15": {
+                },
+                "16": {
+                },
+                "2": {
+                },
+                "3": {
+                },
+                "4": {
+                },
+                "5": {
+                },
+                "6": {
+                },
+                "7": {
+                },
+                "8": {
+                },
+                "9": {
+                }
+            },
+            "volume": 100
+        },
+        "A2": {
+            "current": 0,
+            "name": "",
+            "off": true,
+            "pan": 64,
+            "patterns": [
+            ],
+            "sounds": {
+                "1": {
+                },
+                "10": {
+                },
+                "11": {
+                },
+                "12": {
+                },
+                "13": {
+                },
+                "14": {
+                },
+                "15": {
+                },
+                "16": {
+                },
+                "2": {
+                },
+                "3": {
+                },
+                "4": {
+                },
+                "5": {
+                },
+                "6": {
+                },
+                "7": {
+                },
+                "8": {
+                },
+                "9": {
+                }
+            },
+            "volume": 100
+        },
+        "B": {
+            "current": 0,
+            "name": "BASSE",
+            "off": false,
+            "pan": 64,
+            "patterns": [
+                {
+                    "cells": [
+                    ],
+                    "index": 1,
+                    "length": 16,
+                    "name": ""
+                }
+            ],
+            "sounds": {
+                "1": {
+                    "sample": "/Volumes/Nvme4TO/Samples1/SAMPLESWAP-SELECTION/INSTRUMENT SINGLE NOTE HITS/wobbly-swell-chord-D.wav",
+                    "synth": "None"
+                },
+                "10": {
+                    "synth": "None"
+                },
+                "11": {
+                    "synth": "None"
+                },
+                "12": {
+                    "synth": "None"
+                },
+                "13": {
+                    "synth": "None"
+                },
+                "14": {
+                    "synth": "None"
+                },
+                "15": {
+                    "synth": "None"
+                },
+                "16": {
+                    "synth": "None"
+                },
+                "2": {
+                    "synth": "None"
+                },
+                "3": {
+                    "synth": "None"
+                },
+                "4": {
+                    "synth": "None"
+                },
+                "5": {
+                    "synth": "None"
+                },
+                "6": {
+                    "synth": "None"
+                },
+                "7": {
+                    "synth": "None"
+                },
+                "8": {
+                    "synth": "None"
+                },
+                "9": {
+                    "synth": "None"
+                }
+            },
+            "volume": 100
+        },
+        "B2": {
+            "current": 0,
+            "name": "",
+            "off": true,
+            "pan": 64,
+            "patterns": [
+            ],
+            "sounds": {
+                "1": {
+                },
+                "10": {
+                },
+                "11": {
+                },
+                "12": {
+                },
+                "13": {
+                },
+                "14": {
+                },
+                "15": {
+                },
+                "16": {
+                },
+                "2": {
+                },
+                "3": {
+                },
+                "4": {
+                },
+                "5": {
+                },
+                "6": {
+                },
+                "7": {
+                },
+                "8": {
+                },
+                "9": {
+                }
+            },
+            "volume": 100
+        },
+        "C": {
+            "current": 0,
+            "name": "DJRIDOO",
+            "off": true,
+            "pan": 64,
+            "patterns": [
+            ],
+            "sounds": {
+                "1": {
+                    "envelope": {
+                        "mode": "ADSR",
+                        "release": 150
+                    },
+                    "sample": "/Volumes/Nvme4TO/Samples1/SAMPLESWAP-SELECTION/INSTRUMENT SINGLE NOTE HITS/didgeridoo.aif",
+                    "synth": "None"
+                },
+                "10": {
+                    "synth": "None"
+                },
+                "11": {
+                    "synth": "None"
+                },
+                "12": {
+                    "synth": "None"
+                },
+                "13": {
+                    "synth": "None"
+                },
+                "14": {
+                    "synth": "None"
+                },
+                "15": {
+                    "synth": "None"
+                },
+                "16": {
+                    "synth": "None"
+                },
+                "2": {
+                    "synth": "None"
+                },
+                "3": {
+                    "synth": "None"
+                },
+                "4": {
+                    "synth": "None"
+                },
+                "5": {
+                    "synth": "None"
+                },
+                "6": {
+                    "synth": "None"
+                },
+                "7": {
+                    "synth": "None"
+                },
+                "8": {
+                    "synth": "None"
+                },
+                "9": {
+                    "synth": "None"
+                }
+            },
+            "volume": 100
+        },
+        "C2": {
+            "current": 0,
+            "name": "",
+            "off": true,
+            "pan": 64,
+            "patterns": [
+            ],
+            "sounds": {
+                "1": {
+                },
+                "10": {
+                },
+                "11": {
+                },
+                "12": {
+                },
+                "13": {
+                },
+                "14": {
+                },
+                "15": {
+                },
+                "16": {
+                },
+                "2": {
+                },
+                "3": {
+                },
+                "4": {
+                },
+                "5": {
+                },
+                "6": {
+                },
+                "7": {
+                },
+                "8": {
+                },
+                "9": {
+                }
+            },
+            "volume": 100
+        },
+        "D": {
+            "current": 0,
+            "name": "VOCALS",
+            "off": true,
+            "pan": 64,
+            "patterns": [
+            ],
+            "sounds": {
+                "1": {
+                    "sample": "/Volumes/Nvme4TO/Samples1/SAMPLESWAP-SELECTION/VOCALS/bie-zelda-1988-singing-lofi.wav",
+                    "synth": "None"
+                },
+                "10": {
+                    "synth": "None"
+                },
+                "11": {
+                    "synth": "None"
+                },
+                "12": {
+                    "synth": "None"
+                },
+                "13": {
+                    "synth": "None"
+                },
+                "14": {
+                    "synth": "None"
+                },
+                "15": {
+                    "synth": "None"
+                },
+                "16": {
+                    "synth": "None"
+                },
+                "2": {
+                    "sample": "/Volumes/Nvme4TO/Samples1/SAMPLESWAP-SELECTION/VOCALS/big-layered-male-vocal-one-note.wav",
+                    "synth": "None"
+                },
+                "3": {
+                    "sample": "/Volumes/Nvme4TO/Samples1/SAMPLESWAP-SELECTION/VOCALS/chant-mantra-pitchcorrected-1.wav",
+                    "synth": "None"
+                },
+                "4": {
+                    "sample": "/Volumes/Nvme4TO/Samples1/SAMPLESWAP-SELECTION/VOCALS/verby-indian-male-chant.wav",
+                    "synth": "None"
+                },
+                "5": {
+                    "synth": "None"
+                },
+                "6": {
+                    "synth": "None"
+                },
+                "7": {
+                    "synth": "None"
+                },
+                "8": {
+                    "synth": "None"
+                },
+                "9": {
+                    "synth": "None"
+                }
+            },
+            "volume": 100
+        },
+        "D2": {
+            "current": 0,
+            "name": "",
+            "off": true,
+            "pan": 64,
+            "patterns": [
+            ],
+            "sounds": {
+                "1": {
+                },
+                "10": {
+                },
+                "11": {
+                },
+                "12": {
+                },
+                "13": {
+                },
+                "14": {
+                },
+                "15": {
+                },
+                "16": {
+                },
+                "2": {
+                },
+                "3": {
+                },
+                "4": {
+                },
+                "5": {
+                },
+                "6": {
+                },
+                "7": {
+                },
+                "8": {
+                },
+                "9": {
+                }
+            },
+            "volume": 100
+        },
+        "E": {
+            "current": 0,
+            "name": "",
+            "off": false,
+            "pan": 64,
+            "patterns": [
+                {
+                    "cells": [
+                        [
+                            0,
+                            0,
+                            60,
+                            100
+                        ]
+                    ],
+                    "index": 0,
+                    "length": 32,
+                    "name": ""
+                }
+            ],
+            "sounds": {
+                "1": {
+                    "sample": "/Volumes/Nvme4TO/Samples1/SAMPLESWAP-SELECTION/FULL ENSEMBLE LOOPS/086_william-bell.aif",
+                    "synth": "None"
+                },
+                "10": {
+                    "synth": "None"
+                },
+                "11": {
+                    "synth": "None"
+                },
+                "12": {
+                    "synth": "None"
+                },
+                "13": {
+                    "synth": "None"
+                },
+                "14": {
+                    "synth": "None"
+                },
+                "15": {
+                    "synth": "None"
+                },
+                "16": {
+                    "synth": "None"
+                },
+                "2": {
+                    "params": [
+                        94,
+                        64,
+                        64,
+                        90
+                    ],
+                    "synth": "None",
+                    "volume": 94
+                },
+                "3": {
+                    "synth": "None"
+                },
+                "4": {
+                    "synth": "None"
+                },
+                "5": {
+                    "synth": "None"
+                },
+                "6": {
+                    "synth": "None"
+                },
+                "7": {
+                    "synth": "None"
+                },
+                "8": {
+                    "synth": "None"
+                },
+                "9": {
+                    "synth": "None"
+                }
+            },
+            "volume": 100
+        },
+        "E2": {
+            "current": 0,
+            "name": "",
+            "off": true,
+            "pan": 64,
+            "patterns": [
+            ],
+            "sounds": {
+                "1": {
+                },
+                "10": {
+                },
+                "11": {
+                },
+                "12": {
+                },
+                "13": {
+                },
+                "14": {
+                },
+                "15": {
+                },
+                "16": {
+                },
+                "2": {
+                },
+                "3": {
+                },
+                "4": {
+                },
+                "5": {
+                },
+                "6": {
+                },
+                "7": {
+                },
+                "8": {
+                },
+                "9": {
+                }
+            },
+            "volume": 100
+        },
+        "F": {
+            "current": 0,
+            "name": "",
+            "off": true,
+            "pan": 64,
+            "patterns": [
+            ],
+            "sounds": {
+                "1": {
+                    "synth": "None"
+                },
+                "10": {
+                    "synth": "None"
+                },
+                "11": {
+                    "synth": "None"
+                },
+                "12": {
+                    "synth": "None"
+                },
+                "13": {
+                    "synth": "None"
+                },
+                "14": {
+                    "synth": "None"
+                },
+                "15": {
+                    "synth": "None"
+                },
+                "16": {
+                    "synth": "None"
+                },
+                "2": {
+                    "synth": "None"
+                },
+                "3": {
+                    "synth": "None"
+                },
+                "4": {
+                    "synth": "None"
+                },
+                "5": {
+                    "synth": "None"
+                },
+                "6": {
+                    "synth": "None"
+                },
+                "7": {
+                    "synth": "None"
+                },
+                "8": {
+                    "synth": "None"
+                },
+                "9": {
+                    "synth": "None"
+                }
+            },
+            "volume": 100
+        },
+        "F2": {
+            "current": 0,
+            "name": "",
+            "off": true,
+            "pan": 64,
+            "patterns": [
+            ],
+            "sounds": {
+                "1": {
+                },
+                "10": {
+                },
+                "11": {
+                },
+                "12": {
+                },
+                "13": {
+                },
+                "14": {
+                },
+                "15": {
+                },
+                "16": {
+                },
+                "2": {
+                },
+                "3": {
+                },
+                "4": {
+                },
+                "5": {
+                },
+                "6": {
+                },
+                "7": {
+                },
+                "8": {
+                },
+                "9": {
+                }
+            },
+            "volume": 100
+        },
+        "G": {
+            "current": 0,
+            "name": "",
+            "off": true,
+            "pan": 64,
+            "patterns": [
+            ],
+            "sounds": {
+                "1": {
+                    "synth": "None"
+                },
+                "10": {
+                    "synth": "None"
+                },
+                "11": {
+                    "synth": "None"
+                },
+                "12": {
+                    "synth": "None"
+                },
+                "13": {
+                    "synth": "None"
+                },
+                "14": {
+                    "synth": "None"
+                },
+                "15": {
+                    "synth": "None"
+                },
+                "16": {
+                    "synth": "None"
+                },
+                "2": {
+                    "synth": "None"
+                },
+                "3": {
+                    "synth": "None"
+                },
+                "4": {
+                    "synth": "None"
+                },
+                "5": {
+                    "synth": "None"
+                },
+                "6": {
+                    "synth": "None"
+                },
+                "7": {
+                    "synth": "None"
+                },
+                "8": {
+                    "synth": "None"
+                },
+                "9": {
+                    "synth": "None"
+                }
+            },
+            "volume": 100
+        },
+        "G2": {
+            "current": 0,
+            "name": "",
+            "off": true,
+            "pan": 64,
+            "patterns": [
+            ],
+            "sounds": {
+                "1": {
+                },
+                "10": {
+                },
+                "11": {
+                },
+                "12": {
+                },
+                "13": {
+                },
+                "14": {
+                },
+                "15": {
+                },
+                "16": {
+                },
+                "2": {
+                },
+                "3": {
+                },
+                "4": {
+                },
+                "5": {
+                },
+                "6": {
+                },
+                "7": {
+                },
+                "8": {
+                },
+                "9": {
+                }
+            },
+            "volume": 100
+        },
+        "H": {
+            "current": 0,
+            "name": "",
+            "off": true,
+            "pan": 64,
+            "patterns": [
+            ],
+            "sounds": {
+                "1": {
+                    "synth": "None"
+                },
+                "10": {
+                    "synth": "None"
+                },
+                "11": {
+                    "synth": "None"
+                },
+                "12": {
+                    "synth": "None"
+                },
+                "13": {
+                    "synth": "None"
+                },
+                "14": {
+                    "synth": "None"
+                },
+                "15": {
+                    "synth": "None"
+                },
+                "16": {
+                    "synth": "None"
+                },
+                "2": {
+                    "synth": "None"
+                },
+                "3": {
+                    "synth": "None"
+                },
+                "4": {
+                    "synth": "None"
+                },
+                "5": {
+                    "synth": "None"
+                },
+                "6": {
+                    "synth": "None"
+                },
+                "7": {
+                    "synth": "None"
+                },
+                "8": {
+                    "synth": "None"
+                },
+                "9": {
+                    "synth": "None"
+                }
+            },
+            "volume": 100
+        },
+        "H2": {
+            "current": 0,
+            "name": "",
+            "off": true,
+            "pan": 64,
+            "patterns": [
+            ],
+            "sounds": {
+                "1": {
+                },
+                "10": {
+                },
+                "11": {
+                },
+                "12": {
+                },
+                "13": {
+                },
+                "14": {
+                },
+                "15": {
+                },
+                "16": {
+                },
+                "2": {
+                },
+                "3": {
+                },
+                "4": {
+                },
+                "5": {
+                },
+                "6": {
+                },
+                "7": {
+                },
+                "8": {
+                },
+                "9": {
+                }
+            },
+            "volume": 100
+        }
+    },
+    "master": 100,
+    "name": "NEW1",
+    "scenes": [
+    ],
+    "version": 1
+}
