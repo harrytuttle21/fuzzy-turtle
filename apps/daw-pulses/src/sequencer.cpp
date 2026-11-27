@@ -27,6 +27,12 @@ void Sequencer::reset()
     start.fill (0);
     off.fill (true);                                 // aucun pattern actif au depart : on active en jouant
     scenes.fill (Scene());
+    entries.clear();                                 // morceau vide
+    loopA = loopB = -1;
+    songOn = false;
+    loopOn = true;
+    songEnded = false;
+    songPos = songRows = songStart = 0;
     sceneNow = -1;
 }
 
@@ -43,6 +49,25 @@ std::vector<Hit> Sequencer::hitsForRow (int row, double rowMs)
             if (n >= 0)
                 out.push_back ({ grp, t, n, c.velocity, gate, delay });
     };
+    const bool songPlays = songOn && ! entries.empty();
+    if (songPlays)                                   // morceau : debut d'une entree ?
+    {
+        if (songRows == 0 || songPos >= (int) entries.size())
+        {
+            if (songPos >= (int) entries.size())
+            {
+                if (! loopOn)
+                {
+                    songEnded = true;                // fin : l'horloge s'arrete
+                    songPos = songStart;
+                    songRows = 0;
+                    return out;
+                }
+                songPos = 0;
+            }
+            startEntry (row);
+        }
+    }
     for (int grp = 0; grp < session::kGroups; ++grp)
     {
         const size_t gi = (size_t) grp;
@@ -74,7 +99,175 @@ std::vector<Hit> Sequencer::hitsForRow (int row, double rowMs)
                 add (grp, t, e, 1.0 + e.offset / double (kTiming));
         }
     }
+    if (songPlays && ++songRows >= songLen)          // entree finie : la suivante
+    {
+        ++songPos;
+        songRows = 0;
+        if (loopOn && loopA >= 0 && loopB < (int) entries.size() && songPos > loopB)
+            songPos = loopA;                         // Loop sur la zone choisie
+    }
     return out;
+}
+
+// ------------------------------------------------------------ morceau (Song)
+
+void Sequencer::startEntry (int row)
+{
+    const SongEntry& e = entries[(size_t) songPos];
+    if (e.scene >= 0 && e.scene < kPatternSlots && scenes[(size_t) e.scene].used)
+    {
+        const Scene& s = scenes[(size_t) e.scene];
+        for (int grp = 0; grp < session::kGroups; ++grp)
+        {
+            const size_t gi = (size_t) grp;
+            const int v = s.pattern[gi];
+            if (v == kFree)                          // libre : il garde son pattern
+                continue;
+            queue[gi] = kNoQueue;
+            if (v == kOff)
+                off[gi] = true;
+            else
+            {
+                if (! store[gi][(size_t) v])
+                    store[gi][(size_t) v] = std::make_unique<Pattern>();
+                current[gi] = v;
+                off[gi] = false;
+            }
+            start[gi] = row;                         // tous ensemble, depuis le debut
+        }
+        sceneNow = e.scene;
+    }
+    songLen = std::max (1, entryRowsLocked (e));
+    songRows = 0;
+}
+
+int Sequencer::sceneRowsLocked (int scene) const
+{
+    if (scene < 0 || scene >= kPatternSlots || ! scenes[(size_t) scene].used)
+        return kRowsPerBar;
+    int rows = 0;
+    for (int grp = 0; grp < session::kGroups; ++grp)
+    {
+        const int v = scenes[(size_t) scene].pattern[(size_t) grp];
+        if (v >= 0 && store[(size_t) grp][(size_t) v])
+            rows = std::max (rows, store[(size_t) grp][(size_t) v]->length);
+    }
+    return rows > 0 ? rows : kRowsPerBar;
+}
+
+int Sequencer::entryRowsLocked (const SongEntry& e) const
+{
+    if (e.bars > 0)
+        return (int) std::lround (e.bars * kRowsPerBar);
+    return std::max (1, (int) std::lround (sceneRowsLocked (e.scene) * e.repeats));
+}
+
+int Sequencer::sceneRows (int scene) const
+{
+    std::lock_guard<std::mutex> g (lock);
+    return sceneRowsLocked (scene);
+}
+
+int Sequencer::entryRows (const SongEntry& e) const
+{
+    std::lock_guard<std::mutex> g (lock);
+    return entryRowsLocked (e);
+}
+
+std::vector<SongEntry> Sequencer::song() const
+{
+    std::lock_guard<std::mutex> g (lock);
+    return entries;
+}
+
+void Sequencer::setSong (const std::vector<SongEntry>& list)
+{
+    std::lock_guard<std::mutex> g (lock);
+    entries = list;
+    if ((int) entries.size() > kSongMax)
+        entries.resize ((size_t) kSongMax);
+    songStart = std::clamp (songStart, 0, std::max (0, (int) entries.size() - 1));
+    if (loopB >= (int) entries.size())               // zone de boucle hors du morceau : effacee
+        loopA = loopB = -1;
+    if (songPos > (int) entries.size())
+        songPos = (int) entries.size();
+}
+
+bool Sequencer::songMode() const
+{
+    std::lock_guard<std::mutex> g (lock);
+    return songOn;
+}
+
+void Sequencer::setSongMode (bool on)
+{
+    std::lock_guard<std::mutex> g (lock);
+    if (on && ! songOn)
+    {
+        songPos = songStart;                         // le morceau reprend a l'entree choisie
+        songRows = 0;
+    }
+    songOn = on;
+}
+
+bool Sequencer::songLoop() const
+{
+    std::lock_guard<std::mutex> g (lock);
+    return loopOn;
+}
+
+void Sequencer::setSongLoop (bool on)
+{
+    std::lock_guard<std::mutex> g (lock);
+    loopOn = on;
+}
+
+void Sequencer::songStartFrom (int entry)
+{
+    std::lock_guard<std::mutex> g (lock);
+    songStart = std::clamp (entry, 0, std::max (0, (int) entries.size() - 1));
+    songPos = songStart;
+    songRows = 0;                                    // en lecture : a la ligne suivante
+}
+
+int Sequencer::songFrom() const
+{
+    std::lock_guard<std::mutex> g (lock);
+    return songStart;
+}
+
+void Sequencer::songPosition (int& entry, int& rowInEntry) const
+{
+    std::lock_guard<std::mutex> g (lock);
+    entry = songPos;
+    rowInEntry = songRows;
+}
+
+void Sequencer::setSongLoopRange (int from, int to)
+{
+    std::lock_guard<std::mutex> g (lock);
+    if (from < 0 || to < from)
+        loopA = loopB = -1;
+    else
+    {
+        loopA = from;
+        loopB = to;
+    }
+}
+
+void Sequencer::songLoopRange (int& from, int& to) const
+{
+    std::lock_guard<std::mutex> g (lock);
+    from = loopA;
+    to = loopB;
+}
+
+bool Sequencer::takeSongEnd()
+{
+    std::lock_guard<std::mutex> g (lock);
+    const bool was = songEnded;
+    songEnded = false;
+    return was;
 }
 
 Sequencer::Written Sequencer::record (int group, int track, int note, int velocity, double rowPos, bool merge)
@@ -292,6 +485,8 @@ int Sequencer::localRow (int group, int row) const
 void Sequencer::resetPlayback()
 {
     std::lock_guard<std::mutex> g (lock);
+    songPos = songStart;                             // le morceau repart de l'entree choisie
+    songRows = 0;
     for (int grp = 0; grp < session::kGroups; ++grp)
     {
         const size_t gi = (size_t) grp;

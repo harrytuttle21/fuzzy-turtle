@@ -3,6 +3,8 @@
 
 #include <QMenu>
 #include <QMimeData>
+#include <QDrag>
+#include <QPixmap>
 #include <QDragEnterEvent>
 #include <QDropEvent>
 #include <QMouseEvent>
@@ -395,19 +397,13 @@ void SceneView::mousePressEvent (QMouseEvent* e)
         }
         if (sceneNameCell (k).contains (pos))
         {
-            if (right)                               // menu de la scene : Edit seulement
-                editMode ? emit sceneMenu (i, at) : emit message (tr ("Turn Edit on to change scenes"));
-            else if (playMode && (sc.used || editMode))
-                emit sceneClicked (i);               // lancer (vide + Edit : nouvelle scene)
-            else if (editMode)
+            if (! right && sc.used)                  // clic : au relachement (glisser = vers la vue Song)
             {
-                editScene = i;                       // Edit seul : choisir la scene sans la lancer
-                if (! sc.used)
-                    emit sceneClicked (i);           // vide : nouvelle scene
+                pendingName = i;
+                pendingPos = pos;
+                return;
             }
-            else if (! editMode && ! playMode)
-                emit message (tr ("Scenes protected: turn Edit or Play on"));
-            update();
+            nameClick (i, right, at);
             return;
         }
         if (! sc.used)
@@ -585,4 +581,56 @@ void SceneView::dropEvent (QDropEvent* e)
     e->acceptProposedAction();
     emit message (QString ("S%1 %2 = %3").arg (sc + 1).arg (session::groupName (g)).arg (patternText (g, i)));
     emit changed();
+}
+
+void SceneView::nameClick (int i, bool right, const QPoint& at)
+{
+    // Clic sur le nom d'une scene (selon les modes Edit / Play)
+    const seq::Scene sc = sequencer.scene (i);
+    if (right)                                       // menu de la scene : Edit seulement
+        editMode ? emit sceneMenu (i, at) : emit message (tr ("Turn Edit on to change scenes"));
+    else if (playMode && (sc.used || editMode))
+        emit sceneClicked (i);                       // lancer (vide + Edit : nouvelle scene)
+    else if (editMode)
+    {
+        editScene = i;                               // Edit seul : choisir la scene sans la lancer
+        if (! sc.used)
+            emit sceneClicked (i);                   // vide : nouvelle scene
+    }
+    else if (! editMode && ! playMode)
+        emit message (tr ("Scenes protected: turn Edit or Play on"));
+    update();
+}
+
+void SceneView::mouseMoveEvent (QMouseEvent* e)
+{
+    // Nom d'une scene glisse : vers la vue Song (ajouter au morceau)
+    if (pendingName < 0 || ! (e->buttons() & Qt::LeftButton) || (e->position() - pendingPos).manhattanLength() < 8)
+        return;
+    const int i = pendingName;
+    pendingName = -1;
+    auto* mime = new QMimeData;
+    mime->setData ("application/x-fuzzy-scene", QByteArray::number (i));
+    auto* drag = new QDrag (this);
+    drag->setMimeData (mime);
+    QPixmap pix (110, 26);
+    pix.fill (QColor (252, 140, 40));
+    {
+        QPainter q (&pix);
+        q.setPen (QColor (15, 15, 18));
+        q.drawText (pix.rect(), Qt::AlignCenter, QString ("S%1 %2").arg (i + 1).arg (QString::fromStdString (sequencer.scene (i).name)));
+    }
+    drag->setPixmap (pix);
+    drag->setHotSpot (QPoint (55, 13));
+    drag->exec (Qt::CopyAction);
+}
+
+void SceneView::mouseReleaseEvent (QMouseEvent* e)
+{
+    if (pendingName >= 0)                            // simple clic sur le nom
+    {
+        const int i = pendingName;
+        pendingName = -1;
+        nameClick (i, false, e->globalPosition().toPoint());
+    }
 }

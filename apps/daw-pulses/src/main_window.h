@@ -267,6 +267,24 @@ private:
     class SceneView* sceneView = nullptr;            // onglet Scenes
     QDockWidget* sceneDock = nullptr;
     QWidget* buildScenes();
+    class SongView* songView = nullptr;              // onglet Song (morceau)
+    QDockWidget* songDock = nullptr;
+    QWidget* buildSong();
+    QPushButton* songButton = nullptr;               // SONG (vue Song) et son reflet dans le Transport
+    QPushButton* songTransportButton = nullptr;
+    QPushButton* loopButton = nullptr;
+    void songEdit (const QString& label, const std::function<void (std::vector<seq::SongEntry>&)>& change);
+    void setSongMode (bool on);
+    void addSongScene (int scene, int before);      // -1 : apres l'entree choisie
+    void songSceneMenu (const QPoint& at, const std::function<void (int)>& picked);   // liste des scenes
+    void songCellMenu (int entry, int group, const QPoint& at);   // case groupe x bloc : pattern de la scene
+    int freeScene() const;                           // premiere case de scene libre (-1 : aucune)
+    int newScene (bool fromPlaying);                 // nouvelle scene vide (ou ce qui joue), -1 si plein
+    std::atomic<bool> arrangerMode { false };        // Maschine : vue Song montree (pads = ajouter la scene)
+    std::array<int, 4> songKnobAcc {};               // encodeurs 1-4 en mode ARRANGER (pas a pas)
+    bool songHalf = false;                           // ARRANGER : repetitions / longueur par demi
+    bool arrangerButton (const QString& name);       // boutons de la Maschine quand la vue Song est montree
+    void arrangerKnob (int index, int delta);
     void patternsChanged();                          // pattern / scene change : les vues suivent
     void exportGroup();                              // File > Export Group (.fzgroup)
     void importGroup();                              // File > Import Group : remplace le groupe choisi
@@ -332,6 +350,7 @@ private:
         std::vector<GroupSave> groups;               // groupes entiers (pattern + volume)
         bool hasScenes = false;                      // les 64 scenes (gestionnaire de patterns)
         std::vector<seq::Scene> scenes;
+        std::vector<seq::SongEntry> song;            // le morceau (avec les scenes)
         QString label;
     };
     void rememberPatterns (int group, const QString& label);   // tous les patterns du groupe + les scenes

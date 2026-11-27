@@ -61,6 +61,18 @@ struct GroupPatterns
     bool off = true;
 };
 
+// Morceau (vue Song, mode ARRANGER du pilote) : des scenes jouees dans l'ordre.
+// Duree : la scene (son plus long pattern) x repeats, ou `bars` mesures si > 0 (16 lignes / mesure).
+struct SongEntry
+{
+    int scene = 0;
+    double repeats = 1;
+    double bars = 0;
+    bool operator== (const SongEntry& o) const { return scene == o.scene && repeats == o.repeats && bars == o.bars; }
+};
+constexpr int kSongMax = 64;                          // entrees au plus (comme le pilote)
+constexpr int kRowsPerBar = 16;
+
 // Une note a jouer (lue par l'horloge)
 struct Hit { int group, track, note, velocity, gateMs; double delayRows; };
 
@@ -116,10 +128,29 @@ public:
     int currentScene() const;
     void setCurrentScene (int index);                    // -1 = aucune
 
+    // --- Morceau (Song)
+    std::vector<SongEntry> song() const;
+    void setSong (const std::vector<SongEntry>& entries);
+    bool songMode() const;                               // la lecture suit le morceau
+    void setSongMode (bool on);
+    bool songLoop() const;
+    void setSongLoop (bool on);
+    int entryRows (const SongEntry& e) const;            // duree d'une entree, en lignes
+    int sceneRows (int scene) const;                     // le plus long pattern de la scene (16 sinon)
+    void songStartFrom (int entry);                      // la lecture part de cette entree (tout de suite si en lecture)
+    int songFrom() const;
+    void songPosition (int& entry, int& rowInEntry) const;   // ou en est la lecture
+    bool takeSongEnd();                                  // fin du morceau (sans boucle) : l'horloge s'arrete
+    void setSongLoopRange (int from, int to);            // Loop sur les blocs from..to (-1 : tout le morceau)
+    void songLoopRange (int& from, int& to) const;
+
 private:
     Pattern& cur (int group) { return *store[(size_t) group][(size_t) current[(size_t) group]]; }
     const Pattern& cur (int group) const { return *store[(size_t) group][(size_t) current[(size_t) group]]; }
     void choose (int group, int index, bool playing);    // sans verrou
+    int sceneRowsLocked (int scene) const;
+    int entryRowsLocked (const SongEntry& e) const;
+    void startEntry (int row);                           // debut d'une entree : tous les groupes ensemble
 
     mutable std::mutex lock;
     std::array<std::array<std::unique_ptr<Pattern>, kPatternSlots>, session::kGroups> store;
@@ -130,6 +161,10 @@ private:
     std::array<bool, session::kGroups> off {};
     std::array<Scene, kPatternSlots> scenes;
     int sceneNow = -1;
+    std::vector<SongEntry> entries;
+    bool songOn = false, loopOn = true, songEnded = false;
+    int songPos = 0, songRows = 0, songLen = 16, songStart = 0;
+    int loopA = -1, loopB = -1;                          // zone de boucle (blocs), -1 : aucune
 };
 
 } // namespace seq

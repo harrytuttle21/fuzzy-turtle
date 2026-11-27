@@ -192,6 +192,29 @@ QJsonObject build (QJsonObject d, const QString& name, const seq::Sequencer& seq
         scenes.append (so);
     }
     d["scenes"] = scenes;
+    // Morceau : meme format que le pilote (arrangement, arr_loop, song_mode)
+    QJsonArray arr;
+    for (const seq::SongEntry& e : sequencer.song())
+    {
+        QJsonObject eo { { "scene", e.scene }, { "repeats", e.repeats } };
+        if (e.bars > 0)
+            eo["bars"] = e.bars;
+        arr.append (eo);
+    }
+    // (ecrits seulement s'ils servent : un ancien projet n'est pas « modifie » a l'ouverture)
+    if (! arr.isEmpty() || d.contains ("arrangement"))
+        d["arrangement"] = arr;
+    if (! sequencer.songLoop() || d.contains ("arr_loop"))
+        d["arr_loop"] = sequencer.songLoop();
+    if (sequencer.songMode() || d.contains ("song_mode"))
+        d["song_mode"] = sequencer.songMode();
+    int la = -1, lb = -1;                             // zone de boucle (l'app seulement ; le pilote l'ignore)
+    sequencer.songLoopRange (la, lb);
+    if (la >= 0 || d.contains ("song_loop_from"))
+    {
+        d["song_loop_from"] = la;
+        d["song_loop_to"] = lb;
+    }
     return d;
 }
 
@@ -313,6 +336,24 @@ void Project::toApp (seq::Sequencer& sequencer, session::State& state, int& bpm)
         }
         sequencer.setScene (i, sc);
     }
+    // Morceau
+    std::vector<seq::SongEntry> song;
+    for (const auto& ev : data["arrangement"].toArray())
+    {
+        const QJsonObject eo = ev.toObject();
+        seq::SongEntry e;
+        e.scene = eo["scene"].toInt (-1);
+        if (e.scene < 0 || e.scene >= seq::kPatternSlots)
+            continue;
+        e.repeats = std::clamp (eo["repeats"].toDouble (1), 0.5, 16.0);
+        e.bars = std::max (0.0, eo["bars"].toDouble (0));
+        song.push_back (e);
+    }
+    sequencer.setSong (song);
+    sequencer.songStartFrom (0);
+    sequencer.setSongLoop (data["arr_loop"].toBool (true));
+    sequencer.setSongMode (data["song_mode"].toBool (false));
+    sequencer.setSongLoopRange (data["song_loop_from"].toInt (-1), data["song_loop_to"].toInt (-1));
 }
 
 void Project::fromApp (const seq::Sequencer& sequencer, const session::State& state, int bpm)

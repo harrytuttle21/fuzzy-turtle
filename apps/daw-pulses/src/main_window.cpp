@@ -10,6 +10,7 @@
 #include "pattern_bar.h"
 #include "scene_view.h"
 #include "palette_view.h"
+#include "song_view.h"
 #include "loop_dialog.h"
 #include "piano_roll.h"
 #include "generate_dialog.h"
@@ -69,6 +70,7 @@
 #include <QAbstractButton>
 #include <QMimeData>
 #include <QDialog>
+#include <QScrollArea>
 #include <QTableWidget>
 #include <QListWidget>
 #include <QDialogButtonBox>
@@ -169,6 +171,8 @@ MainWindow::MainWindow (const Options& options, QWidget* parent) : QMainWindow (
     tabifyDockWidget (trackerDock, mixerDock);
     sceneDock = makeDock (tr ("Scenes"), "scenesDock", buildScenes());
     tabifyDockWidget (mixerDock, sceneDock);        // onglet Scenes, apres le Mixer
+    songDock = makeDock (tr ("Song"), "songDock", buildSong());
+    tabifyDockWidget (sceneDock, songDock);         // onglet Song, apres Scenes
     groupsDock = makeDock (tr ("Groups"), "groupsDock", buildGroupBlock());
     keysTabDock = makeDock (tr ("Keyboard"), "keyboardTabDock", buildKeyboardTab());
     soundDock = makeDock (tr ("Sound"), "soundDock", buildSoundTab());
@@ -683,6 +687,7 @@ MainWindow::MainWindow (const Options& options, QWidget* parent) : QMainWindow (
             l.setButton ("scene", sceneHeld || shown (sceneView) || sequencer.currentScene() >= 0 ? fc::Shade::Bright
                                   : anyScene ? fc::Shade::Dim : fc::Shade::Off);
         }
+        l.setButton ("arranger", shown (songView) || sequencer.songMode() ? fc::Shade::Bright : fc::Shade::Dim);
         l.setButton ("events", shown (pianoRoll) ? fc::Shade::Bright : fc::Shade::Dim);
         l.setButton ("mixer", shown (mixer) ? fc::Shade::Bright : fc::Shade::Dim);
         l.setButton ("keyboard", padKeyboard && ! padChords ? fc::Shade::Bright : fc::Shade::Dim);
@@ -778,6 +783,40 @@ MainWindow::MainWindow (const Options& options, QWidget* parent) : QMainWindow (
                     const std::string t = name.left (13).toStdString();
                     right.text (x + (112 - fc::Canvas::textWidth (t)) / 2, y + 26, t, ink);
                 }
+            }
+            return;
+        }
+        // Ecran droit, vue Song montree (ARRANGER) : le morceau, comme le pilote
+        if (arrangerMode)
+        {
+            const auto song = sequencer.song();
+            int total = 0;
+            for (const auto& e : song)
+                total += sequencer.entryRows (e);
+            right.fill (fc::kBlack);
+            right.fillRect (0, 0, 480, 26, rgb (acc));
+            right.text (8, 5, QString ("ARRANGER  %1 bars").arg (total / double (seq::kRowsPerBar)).toStdString(), fc::kBlack);
+            right.text (8, 34, ((sequencer.songMode() ? QString ("SONG ON   ") : QString ("SONG off  "))
+                                   + (sequencer.songLoop() ? "LOOP" : "no loop") + (songHalf ? "   HALF" : "")).toStdString(), fc::kWhite);
+            if (song.empty())
+                right.text (8, 70, "Empty song: pad = add a scene", fc::kWhite);
+            int playEntry = -1, playRow = 0;
+            if (transport->playing() && sequencer.songMode())
+                sequencer.songPosition (playEntry, playRow);
+            const int sel = std::clamp (songView->selected, 0, std::max (0, (int) song.size() - 1));
+            const int first = std::clamp (sel - 3, 0, std::max (0, (int) song.size() - 8));
+            for (int k = 0; k < 8 && first + k < (int) song.size(); ++k)
+            {
+                const int i = first + k;
+                const auto& e = song[(size_t) i];
+                const int y = 56 + k * 26;
+                if (i == sel)
+                    right.fillRect (0, y - 3, 480, 24, fc::Rgb { 60, 60, 72 });
+                const QString name = QString::fromStdString (sequencer.scene (e.scene).name);
+                const QString len = e.bars > 0 ? QString ("%1 bars").arg (e.bars) : QString ("x%1").arg (e.repeats);
+                right.text (8, y, QString ("%1%2  S%3 %4   %5").arg (i == playEntry ? "> " : "  ").arg (i + 1, 2)
+                                      .arg (e.scene + 1).arg (name).arg (len).toStdString(),
+                            i == playEntry ? rgb (acc) : fc::kWhite);
             }
             return;
         }
@@ -1197,7 +1236,8 @@ void MainWindow::showLeftTab (int index)
 {
     // 0 = Mixer, 1 = Pattern : le panneau s'affiche et passe devant
     QDockWidget* dock = index == 0 ? mixerDock : index == 2 ? rollDock : index == 3 ? keysTabDock
-                      : index == 4 ? soundDock : index == 5 ? trackerDock : index == 6 ? sceneDock : patternDock;
+                      : index == 4 ? soundDock : index == 5 ? trackerDock : index == 6 ? sceneDock
+                      : index == 7 ? songDock : patternDock;
     dock->show();
     dock->raise();
     QTimer::singleShot (0, this, [this] { refreshMaschine(); });
@@ -1226,6 +1266,11 @@ void MainWindow::placeTracker()
     {
         tabifyDockWidget (mixerDock, sceneDock);
         sceneDock->show();
+    }
+    if (! songDock->isVisible() && ! songDock->isFloating())     // disposition d'avant l'onglet Song
+    {
+        tabifyDockWidget (sceneDock, songDock);
+        songDock->show();
     }
     for (auto* bar : findChildren<QTabBar*>())
     {
@@ -1350,6 +1395,14 @@ QWidget* MainWindow::buildTransportBar()
     });
     top->addWidget (metroButton);
     top->addWidget (metroVolume);
+    songTransportButton = new QPushButton (tr ("SONG"));   // la lecture suit le morceau (vue Song)
+    songTransportButton->setCheckable (true);
+    songTransportButton->setObjectName ("keys");
+    songTransportButton->setFocusPolicy (Qt::NoFocus);
+    songTransportButton->setToolTip (tr ("Song mode: PLAY follows the song (Song view)"));
+    songTransportButton->setChecked (sequencer.songMode());
+    connect (songTransportButton, &QPushButton::clicked, this, [this] (bool on) { setSongMode (on); });
+    top->addWidget (songTransportButton);
     top->addStretch();
     rows->addLayout (top);
     rows->addLayout (row);
@@ -1528,6 +1581,14 @@ void MainWindow::playPad (int pad, int velocity, bool down)
                     transferSound (dupGroup, dupPad, g, pad, Transfer::Copy);
                     dupPad = 0;
                 }
+            }, Qt::QueuedConnection);
+            return;
+        }
+        if (arrangerMode && ! muteHeld && ! soloHeld)   // vue Song (ARRANGER) : pad = ajouter la scene
+        {
+            QMetaObject::invokeMethod (this, [this, pad]
+            {
+                addSongScene (patternBar->sceneBank * seq::kSlotsPerBank + pad - 1, -1);
             }, Qt::QueuedConnection);
             return;
         }
@@ -1756,6 +1817,7 @@ void MainWindow::refreshStats()
 
 void MainWindow::refreshMaschine()
 {
+    arrangerMode = songView && ! songView->visibleRegion().isEmpty();   // la vue Song est devant
     if (! maschine)
         return;
     maschine->updateLights();
@@ -1793,6 +1855,14 @@ void MainWindow::onMaschineButton (const QString& name, bool down)
         toast ("ALL SOUNDS OFF");
         return;
     }
+    if (name == "arranger")                          // ARRANGER : vue Song (2e appui : retour)
+    {
+        if (down)
+            toggleView (7, "SONG");
+        return;
+    }
+    if (down && arrangerMode && arrangerButton (name))   // vue Song : ERASE, DUPLICATE, ecrans 3/5/6/7...
+        return;
     if (name == "mute" || name == "solo")           // tenus : + groupe ou + pad
     {
         (name == "mute" ? muteHeld : soloHeld) = down;
@@ -2599,6 +2669,7 @@ MainWindow::UndoStep MainWindow::capture (const UndoStep& like) const
         now.hasScenes = true;
         for (int i = 0; i < seq::kPatternSlots; ++i)
             now.scenes.push_back (sequencer.scene (i));
+        now.song = sequencer.song();
     }
     return now;
 }
@@ -2613,6 +2684,7 @@ void MainWindow::rememberPatterns (int g, const QString& label)
     step.hasScenes = true;
     for (int i = 0; i < seq::kPatternSlots; ++i)
         step.scenes.push_back (sequencer.scene (i));
+    step.song = sequencer.song();
     std::lock_guard<std::mutex> lk (undoLock);
     undoStack.push_back (std::move (step));
     if (undoStack.size() > 100)
@@ -2677,8 +2749,13 @@ void MainWindow::undo (bool redoIt)
         state.groupLabel[(size_t) gs.group] = gs.label;
     }
     if (step.hasScenes)
+    {
         for (int i = 0; i < (int) step.scenes.size(); ++i)
             sequencer.setScene (i, step.scenes[(size_t) i]);
+        sequencer.setSong (step.song);
+        if (songView)
+            songView->update();
+    }
     for (const auto& [i, s] : step.sounds)
         putSound (i / 16, i % 16 + 1, s);
     if (! step.sounds.empty() || ! step.groups.empty())
@@ -3378,7 +3455,7 @@ void MainWindow::cyclePlayMode()
 int MainWindow::currentView() const
 {
     auto shown = [] (QWidget* w) { return w && ! w->visibleRegion().isEmpty(); };
-    return shown (sceneView) ? 6 : shown (tracker) ? 5 : shown (pianoRoll) || shown (stepView) || shown (rollTracker) ? 2
+    return shown (songView) ? 7 : shown (sceneView) ? 6 : shown (tracker) ? 5 : shown (pianoRoll) || shown (stepView) || shown (rollTracker) ? 2
          : shown (mixer) ? 0 : shown (patternView) ? 1 : shown (keyboardView) ? 3 : 1;
 }
 
@@ -3391,7 +3468,7 @@ void MainWindow::toggleView (int index, const QString& name)
         const int back = viewBefore;
         viewBefore = -1;
         showLeftTab (back);
-        toast (QStringList { "MIXER", "PATTERN", "PIANO ROLL", "KEYBOARD", "SOUND", "TRACKER", "SCENES" }.value (back));
+        toast (QStringList { "MIXER", "PATTERN", "PIANO ROLL", "KEYBOARD", "SOUND", "TRACKER", "SCENES", "SONG" }.value (back));
         return;
     }
     if (now != index)
@@ -4084,6 +4161,11 @@ void MainWindow::soundKnob (int index, int delta)
     // 5 ligne du curseur, 6 note de la case, 7 velocite de la case, 8 longueur du pattern
     // (Shift + 5 : gamme, Shift + 6 : tonique, pour le clavier)
     index -= 1;                                      // la bibliotheque numerote les encodeurs de 1 a 8
+    if (arrangerMode && index >= 0 && index < 4)     // vue Song : entree, scene, repetitions, longueur
+    {
+        arrangerKnob (index, delta);
+        return;
+    }
     const int g = state.group, snd = state.sound;
     const size_t i = (size_t) state.index (g, snd);
     if (index < 0 || index > 7)
@@ -6148,4 +6230,587 @@ void MainWindow::chordDropMenu (int fp, int tp, const QPoint& at)
     music::saveUserChords();
     toast (QString ("CHORD %1 %2 %3").arg (fp).arg (picked == swap ? "<>" : ">").arg (tp));
     refreshAll();
+}
+
+// ------------------------------------------------------------ vue Song (morceau)
+
+QWidget* MainWindow::buildSong()
+{
+    // Le morceau : des scenes jouees dans l'ordre (comme le mode ARRANGER du pilote)
+    auto* panel = new QWidget;
+    auto* col = new QVBoxLayout (panel);
+    col->setContentsMargins (6, 4, 6, 4);
+    auto* head = new QHBoxLayout;
+    auto* title = new QLabel (tr ("SONG"));
+    title->setObjectName ("section");
+    head->addWidget (title);
+    auto button = [&] (const QString& text, const QString& tip, bool checkable = false)
+    {
+        auto* b = new QPushButton (text);
+        b->setFocusPolicy (Qt::NoFocus);
+        b->setToolTip (tip);
+        b->setCheckable (checkable);
+        if (checkable)
+            b->setObjectName ("keys");
+        head->addWidget (b);
+        return b;
+    };
+    songButton = button (tr ("SONG"), tr ("Song mode: PLAY follows the song (off = patterns and scenes by hand)"), true);
+    loopButton = button (tr ("Loop"), tr ("At the end of the song, start again (off = stop)"), true);
+    auto* from = button (tr ("▶ From here"), tr ("Play the song from the chosen block"));
+    auto* add = button (tr ("+ Scene"), tr ("Add a scene after the chosen block (or drag a scene name from the Scenes view)"));
+    auto* dup = button (tr ("Duplicate"), tr ("Copy the chosen block just after it"));
+    auto* del = button (tr ("Delete"), tr ("Remove the chosen block from the song"));
+    auto* stepBox = new QComboBox;
+    stepBox->addItems ({ tr ("Step 1 bar"), tr ("Step 1/2"), tr ("Step 1/3"), tr ("Step 1/4") });
+    stepBox->setToolTip (tr ("Length step when dragging the right edge of a block (1/3 bar is rounded to 5 or 6 lines)"));
+    stepBox->setFocusPolicy (Qt::NoFocus);
+    head->addWidget (stepBox);
+    auto* followBtn = button (tr ("Follow"), tr ("The view follows the playhead"), true);
+    head->addStretch();
+    auto* zoomOut = button (tr ("−"), tr ("Zoom out (Cmd + wheel)"));
+    auto* zoomIn = button (tr ("+"), tr ("Zoom in (Cmd + wheel)"));
+    col->addLayout (head);
+    songView = new SongView (sequencer, state);
+    songView->isPlaying = [this] { return transport->playing(); };
+    auto* songScroll = new QScrollArea;              // les lignes des groupes defilent en hauteur
+    songScroll->setWidget (songView);
+    songScroll->setWidgetResizable (true);
+    songScroll->setHorizontalScrollBarPolicy (Qt::ScrollBarAlwaysOff);   // en largeur : la molette
+    songScroll->setFrameShape (QFrame::NoFrame);
+    col->addWidget (songScroll, 1);
+    auto* hint = new QLabel (tr ("click a group cell = its pattern in the scene \u00B7 drag on the ruler = loop zone \u00B7 drag a block = move · drag its right edge = length · double-click = scene · "
+                                 "right-click = repeats, length, duplicate, delete · click the ruler = play from there · 1 bar = 16 lines"));
+    hint->setObjectName ("hint");
+    hint->setWordWrap (true);
+    col->addWidget (hint);
+
+    songButton->setChecked (sequencer.songMode());
+    loopButton->setChecked (sequencer.songLoop());
+    connect (songButton, &QPushButton::clicked, this, [this] (bool on) { setSongMode (on); });
+    connect (loopButton, &QPushButton::clicked, this, [this] (bool on)
+    {
+        sequencer.setSongLoop (on);
+        toast (on ? "SONG LOOP ON" : "SONG LOOP OFF");
+    });
+    connect (stepBox, &QComboBox::currentIndexChanged, this, [this] (int i)
+    {
+        songView->step = i == 0 ? 1.0 : i == 1 ? 0.5 : i == 2 ? 1.0 / 3.0 : 0.25;
+    });
+    followBtn->setChecked (QSettings().value ("song/follow", false).toBool());
+    songView->follow = followBtn->isChecked();
+    connect (followBtn, &QPushButton::toggled, this, [this] (bool on)
+    {
+        songView->follow = on;
+        QSettings().setValue ("song/follow", on);
+    });
+    connect (songView, &SongView::loopRegion, this, [this] (int a, int b)
+    {
+        sequencer.setSongLoopRange (a, b);
+        if (a >= 0)
+            toast (QString ("LOOP BLOCKS %1 - %2%3").arg (a + 1).arg (b + 1).arg (sequencer.songLoop() ? "" : " (turn Loop on)"));
+        songView->update();
+    });
+    connect (songView, &SongView::cellClicked, this, &MainWindow::songCellMenu);
+    connect (zoomIn, &QPushButton::clicked, this, [this] { songView->zoom (1); });
+    connect (zoomOut, &QPushButton::clicked, this, [this] { songView->zoom (-1); });
+    connect (from, &QPushButton::clicked, this, [this]
+    {
+        if (sequencer.song().empty())
+            return;
+        sequencer.songStartFrom (songView->selected);
+        setSongMode (true);
+        if (! transport->playing())
+            transport->play();
+    });
+    connect (add, &QPushButton::clicked, this, [this, add]
+    {
+        songSceneMenu (add->mapToGlobal (QPoint (0, add->height())), [this] (int scene) { addSongScene (scene, -1); });
+    });
+    connect (dup, &QPushButton::clicked, this, [this]
+    {
+        const int i = songView->selected;
+        songEdit (tr ("Duplicate block"), [i] (std::vector<seq::SongEntry>& s)
+        {
+            if (i >= 0 && i < (int) s.size() && (int) s.size() < seq::kSongMax)
+                s.insert (s.begin() + i + 1, s[(size_t) i]);
+        });
+        songView->selected = i + 1;
+    });
+    connect (del, &QPushButton::clicked, this, [this]
+    {
+        const int i = songView->selected;
+        songEdit (tr ("Delete block"), [i] (std::vector<seq::SongEntry>& s)
+        {
+            if (i >= 0 && i < (int) s.size())
+                s.erase (s.begin() + i);
+        });
+        songView->selected = std::max (0, i - 1);
+    });
+    connect (songView, &SongView::startFrom, this, [this] (int i)
+    {
+        songView->selected = i;
+        sequencer.songStartFrom (i);                 // en lecture : tout de suite
+        toast (QString ("SONG FROM BLOCK %1").arg (i + 1));
+    });
+    connect (songView, &SongView::moveEntry, this, [this] (int from, int to)
+    {
+        songEdit (tr ("Move block"), [from, to] (std::vector<seq::SongEntry>& s)
+        {
+            const seq::SongEntry e = s[(size_t) from];
+            s.erase (s.begin() + from);
+            s.insert (s.begin() + std::clamp (to, 0, (int) s.size()), e);
+        });
+        songView->selected = to;
+    });
+    connect (songView, &SongView::lengthChanged, this, [this] (int i, double bars)
+    {
+        songEdit (tr ("Block length"), [i, bars] (std::vector<seq::SongEntry>& s)
+        {
+            if (i >= 0 && i < (int) s.size())
+                s[(size_t) i].bars = bars;           // longueur fixe, en mesures
+        });
+        toast (QString ("BLOCK %1: %2 BARS").arg (i + 1).arg (bars));
+    });
+    connect (songView, &SongView::insertScene, this, [this] (int scene, int before) { addSongScene (scene, before); });
+    connect (songView, &SongView::chooseScene, this, [this] (int i, const QPoint& at)
+    {
+        songSceneMenu (at, [this, i] (int scene)
+        {
+            songEdit (tr ("Block scene"), [i, scene] (std::vector<seq::SongEntry>& s)
+            {
+                if (i >= 0 && i < (int) s.size())
+                    s[(size_t) i].scene = scene;
+            });
+        });
+    });
+    connect (songView, &SongView::emptyMenu, this, [this] (const QPoint& at)
+    {
+        songSceneMenu (at, [this] (int scene) { addSongScene (scene, (int) sequencer.song().size()); });
+    });
+    connect (songView, &SongView::entryMenu, this, [this] (int i, const QPoint& at)
+    {
+        const auto song = sequencer.song();
+        if (i < 0 || i >= (int) song.size())
+            return;
+        const seq::SongEntry e = song[(size_t) i];
+        QMenu menu (this);
+        auto* t = menu.addAction (QString ("Block %1: S%2").arg (i + 1).arg (e.scene + 1));
+        t->setEnabled (false);
+        menu.addSeparator();
+        auto* reps = menu.addMenu (tr ("Repeats (length follows the scene)"));
+        for (double r : { 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0, 8.0, 12.0, 16.0 })
+        {
+            auto* a = reps->addAction (QString::fromUtf8 ("×%1").arg (r));
+            a->setCheckable (true);
+            a->setChecked (e.bars <= 0 && e.repeats == r);
+            connect (a, &QAction::triggered, this, [this, i, r]
+            {
+                songEdit (tr ("Block repeats"), [i, r] (std::vector<seq::SongEntry>& s)
+                {
+                    s[(size_t) i].repeats = r;
+                    s[(size_t) i].bars = 0;          // longueur automatique
+                });
+            });
+        }
+        auto* lengths = menu.addMenu (tr ("Fixed length (bars)"));
+        for (double b : { 0.5, 1.0, 2.0, 3.0, 4.0, 6.0, 8.0, 12.0, 16.0, 32.0 })
+        {
+            auto* a = lengths->addAction (QString ("%1").arg (b));
+            a->setCheckable (true);
+            a->setChecked (e.bars == b);
+            connect (a, &QAction::triggered, this, [this, i, b]
+            {
+                songEdit (tr ("Block length"), [i, b] (std::vector<seq::SongEntry>& s) { s[(size_t) i].bars = b; });
+            });
+        }
+        auto* autoLen = menu.addAction (tr ("Length auto (scene x repeats)"));
+        autoLen->setEnabled (e.bars > 0);
+        menu.addSeparator();
+        auto* change = menu.addAction (tr ("Change scene..."));
+        auto* copyScene = menu.addAction (tr ("New scene from this one (copy)"));
+        auto* before = menu.addAction (tr ("Insert a scene before..."));
+        auto* dupA = menu.addAction (tr ("Duplicate"));
+        auto* play = menu.addAction (tr ("Play from here"));
+        menu.addSeparator();
+        auto* delA = menu.addAction (tr ("Delete"));
+        auto* picked = menu.exec (at);
+        if (picked == autoLen)
+            songEdit (tr ("Block length"), [i] (std::vector<seq::SongEntry>& s) { s[(size_t) i].bars = 0; });
+        else if (picked == change)
+            emit songView->chooseScene (i, at);
+        else if (picked == copyScene)
+        {
+            const int to = freeScene();
+            if (to < 0)
+            {
+                toast ("No free scene slot");
+                return;
+            }
+            rememberPatterns (-1, tr ("New scene"));
+            seq::Scene sc = sequencer.scene (e.scene);
+            sc.locked = false;
+            sequencer.setScene (to, sc);
+            std::vector<seq::SongEntry> s = sequencer.song();
+            s[(size_t) i].scene = to;
+            sequencer.setSong (s);
+            patternBar->refresh (true);
+            patternsChanged();
+            songView->update();
+            toast (QString ("BLOCK %1 = NEW SCENE S%2 (copy of S%3)").arg (i + 1).arg (to + 1).arg (e.scene + 1));
+        }
+        else if (picked == before)
+            songSceneMenu (at, [this, i] (int scene) { addSongScene (scene, i); });
+        else if (picked == dupA)
+            songEdit (tr ("Duplicate block"), [i] (std::vector<seq::SongEntry>& s)
+            {
+                if ((int) s.size() < seq::kSongMax)
+                    s.insert (s.begin() + i + 1, s[(size_t) i]);
+            });
+        else if (picked == play)
+        {
+            sequencer.songStartFrom (i);
+            setSongMode (true);
+            if (! transport->playing())
+                transport->play();
+        }
+        else if (picked == delA)
+            songEdit (tr ("Delete block"), [i] (std::vector<seq::SongEntry>& s) { s.erase (s.begin() + i); });
+    });
+    connect (transport, &Transport::row, songView, [this] { songView->followPlayhead(); songView->update(); });
+    return panel;
+}
+
+void MainWindow::songEdit (const QString& label, const std::function<void (std::vector<seq::SongEntry>&)>& change)
+{
+    // Toute modification du morceau passe ici : Cmd+Z la defait
+    rememberPatterns (-1, label);
+    std::vector<seq::SongEntry> s = sequencer.song();
+    change (s);
+    sequencer.setSong (s);
+    if (songView)
+    {
+        songView->selected = std::clamp (songView->selected, 0, std::max (0, (int) s.size() - 1));
+        songView->update();
+    }
+    refreshMaschine();
+}
+
+void MainWindow::setSongMode (bool on)
+{
+    sequencer.setSongMode (on);
+    for (auto* b : { songButton, songTransportButton })
+        if (b)
+        {
+            const QSignalBlocker block (b);
+            b->setChecked (on);
+        }
+    if (songView)
+        songView->update();
+    toast (on ? "SONG MODE ON: PLAY follows the song" : "SONG MODE OFF");
+    refreshMaschine();
+}
+
+void MainWindow::addSongScene (int scene, int before)
+{
+    if (scene < 0 || scene >= seq::kPatternSlots || ! sequencer.scene (scene).used)
+    {
+        toast ("Empty scene (make it in Scenes)");
+        return;
+    }
+    if ((int) sequencer.song().size() >= seq::kSongMax)
+    {
+        toast (QString ("%1 blocks maximum").arg (seq::kSongMax));
+        return;
+    }
+    const int n = (int) sequencer.song().size();
+    const int at = before >= 0 ? std::clamp (before, 0, n) : (n == 0 ? 0 : std::clamp (songView->selected + 1, 0, n));
+    songEdit (tr ("Add scene to song"), [scene, at] (std::vector<seq::SongEntry>& s)
+    {
+        seq::SongEntry e;
+        e.scene = scene;
+        s.insert (s.begin() + at, e);
+    });
+    songView->selected = at;
+    songView->update();
+    toast (QString ("SONG + S%1").arg (scene + 1));
+}
+
+void MainWindow::songSceneMenu (const QPoint& at, const std::function<void (int)>& picked)
+{
+    // Nouvelle scene (vide, ou ce qui joue), puis les scenes faites (nom et ce qu'elles jouent)
+    QMenu menu (this);
+    auto* empty = menu.addAction (tr ("New empty scene"));
+    auto* playing = menu.addAction (tr ("New scene from what's playing"));
+    connect (empty, &QAction::triggered, this, [this, picked] { const int i = newScene (false); if (i >= 0) picked (i); });
+    connect (playing, &QAction::triggered, this, [this, picked] { const int i = newScene (true); if (i >= 0) picked (i); });
+    menu.addSeparator();
+    int count = 0;
+    for (int i = 0; i < seq::kPatternSlots; ++i)
+    {
+        const seq::Scene sc = sequencer.scene (i);
+        if (! sc.used)
+            continue;
+        QStringList parts;
+        for (int g = 0; g < kGroups; ++g)
+            if (sc.pattern[(size_t) g] >= 0)
+                parts << groupName (g) + QString ("P%1").arg (sc.pattern[(size_t) g] + 1);
+        auto* a = menu.addAction (QString ("S%1 %2   %3").arg (i + 1).arg (QString::fromStdString (sc.name)).arg (parts.join (", ")));
+        connect (a, &QAction::triggered, this, [picked, i] { picked (i); });
+        ++count;
+    }
+    Q_UNUSED (count);
+    menu.exec (at);
+}
+
+// ------------------------------------------------------------ Maschine en mode ARRANGER (vue Song)
+
+bool MainWindow::arrangerButton (const QString& name)
+{
+    // Comme le pilote : ecran 5 SONG, 6 GO, 7 LOOP, 3 HALF ; ERASE / DUPLICATE sur le bloc ;
+    // < > : banque des scenes des pads
+    const int sel = songView->selected;
+    const int n = (int) sequencer.song().size();
+    if (name == "screen_5")
+        setSongMode (! sequencer.songMode());
+    else if (name == "screen_6" && n > 0)            // GO : jouer depuis le bloc choisi
+    {
+        sequencer.songStartFrom (sel);
+        setSongMode (true);
+        if (! transport->playing())
+            transport->play();
+    }
+    else if (name == "screen_7")
+    {
+        sequencer.setSongLoop (! sequencer.songLoop());
+        if (loopButton)
+            loopButton->setChecked (sequencer.songLoop());
+        toast (sequencer.songLoop() ? "SONG LOOP ON" : "SONG LOOP OFF");
+    }
+    else if (name == "screen_3")
+    {
+        songHalf = ! songHalf;
+        toast (songHalf ? "HALF: by 0.5" : "HALF off: by 1");
+    }
+    else if (name == "erase" && n > 0)
+        songEdit (tr ("Delete block"), [sel] (std::vector<seq::SongEntry>& s) { s.erase (s.begin() + sel); });
+    else if (name == "duplicate" && n > 0 && ! maschine->property ("shiftHeld").toBool())
+    {
+        songEdit (tr ("Duplicate block"), [sel] (std::vector<seq::SongEntry>& s)
+        {
+            if ((int) s.size() < seq::kSongMax)
+                s.insert (s.begin() + sel + 1, s[(size_t) sel]);
+        });
+        songView->selected = sel + 1;
+    }
+    else if (name == "nav_prev" || name == "nav_next")
+    {
+        patternBar->sceneBank = std::clamp (patternBar->sceneBank + (name == "nav_next" ? 1 : -1), 0, 3);
+        patternBar->refresh (true);
+        toast (QString ("SCENES BANK %1").arg (patternBar->sceneBank + 1));
+    }
+    else
+        return false;
+    songView->update();
+    refreshMaschine();
+    return true;
+}
+
+void MainWindow::arrangerKnob (int index, int delta)
+{
+    // 1 bloc choisi, 2 sa scene, 3 repetitions, 4 longueur en mesures (pas a pas, comme le pilote)
+    int& acc = songKnobAcc[(size_t) index];
+    acc += delta;
+    const int steps = acc / 8;
+    acc %= 8;
+    const auto song = sequencer.song();
+    if (! steps || song.empty())
+        return;
+    const int sel = std::clamp (songView->selected, 0, (int) song.size() - 1);
+    const double unit = songHalf ? 0.5 : 1;
+    if (index == 0)
+    {
+        songView->selected = std::clamp (sel + steps, 0, (int) song.size() - 1);
+        toast (QString ("BLOCK %1  S%2").arg (songView->selected + 1).arg (song[(size_t) songView->selected].scene + 1));
+    }
+    else if (index == 1)                             // scene suivante / precedente (faites seulement)
+    {
+        int sc = song[(size_t) sel].scene;
+        for (int k = 0; k < std::abs (steps); ++k)
+            for (int t = 1; t <= seq::kPatternSlots; ++t)
+            {
+                const int c = ((sc + (steps > 0 ? t : -t)) % seq::kPatternSlots + seq::kPatternSlots) % seq::kPatternSlots;
+                if (sequencer.scene (c).used)
+                {
+                    sc = c;
+                    break;
+                }
+            }
+        songEdit (tr ("Block scene"), [sel, sc] (std::vector<seq::SongEntry>& s) { s[(size_t) sel].scene = sc; });
+        toast (QString ("BLOCK %1 = S%2").arg (sel + 1).arg (sc + 1));
+    }
+    else if (index == 2)
+    {
+        const double r = std::clamp (song[(size_t) sel].repeats + steps * unit, 0.5, 16.0);
+        songEdit (tr ("Block repeats"), [sel, r] (std::vector<seq::SongEntry>& s) { s[(size_t) sel].repeats = r; s[(size_t) sel].bars = 0; });
+        toast (QString::fromUtf8 ("BLOCK %1 ×%2").arg (sel + 1).arg (r));
+    }
+    else
+    {
+        const seq::SongEntry e = song[(size_t) sel];
+        const double now = e.bars > 0 ? e.bars : sequencer.entryRows (e) / double (seq::kRowsPerBar);
+        const double b = std::clamp (std::round ((now + steps * unit) * 2) / 2, 0.5, 64.0);
+        songEdit (tr ("Block length"), [sel, b] (std::vector<seq::SongEntry>& s) { s[(size_t) sel].bars = b; });
+        toast (QString ("BLOCK %1: %2 BARS").arg (sel + 1).arg (b));
+    }
+    songView->update();
+}
+
+int MainWindow::freeScene() const
+{
+    for (int i = 0; i < seq::kPatternSlots; ++i)
+        if (! sequencer.scene (i).used)
+            return i;
+    return -1;
+}
+
+int MainWindow::newScene (bool fromPlaying)
+{
+    const int i = freeScene();
+    if (i < 0)
+    {
+        toast ("No free scene slot");
+        return -1;
+    }
+    rememberPatterns (-1, tr ("New scene"));
+    seq::Scene sc;
+    sc.used = true;
+    if (fromPlaying)                                 // ce qui joue maintenant (eteint = Off)
+        for (int g = 0; g < kGroups; ++g)
+            sc.pattern[(size_t) g] = sequencer.groupOff (g) ? (int) seq::kOff : sequencer.currentPattern (g);
+    else
+        sc.pattern.fill (seq::kOff);
+    sequencer.setScene (i, sc);
+    patternBar->refresh (true);
+    patternsChanged();
+    toast (QString ("NEW SCENE S%1").arg (i + 1));
+    return i;
+}
+
+void MainWindow::songCellMenu (int entry, int g, const QPoint& at)
+{
+    // Case groupe x bloc de la vue Song : le pattern de ce groupe dans la scene du bloc.
+    // La scene peut servir a plusieurs blocs : « Only this block » en fait une copie pour ce bloc.
+    const auto song = sequencer.song();
+    if (entry < 0 || entry >= (int) song.size())
+        return;
+    const int sc = song[(size_t) entry].scene;
+    const seq::Scene scene = sequencer.scene (sc);
+    if (! scene.used)
+    {
+        toast ("Empty scene");
+        return;
+    }
+    QStringList users;
+    for (int i = 0; i < (int) song.size(); ++i)
+        if (song[(size_t) i].scene == sc)
+            users << QString::number (i + 1);
+    constexpr int kNew = -100;
+    auto apply = [this, entry, g, sc] (int value, bool onlyThis)
+    {
+        seq::Scene target = sequencer.scene (sc);
+        int where = sc;
+        std::vector<seq::SongEntry> s = sequencer.song();
+        int usersCount = 0;
+        for (const auto& e : s)
+            usersCount += e.scene == sc ? 1 : 0;
+        if (target.locked && ! onlyThis)
+        {
+            toast (QString ("SCENE %1 is locked (use \"Only this block\")").arg (sc + 1));
+            return;
+        }
+        rememberPatterns (g, tr ("Pattern in scene"));
+        if (value == kNew)                           // nouveau pattern vide dans le groupe
+        {
+            value = -1;
+            for (int k = 0; k < seq::kPatternSlots && value < 0; ++k)
+                if (! sequencer.hasPattern (g, k))
+                    value = k;
+            if (value < 0)
+            {
+                toast ("No free pattern slot");
+                return;
+            }
+            seq::Pattern p;
+            p.length = std::min (seq::kMaxRows, sequencer.sceneRows (sc));   // la longueur de la scene
+            sequencer.setPatternAt (g, value, p);
+        }
+        if (onlyThis && (usersCount > 1 || target.locked))   // une copie de la scene, pour ce bloc seul
+        {
+            where = freeScene();
+            if (where < 0)
+            {
+                toast ("No free scene slot");
+                return;
+            }
+            target.locked = false;
+            s[(size_t) entry].scene = where;
+            sequencer.setSong (s);
+        }
+        target.pattern[(size_t) g] = value;
+        sequencer.setScene (where, target);
+        patternBar->refresh (true);
+        patternsChanged();
+        songView->update();
+        toast (QString ("S%1 %2 = %3").arg (where + 1).arg (groupName (g))
+                   .arg (value >= 0 ? PatternBar::patternName (sequencer, g, value) : value == seq::kFree ? QString ("free") : QString ("off")));
+    };
+    QMenu menu (this);
+    auto* title = menu.addAction (tr ("Block %1 · S%2 · group %3").arg (entry + 1).arg (sc + 1).arg (groupTitle (state, g)));
+    title->setEnabled (false);
+    if (users.size() > 1)
+    {
+        auto* note = menu.addAction (tr ("S%1 is used by blocks %2: changes apply to all").arg (sc + 1).arg (users.join (", ")));
+        note->setEnabled (false);
+    }
+    if (scene.locked)
+    {
+        auto* note = menu.addAction (tr ("S%1 is locked: use \"Only this block\"").arg (sc + 1));
+        note->setEnabled (false);
+    }
+    menu.addSeparator();
+    auto fill = [&] (QMenu* m, bool onlyThis)
+    {
+        const int now = scene.pattern[(size_t) g];
+        for (int k = 0; k < seq::kPatternSlots; ++k)
+            if (sequencer.hasPattern (g, k))
+            {
+                auto* a = m->addAction (groupName (g) + QString ("P%1  %2").arg (k + 1).arg (PatternBar::patternName (sequencer, g, k)));
+                a->setCheckable (true);
+                a->setChecked (now == k);
+                a->setEnabled (onlyThis || ! scene.locked);
+                connect (a, &QAction::triggered, this, [apply, k, onlyThis] { apply (k, onlyThis); });
+            }
+        m->addSeparator();
+        auto* fresh = m->addAction (tr ("New pattern (empty)"));
+        fresh->setEnabled (onlyThis || ! scene.locked);
+        connect (fresh, &QAction::triggered, this, [apply, onlyThis] { apply (kNew, onlyThis); });
+        auto* off = m->addAction (tr ("Off (remove from the scene)"));
+        off->setCheckable (true);
+        off->setChecked (now == seq::kOff);
+        off->setEnabled (onlyThis || ! scene.locked);
+        connect (off, &QAction::triggered, this, [apply, onlyThis] { apply (seq::kOff, onlyThis); });
+        auto* free = m->addAction (tr ("Free (the group keeps its pattern)"));
+        free->setCheckable (true);
+        free->setChecked (now == seq::kFree);
+        free->setEnabled (onlyThis || ! scene.locked);
+        connect (free, &QAction::triggered, this, [apply, onlyThis] { apply (seq::kFree, onlyThis); });
+    };
+    fill (&menu, false);
+    if (users.size() > 1 || scene.locked)
+    {
+        menu.addSeparator();
+        fill (menu.addMenu (tr ("Only this block (new scene)...")), true);
+    }
+    menu.exec (at);
 }

@@ -403,7 +403,7 @@ void PatternBar::patternMenu (int index, const QPoint& at)
     title->setEnabled (false);
     menu.addSeparator();
     const bool listening = state.audition.load() == g && isPlaying && isPlaying() && index == sequencer.currentPattern (g);
-    auto* play = menu.addAction (! exists ? tr ("New Pattern") : listening ? tr ("Stop") : tr ("Play (this group alone)"));
+    auto* play = menu.addAction (! exists ? tr ("New Pattern") : listening ? tr ("Stop") : tr ("Play (this pattern alone)"));
     const int cur = sequencer.currentPattern (g);
     auto* dupHere = menu.addAction (tr ("Duplicate pattern %1 here").arg (cur + 1));
     dupHere->setEnabled (index != cur);

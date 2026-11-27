@@ -9,6 +9,13 @@
 #include <QLineEdit>
 #include <QMenu>
 #include <QFileDialog>
+#include <QDir>
+#include <QFile>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QSaveFile>
+#include <algorithm>
 #include <QSettings>
 #include <QMessageBox>
 #include <QPushButton>
@@ -87,6 +94,81 @@ void addDelete (QMenu* custom, std::vector<Custom>& list, QWidget* parent, const
         });
 }
 
+
+// --- Export / Import : gammes et accords perso, accords User (fichiers .json echangeables)
+
+void exportList (QWidget* parent, const std::vector<Custom>& list, const QString& kind, const QString& fileName)
+{
+    const QString path = QFileDialog::getSaveFileName (parent, QObject::tr ("Export %1").arg (kind),
+                                                       QDir::homePath() + "/" + fileName, QObject::tr ("JSON (*.json)"));
+    if (path.isEmpty())
+        return;
+    QJsonArray items;
+    for (const Custom& c : list)
+    {
+        QJsonArray notes;
+        for (int n : c.notes)
+            notes.append (n);
+        items.append (QJsonObject { { "name", c.name }, { "notes", notes } });
+    }
+    QSaveFile f (path);
+    const bool ok = f.open (QIODevice::WriteOnly)
+                    && f.write (QJsonDocument (QJsonObject { { "format", "fuzzy-" + kind.toLower().replace (' ', '-') }, { "items", items } })
+                                    .toJson (QJsonDocument::Indented)) >= 0
+                    && f.commit();
+    QMessageBox::information (parent, QObject::tr ("Export"), ok ? QObject::tr ("%1 %2 exported.").arg (list.size()).arg (kind)
+                                                                 : QObject::tr ("Cannot write %1").arg (path));
+}
+
+bool importList (QWidget* parent, std::vector<Custom>& list, const QString& kind)
+{
+    // Ajoute a la liste ; un nom deja pris devient « nom (2) »
+    const QString path = QFileDialog::getOpenFileName (parent, QObject::tr ("Import %1").arg (kind), QDir::homePath(),
+                                                       QObject::tr ("JSON (*.json)"));
+    if (path.isEmpty())
+        return false;
+    QFile f (path);
+    const QJsonArray items = f.open (QIODevice::ReadOnly) ? QJsonDocument::fromJson (f.readAll()).object()["items"].toArray() : QJsonArray();
+    int added = 0;
+    for (const auto& v : items)
+    {
+        Custom c;
+        c.name = v.toObject()["name"].toString().trimmed();
+        for (const auto& n : v.toObject()["notes"].toArray())
+            c.notes.push_back (n.toInt());
+        if (c.name.isEmpty() || c.notes.empty())
+            continue;
+        auto taken = [&list] (const QString& n)
+        {
+            return std::any_of (list.begin(), list.end(), [&n] (const Custom& x) { return x.name == n; });
+        };
+        const QString base = c.name;
+        for (int k = 2; taken (c.name); ++k)
+            c.name = QString ("%1 (%2)").arg (base).arg (k);
+        list.push_back (c);
+        ++added;
+    }
+    QMessageBox::information (parent, QObject::tr ("Import"), added ? QObject::tr ("%1 %2 added.").arg (added).arg (kind)
+                                                                     : QObject::tr ("Nothing to import in this file."));
+    return added > 0;
+}
+
+void addExchange (QMenu* m, std::vector<Custom>& list, const QString& kind, const QString& fileName, QWidget* parent,
+                  const std::function<void()> imported)
+{
+    m->addSeparator();
+    QObject::connect (m->addAction (QObject::tr ("Export %1...").arg (kind)), &QAction::triggered, parent,
+                      [parent, &list, kind, fileName] { exportList (parent, list, kind, fileName); });
+    QObject::connect (m->addAction (QObject::tr ("Import %1...").arg (kind)), &QAction::triggered, parent,
+                      [parent, &list, kind, imported]
+    {
+        if (importList (parent, list, kind))
+        {
+            saveCustom();
+            imported();
+        }
+    });
+}
 } // namespace
 
 bool editScale (QWidget* parent, Custom& scale)
@@ -158,6 +240,7 @@ void fillScaleMenu (QMenu* menu, int current, const std::function<void (int)>& p
         if (current == customScaleId (removed) || current < customScaleId (removed))
             pick (0);                                // la gamme jouee a disparu : Chromatic
     });
+    addExchange (custom, customScales(), QObject::tr ("custom scales"), "fuzzy_scales.json", parent, [pick, current] { pick (current); });
 }
 
 void fillChordMenu (QMenu* menu, const KeySettings& k, const std::function<void (int, int)>& pick, QWidget* parent)
@@ -194,6 +277,49 @@ void fillChordMenu (QMenu* menu, const KeySettings& k, const std::function<void 
         QObject::connect (a, &QAction::triggered, parent, [pick, i] { pick (4, i); });
     }
     user->addSeparator();
+    QObject::connect (user->addAction (QObject::tr ("Export User sets...")), &QAction::triggered, parent, [parent]
+    {
+        const QString path = QFileDialog::getSaveFileName (parent, QObject::tr ("Export User sets (10 banks)"),
+                                                           QDir::homePath() + "/fuzzy_user_chords.json", QObject::tr ("JSON (*.json)"));
+        if (path.isEmpty())
+            return;
+        const QString keep = QSettings().value ("keys/userChordsFile").toString();
+        QSettings().setValue ("keys/userChordsFile", path);   // meme format que le pilote
+        const bool ok = saveUserChords();
+        QSettings().setValue ("keys/userChordsFile", keep);
+        QMessageBox::information (parent, QObject::tr ("Export"), ok ? QObject::tr ("User sets exported.") : QObject::tr ("Cannot write %1").arg (path));
+    });
+    QObject::connect (user->addAction (QObject::tr ("Import User sets...")), &QAction::triggered, parent, [parent, pick, k]
+    {
+        const QString path = QFileDialog::getOpenFileName (parent, QObject::tr ("Import User sets"), QDir::homePath(), QObject::tr ("JSON (*.json)"));
+        if (path.isEmpty())
+            return;
+        QMessageBox ask (QMessageBox::Question, QObject::tr ("Import User sets"),
+                         QObject::tr ("Replace all 10 banks, or only fill the empty slots?"), QMessageBox::Cancel, parent);
+        auto* replace = ask.addButton (QObject::tr ("Replace"), QMessageBox::DestructiveRole);
+        auto* add = ask.addButton (QObject::tr ("Add (empty slots)"), QMessageBox::AcceptRole);
+        ask.setDefaultButton (QMessageBox::Cancel);
+        ask.exec();
+        if (ask.clickedButton() != replace && ask.clickedButton() != add)
+            return;
+        const auto before = userChords();
+        const QString keep = QSettings().value ("keys/userChordsFile").toString();
+        QSettings().setValue ("keys/userChordsFile", path);
+        loadUserChords();                            // lit le fichier importe
+        QSettings().setValue ("keys/userChordsFile", keep);
+        if (ask.clickedButton() == add)              // garder les accords deja la
+        {
+            auto incoming = userChords();
+            userChords() = before;
+            for (int b = 0; b < kUserBanks; ++b)
+                for (int c = 0; c < 12; ++c)
+                    if (userChords()[(size_t) b][(size_t) c].empty())
+                        userChords()[(size_t) b][(size_t) c] = incoming[(size_t) b][(size_t) c];
+        }
+        saveUserChords();                            // dans le fichier partage avec la Maschine
+        pick (k.chordMode, k.chordMode == 1 ? k.harmony : k.chordMode == 2 ? k.chordSet
+                         : k.chordMode == 3 ? k.customChord : k.userBank);
+    });
     auto* file = user->addAction (QObject::tr ("Chords file (shared with the Maschine)..."));
     file->setToolTip (userChordsFile());
     user->setToolTipsVisible (true);
@@ -248,6 +374,7 @@ void fillChordMenu (QMenu* menu, const KeySettings& k, const std::function<void 
         if (mode == 3 && chosen >= removed)
             pick (0, 0);                             // l'accord joue a disparu : accords coupes
     });
+    addExchange (custom, customChords(), QObject::tr ("custom chords"), "fuzzy_chords.json", parent, [pick, mode, chosen] { pick (mode, mode == 3 ? chosen : 0); });
 }
 
 } // namespace music

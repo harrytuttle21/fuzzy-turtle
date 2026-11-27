@@ -40,6 +40,8 @@ protected:
     void mousePressEvent (QMouseEvent*) override;
     void wheelEvent (QWheelEvent*) override;
     void mouseDoubleClickEvent (QMouseEvent*) override;
+    void mouseMoveEvent (QMouseEvent*) override;     // glisser un nom de scene vers la vue Song
+    void mouseReleaseEvent (QMouseEvent*) override;
     void dragEnterEvent (class QDragEnterEvent*) override;   // un carre de la palette
     void dragMoveEvent (class QDragMoveEvent*) override;
     void dragLeaveEvent (class QDragLeaveEvent*) override;
@@ -83,4 +85,7 @@ private:
     bool rotated = false;
     bool editMode = false, playMode = true;
     int editScene = -1;                              // Edit seul : la scene choisie (cadre)
+    int pendingName = -1;                            // nom de scene presse (clic ou glisser)
+    QPointF pendingPos;
+    void nameClick (int scene, bool right, const QPoint& at);
 };

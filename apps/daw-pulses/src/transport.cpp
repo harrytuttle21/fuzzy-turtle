@@ -127,7 +127,22 @@ void Transport::run()
         currentRowStartNs = std::chrono::duration_cast<std::chrono::nanoseconds> (at.time_since_epoch()).count();
         if (metro && r % 4 == 0)
             engine.click (r % 16 == 0, metroVolume);           // un coup par temps, accent sur la mesure
-        for (const auto& h : sequencer.hitsForRow (r, rowSec * 1000.0))
+        const std::vector<seq::Hit> hits = sequencer.hitsForRow (r, rowSec * 1000.0);
+        if (sequencer.takeSongEnd())                 // fin du morceau (sans boucle) : STOP
+        {
+            isPlaying = false;
+            quit = true;
+            rowIndex = 0;
+            currentRow = 0;
+            QMetaObject::invokeMethod (this, [this]
+            {
+                sequencer.resetPlayback();
+                emit playingChanged (false);
+                emit row (0);
+            }, Qt::QueuedConnection);
+            break;
+        }
+        for (const auto& h : hits)
         {
             if (h.delayRows <= 0.0005)
                 playHit (h);
