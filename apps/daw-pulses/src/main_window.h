@@ -245,6 +245,7 @@ private:
         std::array<QLabel*, 4> values {};
     } soundUi;
     void playKey (int key, int velocity, bool down, bool chords = true);   // touche de clavier : note ou accord
+    std::atomic<bool> selectHeld { false };          // SELECT tenu (vue Song : SELECT + pad = ajouter la scene)
     std::atomic<bool> maschineShift { false };       // Shift tenu sur la Maschine (lu par la tache des pads)
     void shiftPad (int pad);                         // Shift + pad : fonctions de la serigraphie
     void switchBank();                               // A-H <-> A2-H2
@@ -270,6 +271,7 @@ private:
     class SongView* songView = nullptr;              // onglet Song (morceau)
     QDockWidget* songDock = nullptr;
     QWidget* buildSong();
+    std::function<void()> songsRefresh;              // la liste des songs suit (annuler, ouvrir...)
     QPushButton* songButton = nullptr;               // SONG (vue Song) et son reflet dans le Transport
     QPushButton* songTransportButton = nullptr;
     QPushButton* loopButton = nullptr;
@@ -350,7 +352,8 @@ private:
         std::vector<GroupSave> groups;               // groupes entiers (pattern + volume)
         bool hasScenes = false;                      // les 64 scenes (gestionnaire de patterns)
         std::vector<seq::Scene> scenes;
-        std::vector<seq::SongEntry> song;            // le morceau (avec les scenes)
+        std::vector<seq::SongSlot> songs;            // les songs (avec les scenes)
+        int songIndex = 0;
         QString label;
     };
     void rememberPatterns (int group, const QString& label);   // tous les patterns du groupe + les scenes

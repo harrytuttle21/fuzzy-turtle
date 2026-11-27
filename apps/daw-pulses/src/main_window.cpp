@@ -332,7 +332,7 @@ MainWindow::MainWindow (const Options& options, QWidget* parent) : QMainWindow (
     QTimer::singleShot (0, this, [this]
     {
         resizeDocks ({ groupsDock, keysTabDock, padsDock }, { width() * 25 / 100, width() * 50 / 100, width() * 25 / 100 }, Qt::Horizontal);
-        resizeDocks ({ patternDock, padsDock }, { height() * 58 / 100, height() * 42 / 100 }, Qt::Vertical);
+        resizeDocks ({ patternDock, padsDock }, { height() * 55 / 100, height() * 45 / 100 }, Qt::Vertical);   // vue par defaut
         resizeDocks ({ groupsDock, transportDock }, { height(), transportDock->widget()->sizeHint().height() }, Qt::Vertical);
         defaultLayout = saveState (kLayoutVersion);   // vue Default
         QSettings s;
@@ -799,7 +799,7 @@ MainWindow::MainWindow (const Options& options, QWidget* parent) : QMainWindow (
             right.text (8, 34, ((sequencer.songMode() ? QString ("SONG ON   ") : QString ("SONG off  "))
                                    + (sequencer.songLoop() ? "LOOP" : "no loop") + (songHalf ? "   HALF" : "")).toStdString(), fc::kWhite);
             if (song.empty())
-                right.text (8, 70, "Empty song: pad = add a scene", fc::kWhite);
+                right.text (8, 70, "Empty song: SELECT + pad = add a scene", fc::kWhite);
             int playEntry = -1, playRow = 0;
             if (transport->playing() && sequencer.songMode())
                 sequencer.songPosition (playEntry, playRow);
@@ -1584,7 +1584,7 @@ void MainWindow::playPad (int pad, int velocity, bool down)
             }, Qt::QueuedConnection);
             return;
         }
-        if (arrangerMode && ! muteHeld && ! soloHeld)   // vue Song (ARRANGER) : pad = ajouter la scene
+        if (arrangerMode && selectHeld)              // vue Song (ARRANGER) : SELECT + pad = ajouter la scene
         {
             QMetaObject::invokeMethod (this, [this, pad]
             {
@@ -1719,7 +1719,11 @@ void MainWindow::refreshAll()
         patternBar->refresh();                       // patterns / scenes du groupe
     refreshSoundPanel();
     if (rollTitle)                                   // Piano Roll : le son choisi
-        rollTitle->setText (tr ("SOUND %1 — %2").arg (state.sound.load(), 2, 10, QChar ('0')).arg (padName (state.group, state.sound)));
+        {
+            const QString full = tr ("SOUND %1 — %2").arg (state.sound.load(), 2, 10, QChar ('0')).arg (padName (state.group, state.sound));
+            rollTitle->setText (rollTitle->fontMetrics().elidedText (full, Qt::ElideRight, rollTitle->width() - 4));
+            rollTitle->setToolTip (full);
+        }
     const QColor c = groupColor (state.group);
     pads->setColor (c);
     pads->setGroup (state.group);
@@ -1902,6 +1906,11 @@ void MainWindow::onMaschineButton (const QString& name, bool down)
             tapTurned = false;
         else if (! tapTurned)                         // TAP seul : metronome marche / arret
             metroButton->toggle();
+        return;
+    }
+    if (name == "select")                            // tenu : SELECT + pad (vue Song)
+    {
+        selectHeld = down;
         return;
     }
     if (name == "shift")                             // tenu / relache (avant : restait « tenu »)
@@ -2311,6 +2320,14 @@ void MainWindow::newProject()
     transport->stop();
     project.reset();
     sequencer.reset();                               // patterns, scenes : tout repart de zero
+    if (songsRefresh)
+        songsRefresh();
+    for (auto* sb : { songButton, songTransportButton })   // SONG : celui du projet
+        if (sb)
+        {
+            const QSignalBlocker block (sb);
+            sb->setChecked (sequencer.songMode());
+        }
     for (int g = 0; g < kGroups; ++g)
     {
         state.groupVolume[(size_t) g] = 100;
@@ -2356,6 +2373,14 @@ bool MainWindow::openProjectFile (const QString& path, bool quiet)
     bpmBox->setValue (bpm);
     project.fromApp (sequencer, state, bpm);          // reference pour savoir s'il est modifie
     syncSamples();
+    if (songsRefresh)
+        songsRefresh();                              // la liste des songs du projet
+    for (auto* sb : { songButton, songTransportButton })   // SONG : celui du projet
+        if (sb)
+        {
+            const QSignalBlocker block (sb);
+            sb->setChecked (sequencer.songMode());
+        }
     clearHistory();
     project.markSaved();
     QSettings().setValue ("lastProject", project.file);
@@ -2669,7 +2694,8 @@ MainWindow::UndoStep MainWindow::capture (const UndoStep& like) const
         now.hasScenes = true;
         for (int i = 0; i < seq::kPatternSlots; ++i)
             now.scenes.push_back (sequencer.scene (i));
-        now.song = sequencer.song();
+        now.songs = sequencer.allSongs();
+        now.songIndex = sequencer.currentSong();
     }
     return now;
 }
@@ -2684,7 +2710,8 @@ void MainWindow::rememberPatterns (int g, const QString& label)
     step.hasScenes = true;
     for (int i = 0; i < seq::kPatternSlots; ++i)
         step.scenes.push_back (sequencer.scene (i));
-    step.song = sequencer.song();
+    step.songs = sequencer.allSongs();
+    step.songIndex = sequencer.currentSong();
     std::lock_guard<std::mutex> lk (undoLock);
     undoStack.push_back (std::move (step));
     if (undoStack.size() > 100)
@@ -2752,9 +2779,16 @@ void MainWindow::undo (bool redoIt)
     {
         for (int i = 0; i < (int) step.scenes.size(); ++i)
             sequencer.setScene (i, step.scenes[(size_t) i]);
-        sequencer.setSong (step.song);
+        if (! step.songs.empty())
+        {
+            const bool mode = sequencer.songMode();
+            sequencer.setAllSongs (step.songs, step.songIndex);
+            sequencer.setSongMode (mode);
+        }
         if (songView)
             songView->update();
+        if (songsRefresh)
+            songsRefresh();
     }
     for (const auto& [i, s] : step.sounds)
         putSound (i / 16, i % 16 + 1, s);
@@ -3093,6 +3127,7 @@ QWidget* MainWindow::buildPianoRoll()
     auto* head = new QHBoxLayout;
     rollTitle = new QLabel;
     rollTitle->setObjectName ("section");
+    rollTitle->setFixedWidth (180);                  // largeur fixe : la barre ne bouge plus (nom raccourci)
     auto* hint = new QLabel (tr ("click = note \u00B7 drag in empty space = select \u00B7 drag a note = move (%1 copy) \u00B7 double-click = erase \u00B7 bottom bars = velocity")
                                  .arg (PatternView::copyKey()));
     hint->setObjectName ("hint");
@@ -6255,6 +6290,13 @@ QWidget* MainWindow::buildSong()
         head->addWidget (b);
         return b;
     };
+    // Plusieurs songs (versions) : la liste + son menu
+    auto* songList = new QComboBox;
+    songList->setFocusPolicy (Qt::NoFocus);
+    songList->setMinimumWidth (130);
+    songList->setToolTip (tr ("The song that plays (and that the Maschine sees)"));
+    head->addWidget (songList);
+    auto* songsMenuBtn = button (tr ("Songs \u25BE"), tr ("New, duplicate (alternative version), rename, delete a song"));
     songButton = button (tr ("SONG"), tr ("Song mode: PLAY follows the song (off = patterns and scenes by hand)"), true);
     loopButton = button (tr ("Loop"), tr ("At the end of the song, start again (off = stop)"), true);
     auto* from = button (tr ("▶ From here"), tr ("Play the song from the chosen block"));
@@ -6268,8 +6310,27 @@ QWidget* MainWindow::buildSong()
     head->addWidget (stepBox);
     auto* followBtn = button (tr ("Follow"), tr ("The view follows the playhead"), true);
     head->addStretch();
-    auto* zoomOut = button (tr ("−"), tr ("Zoom out (Cmd + wheel)"));
-    auto* zoomIn = button (tr ("+"), tr ("Zoom in (Cmd + wheel)"));
+    auto* foot = new QHBoxLayout;                    // en bas : l'aide, puis les zooms
+    auto footButton = [&] (const QString& text, const QString& tip)
+    {
+        auto* b = new QPushButton (text);
+        b->setFocusPolicy (Qt::NoFocus);
+        b->setToolTip (tip);
+        b->setFixedWidth (30);
+        foot->addWidget (b);
+        return b;
+    };
+    auto zoomLabel = [&] (const QString& t) { auto* l = new QLabel (t); l->setObjectName ("hint"); foot->addWidget (l); };
+    QPushButton *zoomOut, *zoomIn, *zoomVOut, *zoomVIn;
+    auto addZooms = [&]
+    {
+        zoomLabel (tr ("ZOOM H"));
+        zoomOut = footButton (QStringLiteral ("\u2212"), tr ("Narrower bars (Cmd + wheel)"));
+        zoomIn = footButton (tr ("+"), tr ("Wider bars (Cmd + wheel)"));
+        zoomLabel (tr ("ZOOM V"));
+        zoomVOut = footButton (QStringLiteral ("\u2212"), tr ("Lower group rows"));
+        zoomVIn = footButton (tr ("+"), tr ("Taller group rows"));
+    };
     col->addLayout (head);
     songView = new SongView (sequencer, state);
     songView->isPlaying = [this] { return transport->playing(); };
@@ -6283,7 +6344,11 @@ QWidget* MainWindow::buildSong()
                                  "right-click = repeats, length, duplicate, delete · click the ruler = play from there · 1 bar = 16 lines"));
     hint->setObjectName ("hint");
     hint->setWordWrap (true);
-    col->addWidget (hint);
+    hint->setSizePolicy (QSizePolicy::Ignored, QSizePolicy::Preferred);   // peut retrecir
+    hint->setMinimumWidth (0);
+    foot->addWidget (hint, 1);
+    addZooms();
+    col->addLayout (foot);
 
     songButton->setChecked (sequencer.songMode());
     loopButton->setChecked (sequencer.songLoop());
@@ -6313,6 +6378,111 @@ QWidget* MainWindow::buildSong()
     });
     connect (songView, &SongView::cellClicked, this, &MainWindow::songCellMenu);
     connect (zoomIn, &QPushButton::clicked, this, [this] { songView->zoom (1); });
+    connect (zoomVIn, &QPushButton::clicked, this, [this] { songView->zoomV (1); });
+    connect (zoomVOut, &QPushButton::clicked, this, [this] { songView->zoomV (-1); });
+    // Songs : liste a jour, choisir, menu
+    songsRefresh = [this, songList]
+    {
+        const QSignalBlocker block (songList);
+        songList->clear();
+        const auto all = sequencer.allSongs();
+        for (const auto& sl : all)
+            songList->addItem (QString::fromStdString (sl.name));
+        songList->setCurrentIndex (sequencer.currentSong());
+        if (loopButton)
+            loopButton->setChecked (sequencer.songLoop());
+        songView->selected = 0;
+        songView->update();
+    };
+    connect (songList, &QComboBox::currentIndexChanged, this, [this] (int i)
+    {
+        if (i < 0 || i == sequencer.currentSong())
+            return;
+        rememberPatterns (-1, tr ("Choose song"));
+        sequencer.switchSong (i);
+        songsRefresh();
+        toast (QString ("SONG: %1").arg (QString::fromStdString (sequencer.allSongs()[(size_t) i].name)));
+        refreshMaschine();
+    });
+    connect (songsMenuBtn, &QPushButton::clicked, this, [this, songsMenuBtn]
+    {
+        auto all = sequencer.allSongs();
+        const int cur = sequencer.currentSong();
+        QMenu menu (this);
+        auto* fresh = menu.addAction (tr ("New song (empty)"));
+        auto* dupS = menu.addAction (tr ("Duplicate this song (alternative version)"));
+        auto* ren = menu.addAction (tr ("Rename this song..."));
+        menu.addSeparator();
+        auto* delS = menu.addAction (tr ("Delete this song..."));
+        fresh->setEnabled ((int) all.size() < seq::kSongsMax);
+        dupS->setEnabled ((int) all.size() < seq::kSongsMax);
+        delS->setEnabled (all.size() > 1);
+        auto* picked = menu.exec (songsMenuBtn->mapToGlobal (QPoint (0, songsMenuBtn->height())));
+        if (! picked)
+            return;
+        auto askName = [this] (const QString& title, const QString& start, QString& out)
+        {
+            bool ok = false;
+            out = QInputDialog::getText (this, title, tr ("Song name:"), QLineEdit::Normal, start, &ok).trimmed().left (24);
+            return ok && ! out.isEmpty();
+        };
+        QString name;
+        if (picked == fresh || picked == dupS)
+        {
+            if (! askName (picked == fresh ? tr ("New song") : tr ("Duplicate song"),
+                           picked == fresh ? QString ("Song %1").arg (all.size() + 1)
+                                           : QString::fromStdString (all[(size_t) cur].name) + " B", name))
+                return;
+            rememberPatterns (-1, tr ("New song"));
+            seq::SongSlot sl = picked == dupS ? all[(size_t) cur] : seq::SongSlot();
+            sl.name = name.toStdString();
+            all.push_back (sl);
+            const bool mode = sequencer.songMode();
+            sequencer.setAllSongs (all, (int) all.size() - 1);
+            sequencer.setSongMode (mode);
+        }
+        else if (picked == ren)
+        {
+            if (! askName (tr ("Rename song"), QString::fromStdString (all[(size_t) cur].name), name))
+                return;
+            rememberPatterns (-1, tr ("Rename song"));
+            all[(size_t) cur].name = name.toStdString();
+            const bool mode = sequencer.songMode();
+            sequencer.setAllSongs (all, cur);
+            sequencer.setSongMode (mode);
+        }
+        else if (picked == delS)
+        {
+            QMessageBox box (QMessageBox::Question, tr ("Delete song"),
+                             tr ("Delete the song \"%1\"?").arg (QString::fromStdString (all[(size_t) cur].name)),
+                             QMessageBox::Yes | QMessageBox::Cancel, this);
+            box.setDefaultButton (QMessageBox::Cancel);
+            if (box.exec() != QMessageBox::Yes)
+                return;
+            rememberPatterns (-1, tr ("Delete song"));
+            all.erase (all.begin() + cur);
+            const bool mode = sequencer.songMode();
+            sequencer.setAllSongs (all, std::max (0, cur - 1));
+            sequencer.setSongMode (mode);
+        }
+        songsRefresh();
+        refreshMaschine();
+    });
+    songsRefresh();
+    connect (songView, &SongView::rulerMenu, this, [this] (const QPoint& at)
+    {
+        QMenu menu (this);
+        int la = -1, lb = -1;
+        sequencer.songLoopRange (la, lb);
+        auto* clear = menu.addAction (tr ("Clear loop zone"));
+        clear->setEnabled (la >= 0);
+        if (menu.exec (at) == clear)
+        {
+            sequencer.setSongLoopRange (-1, -1);
+            songView->update();
+            toast ("LOOP ZONE CLEARED");
+        }
+    });
     connect (zoomOut, &QPushButton::clicked, this, [this] { songView->zoom (-1); });
     connect (from, &QPushButton::clicked, this, [this]
     {
@@ -6350,8 +6520,9 @@ QWidget* MainWindow::buildSong()
     connect (songView, &SongView::startFrom, this, [this] (int i)
     {
         songView->selected = i;
-        sequencer.songStartFrom (i);                 // en lecture : tout de suite
-        toast (QString ("SONG FROM BLOCK %1").arg (i + 1));
+        const bool playing = transport->playing() && sequencer.songMode();
+        sequencer.songStartFrom (i, playing);        // en lecture : a la fin de la mesure, sans a-coup
+        toast (QString ("SONG FROM BLOCK %1%2").arg (i + 1).arg (playing ? " (next bar)" : ""));
     });
     connect (songView, &SongView::moveEntry, this, [this] (int from, int to)
     {
@@ -6429,6 +6600,7 @@ QWidget* MainWindow::buildSong()
         menu.addSeparator();
         auto* change = menu.addAction (tr ("Change scene..."));
         auto* copyScene = menu.addAction (tr ("New scene from this one (copy)"));
+        auto* renameScene = menu.addAction (tr ("Rename scene S%1...").arg (e.scene + 1));
         auto* before = menu.addAction (tr ("Insert a scene before..."));
         auto* dupA = menu.addAction (tr ("Duplicate"));
         auto* play = menu.addAction (tr ("Play from here"));
@@ -6439,6 +6611,12 @@ QWidget* MainWindow::buildSong()
             songEdit (tr ("Block length"), [i] (std::vector<seq::SongEntry>& s) { s[(size_t) i].bars = 0; });
         else if (picked == change)
             emit songView->chooseScene (i, at);
+        else if (picked == renameScene)
+        {
+            patternBar->renameScene (e.scene);       // verrouillee : refuse
+            patternsChanged();
+            songView->update();
+        }
         else if (picked == copyScene)
         {
             const int to = freeScene();
@@ -6807,6 +6985,18 @@ void MainWindow::songCellMenu (int entry, int g, const QPoint& at)
         connect (free, &QAction::triggered, this, [apply, onlyThis] { apply (seq::kFree, onlyThis); });
     };
     fill (&menu, false);
+    if (scene.pattern[(size_t) g] >= 0)               // renommer le pattern de cette case
+    {
+        const int pi = scene.pattern[(size_t) g];
+        menu.addSeparator();
+        connect (menu.addAction (tr ("Rename pattern %1...").arg (PatternBar::patternName (sequencer, g, pi))), &QAction::triggered, this,
+                 [this, g, pi]
+        {
+            patternBar->renamePattern (g, pi);
+            patternsChanged();
+            songView->update();
+        });
+    }
     if (users.size() > 1 || scene.locked)
     {
         menu.addSeparator();

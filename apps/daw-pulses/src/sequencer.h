@@ -71,6 +71,15 @@ struct SongEntry
     bool operator== (const SongEntry& o) const { return scene == o.scene && repeats == o.repeats && bars == o.bars; }
 };
 constexpr int kSongMax = 64;                          // entrees au plus (comme le pilote)
+constexpr int kSongsMax = 16;                         // songs (versions) par projet
+// Une song (version du morceau) : la song choisie est celle qui joue
+struct SongSlot
+{
+    std::string name = "Main";
+    std::vector<SongEntry> entries;
+    bool loop = true;
+    int loopFrom = -1, loopTo = -1;
+};
 constexpr int kRowsPerBar = 16;
 
 // Une note a jouer (lue par l'horloge)
@@ -137,12 +146,17 @@ public:
     void setSongLoop (bool on);
     int entryRows (const SongEntry& e) const;            // duree d'une entree, en lignes
     int sceneRows (int scene) const;                     // le plus long pattern de la scene (16 sinon)
-    void songStartFrom (int entry);                      // la lecture part de cette entree (tout de suite si en lecture)
+    void songStartFrom (int entry, bool atBar = false);  // la lecture part de cette entree (atBar : a la fin de la mesure)
     int songFrom() const;
     void songPosition (int& entry, int& rowInEntry) const;   // ou en est la lecture
     bool takeSongEnd();                                  // fin du morceau (sans boucle) : l'horloge s'arrete
     void setSongLoopRange (int from, int to);            // Loop sur les blocs from..to (-1 : tout le morceau)
     void songLoopRange (int& from, int& to) const;
+    // Plusieurs songs (versions) : la choisie joue ; les autres attendent
+    std::vector<SongSlot> allSongs() const;              // toutes (la choisie a jour)
+    void setAllSongs (const std::vector<SongSlot>& list, int current);
+    int currentSong() const;
+    void switchSong (int index);
 
 private:
     Pattern& cur (int group) { return *store[(size_t) group][(size_t) current[(size_t) group]]; }
@@ -165,6 +179,11 @@ private:
     bool songOn = false, loopOn = true, songEnded = false;
     int songPos = 0, songRows = 0, songLen = 16, songStart = 0;
     int loopA = -1, loopB = -1;                          // zone de boucle (blocs), -1 : aucune
+    int songJump = -1;                                   // saut demande (fin de mesure)
+    std::vector<SongSlot> songList { SongSlot() };       // les songs ; songList[songIndex] = la choisie
+    int songIndex = 0;
+    void storeSong();                                    // la song en cours -> songList (sans verrou)
+    void loadSong (int index);
 };
 
 } // namespace seq

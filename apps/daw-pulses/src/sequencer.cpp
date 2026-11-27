@@ -29,6 +29,9 @@ void Sequencer::reset()
     scenes.fill (Scene());
     entries.clear();                                 // morceau vide
     loopA = loopB = -1;
+    songList = { SongSlot() };
+    songIndex = 0;
+    songJump = -1;
     songOn = false;
     loopOn = true;
     songEnded = false;
@@ -50,6 +53,12 @@ std::vector<Hit> Sequencer::hitsForRow (int row, double rowMs)
                 out.push_back ({ grp, t, n, c.velocity, gate, delay });
     };
     const bool songPlays = songOn && ! entries.empty();
+    if (songPlays && songJump >= 0 && songRows % kRowsPerBar == 0)   // saut demande : en debut de mesure
+    {
+        songPos = std::clamp (songJump, 0, (int) entries.size() - 1);
+        songRows = 0;
+        songJump = -1;
+    }
     if (songPlays)                                   // morceau : debut d'une entree ?
     {
         if (songRows == 0 || songPos >= (int) entries.size())
@@ -222,12 +231,75 @@ void Sequencer::setSongLoop (bool on)
     loopOn = on;
 }
 
-void Sequencer::songStartFrom (int entry)
+void Sequencer::songStartFrom (int entry, bool atBar)
 {
     std::lock_guard<std::mutex> g (lock);
     songStart = std::clamp (entry, 0, std::max (0, (int) entries.size() - 1));
+    if (atBar)                                       // en lecture : a la fin de la mesure, sans a-coup
+    {
+        songJump = songStart;
+        return;
+    }
+    songJump = -1;
     songPos = songStart;
-    songRows = 0;                                    // en lecture : a la ligne suivante
+    songRows = 0;
+}
+
+void Sequencer::storeSong()
+{
+    SongSlot& s = songList[(size_t) songIndex];
+    s.entries = entries;
+    s.loop = loopOn;
+    s.loopFrom = loopA;
+    s.loopTo = loopB;
+}
+
+void Sequencer::loadSong (int index)
+{
+    songIndex = std::clamp (index, 0, (int) songList.size() - 1);
+    const SongSlot& s = songList[(size_t) songIndex];
+    entries = s.entries;
+    loopOn = s.loop;
+    loopA = s.loopFrom;
+    loopB = s.loopTo;
+    songStart = songPos = songRows = 0;
+    songJump = -1;
+}
+
+std::vector<SongSlot> Sequencer::allSongs() const
+{
+    std::lock_guard<std::mutex> g (lock);
+    std::vector<SongSlot> out = songList;
+    SongSlot& s = out[(size_t) songIndex];
+    s.entries = entries;
+    s.loop = loopOn;
+    s.loopFrom = loopA;
+    s.loopTo = loopB;
+    return out;
+}
+
+void Sequencer::setAllSongs (const std::vector<SongSlot>& list, int current)
+{
+    std::lock_guard<std::mutex> g (lock);
+    songList = list.empty() ? std::vector<SongSlot> { SongSlot() } : list;
+    if ((int) songList.size() > kSongsMax)
+        songList.resize ((size_t) kSongsMax);
+    loadSong (current);
+}
+
+int Sequencer::currentSong() const
+{
+    std::lock_guard<std::mutex> g (lock);
+    return songIndex;
+}
+
+void Sequencer::switchSong (int index)
+{
+    std::lock_guard<std::mutex> g (lock);
+    if (index < 0 || index >= (int) songList.size() || index == songIndex)
+        return;
+    storeSong();
+    loadSong (index);
 }
 
 int Sequencer::songFrom() const
@@ -487,6 +559,7 @@ void Sequencer::resetPlayback()
     std::lock_guard<std::mutex> g (lock);
     songPos = songStart;                             // le morceau repart de l'entree choisie
     songRows = 0;
+    songJump = -1;
     for (int grp = 0; grp < session::kGroups; ++grp)
     {
         const size_t gi = (size_t) grp;

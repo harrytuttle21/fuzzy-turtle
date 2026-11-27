@@ -86,6 +86,9 @@ private:
     bool editMode = false, playMode = true;
     int editScene = -1;                              // Edit seul : la scene choisie (cadre)
     int pendingName = -1;                            // nom de scene presse (clic ou glisser)
+    int hoverGroup = -1;                             // groupe sous la souris (surligne)
+    int groupAtPos (const QPointF& p) const;
+    void leaveEvent (QEvent*) override;
     QPointF pendingPos;
     void nameClick (int scene, bool right, const QPoint& at);
 };

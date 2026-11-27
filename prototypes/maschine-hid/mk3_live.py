@@ -52,7 +52,7 @@ Modes, comme sur Maschine :
                 enregistre, DELETE. Shift + FILE = enregistrer tout de suite. En quittant, le projet est
                 enregistre (l'ancienne version reste en project.bak.json) ; au demarrage, le
                 dernier projet est rouvert.
-  ARRANGER      le morceau : liste de scenes jouees dans l'ordre. Pads = ajouter la scene apres
+  ARRANGER      le morceau : liste de scenes jouees dans l'ordre. SELECT + pad = ajouter la scene apres
                 l'entree choisie (< > banque) ; encodeur 1 / molette = entree, 2 = scene,
                 3 = repetitions, 4 = longueur en mesures (sinon : plus long pattern x repetitions),
                 par pas de 1 ; bouton 3 (HALF) = par pas de 0,5 ; ERASE = enlever, DUPLICATE = doubler l'entree ; bouton 5 SONG (la
@@ -2685,13 +2685,14 @@ def step_row(st: State, pad: int) -> int:
 
 def sound_for(st: State, pad: int) -> list:
     """Les notes a jouer tout de suite pour un pad frappe : [(son, note), ...]."""
-    if ('shift' in st.held or st.pattern_mode or st.scene_mode or st.arranger_mode
+    if ('shift' in st.held or st.pattern_mode or st.scene_mode
+            or (st.arranger_mode and 'select' in st.held)        # ARRANGER : SELECT + pad = scene
             or ({'mute', 'solo'} & st.held)                      # MUTE / SOLO + pad : rien ne joue
             or (st.plugin_mode and 'select' in st.held)
             or st.settings and st.set_tab in ('COLORS', 'STATUS')):
         return []                          # AUDIO / MIDI : les pads jouent (tester la sortie)
     if 'select' in st.held and not (st.pattern_mode or st.scene_mode or st.file_mode
-                                    or st.arranger_mode or st.plugin_mode):
+                                    or st.plugin_mode):
         return []                          # SELECT + pad : on choisit le son, rien ne joue
     if st.step_mode:                       # sans REC : on ecoute le son ; avec REC : seulement
         if not st.recording or st.grid[step_row(st, pad)][st.sound - 1] is None:   # en ajoutant
@@ -2993,7 +2994,7 @@ def handle(st: State, ev: tuple) -> None:
             else:
                 st.set_selected ^= {pad}
             return
-        if ({'mute', 'solo'} & st.held) and not (st.pattern_mode or st.scene_mode or st.arranger_mode):
+        if ({'mute', 'solo'} & st.held) and not (st.pattern_mode or st.scene_mode):
             key = (st.group, pad)                    # MUTE / SOLO + pad : le son du pad dans le groupe
             now = time.monotonic()
             shown = (st.plugin_mode or st.mixer or st.tracker16 or kb_tracker(st)
@@ -3020,8 +3021,8 @@ def handle(st: State, ev: tuple) -> None:
             elif st.right_view == 'keyboard' and not st.step_mode:
                 st.held_notes[pad] = [(st.pad_note(pad), vel)]
             return
-        if st.arranger_mode:                         # ARRANGER : pad = ajouter la scene
-            arranger_pad(st, pad)
+        if st.arranger_mode and 'select' in st.held:  # ARRANGER : SELECT + pad = ajouter la scene
+            arranger_pad(st, pad)                    # (pad seul : le son joue, comme ailleurs)
             return
         if st.plugin_mode:                           # PLUG-IN : choisir le son / la selection
             if 'select' in st.held:
@@ -4499,7 +4500,7 @@ def draw_arranger(st: State, half: int) -> Image.Image:
     else:
         d.text((12, 34), 'SONG mode ON: PLAY follows the song' if st.arr_on
                else 'SONG mode OFF: scenes are played by hand', font=font(14), fill='white')
-    lines = ['Pads: add a scene after the selected entry',
+    lines = ['SELECT + pad: add a scene after the selected entry',
              '(< > : scene bank).  ERASE: remove the entry.',
              'DUPLICATE: double the entry.',
              'SONG: on / off.  GO: play from the selected entry.',

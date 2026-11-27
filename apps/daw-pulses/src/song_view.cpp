@@ -33,7 +33,19 @@ SongView::SongView (const seq::Sequencer& seqr, const session::State& st, QWidge
     setMouseTracking (true);
     setAcceptDrops (true);                           // scenes glissees depuis la vue Scenes
     setFocusPolicy (Qt::NoFocus);
-    setMinimumHeight (kRulerH + kSongH + 3 * kLaneH);
+    setMinimumHeight (kRulerH + kSongH + 3 * laneH);
+}
+
+void SongView::zoomV (int dir)
+{
+    laneH = std::clamp (laneH + (dir > 0 ? 4 : -4), 16, 64);
+    update();
+}
+
+void SongView::leaveEvent (QEvent*)
+{
+    hoverLane = -1;
+    update();
 }
 
 void SongView::zoom (int dir)
@@ -200,7 +212,7 @@ void SongView::paintEvent (QPaintEvent*)
     {
         const int g = groups[k];
         p.setPen (groupColor (g));
-        p.drawText (QRectF (8, laneTop + k * kLaneH, kLabelW - 10, kLaneH), Qt::AlignVCenter | Qt::AlignLeft,
+        p.drawText (QRectF (8, laneTop + k * laneH, kLabelW - 10, laneH), Qt::AlignVCenter | Qt::AlignLeft,
                     p.fontMetrics().elidedText (groupTitle (state, g), Qt::ElideRight, kLabelW - 12));
     }
     p.setFont (f);
@@ -235,9 +247,11 @@ void SongView::paintEvent (QPaintEvent*)
     for (size_t k = 0; k < groups.size(); ++k)
     {
         const int g = groups[k];
-        const double y = laneTop + k * kLaneH;
+        const double y = laneTop + k * laneH;
+        if (g == hoverLane)                          // groupe sous la souris : ligne eclaircie
+            p.fillRect (QRectF (kLabelW, y, width() - kLabelW, laneH), QColor (255, 255, 255, 16));
         p.setPen (QColor (30, 30, 36));
-        p.drawLine (QPointF (kLabelW, y + kLaneH), QPointF (width(), y + kLaneH));
+        p.drawLine (QPointF (kLabelW, y + laneH), QPointF (width(), y + laneH));
         for (int i = 0; i < (int) song.size(); ++i)
         {
             const seq::Scene sc = sequencer.scene (song[(size_t) i].scene);
@@ -249,7 +263,7 @@ void SongView::paintEvent (QPaintEvent*)
             {
                 p.setPen (QPen (groupColor (g).darker (200), 1, Qt::DotLine));
                 p.setBrush (Qt::NoBrush);
-                p.drawRect (QRectF (xOfRow (a) + 1, y + 4, xOfRow (b) - xOfRow (a) - 2, kLaneH - 8));
+                p.drawRect (QRectF (xOfRow (a) + 1, y + 4, xOfRow (b) - xOfRow (a) - 2, laneH - 8));
                 continue;
             }
             if (v < 0)
@@ -258,7 +272,7 @@ void SongView::paintEvent (QPaintEvent*)
             for (int s = a; s < b; s += len)         // une case par repetition du pattern
             {
                 const double x0 = xOfRow (s), x1 = xOfRow (std::min (b, s + len));
-                const QRectF r (x0 + 1, y + 3, std::max (2.0, x1 - x0 - 2), kLaneH - 6);
+                const QRectF r (x0 + 1, y + 3, std::max (2.0, x1 - x0 - 2), laneH - 6);
                 p.setPen (Qt::NoPen);
                 p.setBrush (groupColor (g).darker (s == a ? 140 : 200));
                 p.drawRoundedRect (r, 3, 3);
@@ -290,13 +304,13 @@ void SongView::paintEvent (QPaintEvent*)
     }
     p.restore();
     // Hauteur : toutes les lignes de groupes (la fenetre defile verticalement)
-    const int need = kRulerH + kSongH + (int) groups.size() * kLaneH + 4;
+    const int need = kRulerH + kSongH + (int) groups.size() * laneH + 4;
     if (minimumHeight() != need)
         QTimer::singleShot (0, this, [this, need] { setMinimumHeight (need); });
     if (song.empty())
     {
         p.setPen (QColor (130, 130, 140));
-        p.drawText (QRectF (kLabelW + 10, kRulerH, width() - kLabelW - 20, kSongH + 2 * kLaneH), Qt::AlignCenter,
+        p.drawText (QRectF (kLabelW + 10, kRulerH, width() - kLabelW - 20, kSongH + 2 * laneH), Qt::AlignCenter,
                     tr ("Empty song: \"+ Scene\", or drag a scene name from the Scenes view, or right-click here"));
     }
 }
@@ -310,6 +324,24 @@ void SongView::mousePressEvent (QMouseEvent* e)
     {
         if (sequencer.song().empty())
             return;
+        int la = -1, lb = -1;                        // un bord de la zone : on le tire
+        sequencer.songLoopRange (la, lb);
+        const auto rows = startRows();
+        edge = Edge::None;
+        if (la >= 0 && lb + 1 < (int) rows.size())
+        {
+            if (std::abs (pressPos.x() - xOfRow (rows[(size_t) la])) <= 6)
+                edge = Edge::Left;
+            else if (std::abs (pressPos.x() - xOfRow (rows[(size_t) lb + 1])) <= 6)
+                edge = Edge::Right;
+        }
+        if (edge != Edge::None)
+        {
+            drag = Drag::Region;
+            regionA = la;
+            regionB = lb;
+            return;
+        }
         drag = Drag::Ruler;
         regionA = regionB = entryAtX (pressPos.x());
         return;
@@ -318,7 +350,7 @@ void SongView::mousePressEvent (QMouseEvent* e)
     {
         const int i = entryAtX (pressPos.x());
         const auto groups = lanes();
-        const int lane = (int) ((pressPos.y() - kRulerH - kSongH) / kLaneH);
+        const int lane = (int) ((pressPos.y() - kRulerH - kSongH) / laneH);
         if (i >= 0 && pressPos.x() > kLabelW && lane >= 0 && lane < (int) groups.size()
             && pressPos.x() < xOfRow (startRows().back()))
         {
@@ -335,8 +367,8 @@ void SongView::mousePressEvent (QMouseEvent* e)
     selected = pressEntry;
     emit selectedChanged (selected);
     const QRectF r = entryRect (pressEntry);
-    const bool edge = pressPos.y() < kRulerH + kSongH && std::abs (pressPos.x() - r.right()) <= 6;
-    drag = edge ? Drag::Resize : Drag::Pending;
+    const bool atEdge = pressPos.y() < kRulerH + kSongH && std::abs (pressPos.x() - r.right()) <= 6;
+    drag = atEdge ? Drag::Resize : Drag::Pending;
     resizeBars = r.width() / barPx;
     update();
 }
@@ -346,16 +378,29 @@ void SongView::mouseMoveEvent (QMouseEvent* e)
     const QPointF pos = e->position();
     if (drag == Drag::None)                          // le bord droit d'un bloc : curseur de taille
     {
+        const int lane = pos.y() >= kRulerH + kSongH ? (int) ((pos.y() - kRulerH - kSongH) / laneH) : -1;
+        const auto groups = lanes();
+        const int over = lane >= 0 && lane < (int) groups.size() ? groups[(size_t) lane] : -1;
+        if (over != hoverLane)
+        {
+            hoverLane = over;
+            update();
+        }
         const int i = entryAt (pos);
-        const bool edge = i >= 0 && pos.y() >= kRulerH && pos.y() < kRulerH + kSongH && std::abs (pos.x() - entryRect (i).right()) <= 6;
-        setCursor (edge ? Qt::SizeHorCursor : Qt::ArrowCursor);
+        const bool atEdge = i >= 0 && pos.y() >= kRulerH && pos.y() < kRulerH + kSongH && std::abs (pos.x() - entryRect (i).right()) <= 6;
+        setCursor (atEdge ? Qt::SizeHorCursor : Qt::ArrowCursor);
         return;
     }
     if (drag == Drag::Ruler && std::abs (pos.x() - pressPos.x()) >= 6)
         drag = Drag::Region;
     if (drag == Drag::Region)
     {
-        regionB = entryAtX (pos.x());
+        if (edge == Edge::Left)                      // bord gauche tire : le debut change
+            regionA = std::min (entryAtX (pos.x() + 1), regionB);
+        else if (edge == Edge::Right)                // bord droit : la fin
+            regionB = std::max (entryAtX (pos.x() - 1), regionA);
+        else
+            regionB = entryAtX (pos.x());
         update();
         return;
     }
@@ -377,11 +422,8 @@ void SongView::mouseMoveEvent (QMouseEvent* e)
 
 void SongView::mouseReleaseEvent (QMouseEvent*)
 {
-    if (drag == Drag::Ruler)                         // simple clic : jouer d'ici, zone effacee
-    {
-        emit loopRegion (-1, -1);
+    if (drag == Drag::Ruler)                         // simple clic : jouer d'ici (la zone reste)
         emit startFrom (regionA);
-    }
     else if (drag == Drag::Region)
         emit loopRegion (std::min (regionA, regionB), std::max (regionA, regionB));
     else if (drag == Drag::Resize && pressEntry >= 0)
@@ -393,6 +435,7 @@ void SongView::mouseReleaseEvent (QMouseEvent*)
             emit moveEntry (pressEntry, to);
     }
     drag = Drag::None;
+    edge = Edge::None;
     dropIndex = -1;
     pressEntry = -1;
     update();
@@ -407,6 +450,11 @@ void SongView::mouseDoubleClickEvent (QMouseEvent* e)
 
 void SongView::contextMenuEvent (QContextMenuEvent* e)
 {
+    if (e->pos().y() < kRulerH)                      // regle : effacer la zone de boucle
+    {
+        emit rulerMenu (e->globalPos());
+        return;
+    }
     const int i = entryAt (e->pos());
     if (i >= 0)
     {

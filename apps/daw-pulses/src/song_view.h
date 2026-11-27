@@ -18,7 +18,8 @@ public:
     double step = 1;                                 // longueur au bord : 1, 1/2, 1/3 ou 1/4 de mesure
     bool follow = false;                             // la vue suit la tete de lecture
     void followPlayhead();                           // a chaque ligne jouee
-    void zoom (int dir);                             // + / - : mesures plus larges / plus etroites
+    void zoom (int dir);                             // ZOOM H : mesures plus larges / plus etroites
+    void zoomV (int dir);                            // ZOOM V : lignes des groupes plus hautes / plus basses
     std::function<bool()> isPlaying;
 
 signals:
@@ -32,6 +33,7 @@ signals:
     void insertScene (int scene, int before);        // scene lachee (glisser depuis Scenes)
     void cellClicked (int entry, int group, const QPoint& globalPos);   // case groupe x bloc : son pattern
     void loopRegion (int from, int to);              // zone de boucle glissee sur la regle (-1 : effacer)
+    void rulerMenu (const QPoint& globalPos);        // clic droit sur la regle (effacer la zone)
 
 protected:
     void paintEvent (QPaintEvent*) override;
@@ -41,13 +43,17 @@ protected:
     void mouseDoubleClickEvent (QMouseEvent*) override;
     void contextMenuEvent (QContextMenuEvent*) override;
     void wheelEvent (QWheelEvent*) override;
+    void leaveEvent (QEvent*) override;
     void dragEnterEvent (QDragEnterEvent*) override;
     void dragMoveEvent (QDragMoveEvent*) override;
     void dragLeaveEvent (QDragLeaveEvent*) override;
     void dropEvent (QDropEvent*) override;
 
 private:
-    static constexpr int kLabelW = 86, kRulerH = 24, kSongH = 40, kLaneH = 24;
+    static constexpr int kLabelW = 86, kRulerH = 24, kSongH = 40;
+    int laneH = 24;                                  // hauteur des lignes de groupes (ZOOM V)
+    int hoverLane = -1;                              // groupe sous la souris (surligne)
+    enum class Edge { None, Left, Right } edge = Edge::None;   // bord de la zone de boucle tire
     double xOfRow (int row) const { return kLabelW + 4 + row / double (seq::kRowsPerBar) * barPx - scrollPx; }
     QRectF entryRect (int i) const;                  // le bloc de l'entree i (ligne SONG)
     int entryAt (const QPointF& p) const;            // -1 : aucune

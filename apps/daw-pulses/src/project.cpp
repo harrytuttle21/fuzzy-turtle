@@ -208,6 +208,27 @@ QJsonObject build (QJsonObject d, const QString& name, const seq::Sequencer& seq
         d["arr_loop"] = sequencer.songLoop();
     if (sequencer.songMode() || d.contains ("song_mode"))
         d["song_mode"] = sequencer.songMode();
+    // Toutes les songs (versions) : cle de l'app (le pilote joue « arrangement » = la song choisie)
+    const auto songs = sequencer.allSongs();
+    if (songs.size() > 1 || d.contains ("songs"))
+    {
+        QJsonArray list;
+        for (const auto& sl : songs)
+        {
+            QJsonArray ea;
+            for (const auto& e : sl.entries)
+            {
+                QJsonObject eo { { "scene", e.scene }, { "repeats", e.repeats } };
+                if (e.bars > 0)
+                    eo["bars"] = e.bars;
+                ea.append (eo);
+            }
+            list.append (QJsonObject { { "name", QString::fromStdString (sl.name) }, { "arrangement", ea }, { "arr_loop", sl.loop },
+                                       { "loop_from", sl.loopFrom }, { "loop_to", sl.loopTo } });
+        }
+        d["songs"] = list;
+        d["song_current"] = sequencer.currentSong();
+    }
     int la = -1, lb = -1;                             // zone de boucle (l'app seulement ; le pilote l'ignore)
     sequencer.songLoopRange (la, lb);
     if (la >= 0 || d.contains ("song_loop_from"))
@@ -312,7 +333,7 @@ void Project::toApp (seq::Sequencer& sequencer, session::State& state, int& bpm)
             sequencer.setPatternName (g, idx, pd["name"].toString().toStdString());
         }
         sequencer.selectPattern (g, current, false);   // cree un pattern vide s'il manque
-        sequencer.setGroupOff (g, gd["off"].toBool (true));   // pas d'info : eteint (actif des qu'on ecrit)
+        sequencer.setGroupOff (g, true);             // a l'ouverture, rien ne joue (NOW PLAYING vide) : on lance
     }
     // Scenes
     for (int i = 0; i < seq::kPatternSlots; ++i)
@@ -354,6 +375,50 @@ void Project::toApp (seq::Sequencer& sequencer, session::State& state, int& bpm)
     sequencer.setSongLoop (data["arr_loop"].toBool (true));
     sequencer.setSongMode (data["song_mode"].toBool (false));
     sequencer.setSongLoopRange (data["song_loop_from"].toInt (-1), data["song_loop_to"].toInt (-1));
+    // Plusieurs songs : la choisie vient d'« arrangement » (peut-etre modifiee par la Maschine)
+    if (data.contains ("songs"))
+    {
+        auto readEntries = [] (const QJsonArray& a)
+        {
+            std::vector<seq::SongEntry> out;
+            for (const auto& ev : a)
+            {
+                const QJsonObject eo = ev.toObject();
+                seq::SongEntry e;
+                e.scene = eo["scene"].toInt (-1);
+                if (e.scene < 0 || e.scene >= seq::kPatternSlots)
+                    continue;
+                e.repeats = std::clamp (eo["repeats"].toDouble (1), 0.5, 16.0);
+                e.bars = std::max (0.0, eo["bars"].toDouble (0));
+                out.push_back (e);
+            }
+            return out;
+        };
+        std::vector<seq::SongSlot> list;
+        for (const auto& v : data["songs"].toArray())
+        {
+            const QJsonObject so = v.toObject();
+            seq::SongSlot sl;
+            sl.name = so["name"].toString ("Song").toStdString();
+            sl.entries = readEntries (so["arrangement"].toArray());
+            sl.loop = so["arr_loop"].toBool (true);
+            sl.loopFrom = so["loop_from"].toInt (-1);
+            sl.loopTo = so["loop_to"].toInt (-1);
+            list.push_back (sl);
+        }
+        const int cur = std::clamp (data["song_current"].toInt (0), 0, std::max (0, (int) list.size() - 1));
+        if (! list.empty())
+        {
+            list[(size_t) cur].entries = song;       // « arrangement » fait foi pour la song choisie
+            list[(size_t) cur].loop = data["arr_loop"].toBool (true);
+            list[(size_t) cur].loopFrom = data["song_loop_from"].toInt (-1);
+            list[(size_t) cur].loopTo = data["song_loop_to"].toInt (-1);
+            sequencer.setAllSongs (list, cur);
+        }
+    }
+    else
+        sequencer.setAllSongs ({ seq::SongSlot { "Main", song, data["arr_loop"].toBool (true),
+                                                 data["song_loop_from"].toInt (-1), data["song_loop_to"].toInt (-1) } }, 0);
 }
 
 void Project::fromApp (const seq::Sequencer& sequencer, const session::State& state, int bpm)

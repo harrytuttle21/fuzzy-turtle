@@ -23,6 +23,7 @@ SceneView::SceneView (seq::Sequencer& seqr, const session::State& st, QWidget* p
 {
     setFocusPolicy (Qt::NoFocus);
     setAcceptDrops (true);                           // carres de la palette
+    setMouseTracking (true);                         // survol : groupe surligne
 }
 
 QString SceneView::patternText (int g, int index) const
@@ -192,6 +193,12 @@ void SceneView::paintEvent (QPaintEvent*)
         p.drawRoundedRect (r, 4, 4);
         p.setPen (silent ? QColor (110, 110, 120) : QColor (240, 240, 245));
         p.drawText (r, Qt::AlignCenter, silent ? QString() : patternText (g, combo[(size_t) g]));
+    }
+    if (hoverGroup >= 0 && groupShown (hoverGroup))  // groupe sous la souris : bande eclaircie
+    {
+        const QRectF c = groupCell (hoverGroup);
+        p.fillRect (rotated ? QRectF (0, c.top() - 1, width(), groupH()) : QRectF (c.left() - 1, 0, cellW(), height()),
+                    QColor (255, 255, 255, 16));
     }
     // Scenes
     const int vis = visibleScenes();
@@ -602,8 +609,38 @@ void SceneView::nameClick (int i, bool right, const QPoint& at)
     update();
 }
 
+int SceneView::groupAtPos (const QPointF& p) const
+{
+    for (int g = 0; g < kGroups; ++g)
+    {
+        if (! groupShown (g))
+            continue;
+        const QRectF c = groupCell (g);
+        if (rotated ? (p.y() >= c.top() - 1 && p.y() < c.top() - 1 + groupH())
+                    : (p.x() >= c.left() - 1 && p.x() < c.left() - 1 + cellW()))
+            return g;
+    }
+    return -1;
+}
+
+void SceneView::leaveEvent (QEvent*)
+{
+    hoverGroup = -1;
+    update();
+}
+
 void SceneView::mouseMoveEvent (QMouseEvent* e)
 {
+    if (! (e->buttons() & Qt::LeftButton))           // survol : la ligne / colonne du groupe eclaircie
+    {
+        const int g = groupAtPos (e->position());
+        if (g != hoverGroup)
+        {
+            hoverGroup = g;
+            update();
+        }
+        return;
+    }
     // Nom d'une scene glisse : vers la vue Song (ajouter au morceau)
     if (pendingName < 0 || ! (e->buttons() & Qt::LeftButton) || (e->position() - pendingPos).manhattanLength() < 8)
         return;
