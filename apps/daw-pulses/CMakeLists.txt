@@ -39,6 +39,7 @@ qt_add_executable(fuzzy-daw-pulses MACOSX_BUNDLE
     src/step_view.cpp src/step_view.h
     src/pattern_bar.cpp src/pattern_bar.h
     src/scene_view.cpp src/scene_view.h
+    src/scene_grid_view.cpp src/scene_grid_view.h
     src/palette_view.cpp src/palette_view.h
     src/song_view.cpp src/song_view.h
     src/project.cpp src/project.h

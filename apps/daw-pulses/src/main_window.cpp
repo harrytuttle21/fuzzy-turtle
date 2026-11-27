@@ -9,6 +9,7 @@
 #include "step_view.h"
 #include "pattern_bar.h"
 #include "scene_view.h"
+#include "scene_grid_view.h"
 #include "palette_view.h"
 #include "song_view.h"
 #include "loop_dialog.h"
@@ -87,7 +88,7 @@ using namespace session;
 namespace fc = fuzzy::control;
 
 namespace {
-constexpr int kLayoutVersion = 10;                  // disposition des panneaux (2 : Pattern et Mixer en panneaux)
+constexpr int kLayoutVersion = 11;                  // disposition des panneaux (2 : Pattern et Mixer en panneaux)
 
 // Clavier musical de l'ordinateur : rangee du milieu = touches blanches, rangee du haut = noires.
 struct KeyLayout { const char* notes; char octDown, octUp, velDown, velUp; };
@@ -405,6 +406,16 @@ MainWindow::MainWindow (const Options& options, QWidget* parent) : QMainWindow (
         groupsDock->resize (410, 250);
         groupsDock->hide();
         patternsToolBar->hide();                     // barre PATTERNS / SCENES : en option
+        // Pattern select commence a la hauteur du Keyboard (les deux lignes de panneaux s'alignent)
+        layout()->activate();
+        {
+            const int top = groupColDock->geometry().top(), keysTop = padsDock->geometry().top();   // les pads (le Keyboard a ses onglets au-dessus)
+            const int sep = style()->pixelMetric (QStyle::PM_DockWidgetSeparatorExtent, nullptr, this);
+            const int total = patternSelDock->geometry().bottom() - top + 1 - sep;
+            const int upper = keysTop - top - sep;
+            if (upper > 100 && total - upper > 100)
+                resizeDocks ({ groupColDock, patternSelDock }, { upper, total - upper }, Qt::Vertical);
+        }
         QTimer::singleShot (150, this, [this]
         {
             resizeDocks ({ groupColDock }, { 210 }, Qt::Horizontal);   // Qt garde 210 en memoire
@@ -742,7 +753,24 @@ MainWindow::MainWindow (const Options& options, QWidget* parent) : QMainWindow (
     maschine->setLightPainter ([this] (fc::Mk3Lights& l)
     {
         const int g = state.group, hue = groupHue (g);
-        for (int p = 1; p <= 16; ++p)                 // son coupe : eteint ; solo : vif
+        const bool gridPads = (patternHeld || sceneHeld) && gridOnScreen;   // Scene Grid : scenes / patterns
+        const seq::Scene gs = sequencer.scene (gridScene);
+        for (int p = 1; p <= 16 && gridPads; ++p)
+        {
+            if (sceneHeld)                            // la scene choisie vive, les pleines douces
+            {
+                const int i = patternBar->sceneBank * seq::kSlotsPerBank + p - 1;
+                const seq::Scene s = sequencer.scene (i);
+                l.setPad (p, seq::sceneColor (i, s.color).hsvHue(), i == gridScene ? fc::Shade::Bright : s.used ? fc::Shade::Dim : fc::Shade::Off);
+            }
+            else                                      // patterns du groupe : dans la scene = vif
+            {
+                const int i = patternBar->patternBank * seq::kSlotsPerBank + p - 1;
+                l.setPad (p, hue, gs.used && gs.pattern[(size_t) g] == i ? fc::Shade::Bright
+                                  : sequencer.hasPattern (g, i) ? fc::Shade::Dim : fc::Shade::Off);
+            }
+        }
+        for (int p = 1; p <= 16 && ! gridPads; ++p)   // son coupe : eteint ; solo : vif
         {
             const char tag = state.soundTag (g, p);
             if (padChords)                            // mode CHORDS : pads avec accord doux, le 1er vif
@@ -840,11 +868,16 @@ MainWindow::MainWindow (const Options& options, QWidget* parent) : QMainWindow (
             const int g = state.group;
             right.fill (fc::kBlack);
             right.fillRect (0, 0, 480, 26, rgb (acc));
-            const std::string head = scenes ? QString ("SCENES  bank %1/4").arg (bank + 1).toStdString()
-                                            : QString ("PATTERNS %1  bank %2/4").arg (groupTitle (state, g)).arg (bank + 1).toStdString();
+            const bool grid = gridOnScreen;          // Scene Grid : la scene choisie et son contenu
+            const seq::Scene gs = sequencer.scene (gridScene);
+            const std::string head = grid ? (scenes ? QString ("SCENE GRID  S%1  bank %2/4").arg (gridScene + 1).arg (bank + 1)
+                                                    : QString ("S%1 + PATTERNS %2  bank %3/4").arg (gridScene + 1).arg (groupTitle (state, g)).arg (bank + 1)).toStdString()
+                                          : scenes ? QString ("SCENES  bank %1/4").arg (bank + 1).toStdString()
+                                                   : QString ("PATTERNS %1  bank %2/4").arg (groupTitle (state, g)).arg (bank + 1).toStdString();
             right.text (8, 5, head, fc::kBlack);
-            const int nowIndex = scenes ? sequencer.currentScene() : (sequencer.groupOff (g) ? -1 : sequencer.currentPattern (g));
-            const int queued = scenes ? -1 : sequencer.queuedPattern (g);
+            const int nowIndex = grid ? (scenes ? gridScene : gs.used ? gs.pattern[(size_t) g] : -1)
+                                      : scenes ? sequencer.currentScene() : (sequencer.groupOff (g) ? -1 : sequencer.currentPattern (g));
+            const int queued = scenes || grid ? -1 : sequencer.queuedPattern (g);
             for (int k = 0; k < 16; ++k)
             {
                 const int pad = 13 + k % 4 - 4 * (k / 4);   // pad 13 en haut a gauche
@@ -1679,6 +1712,17 @@ void MainWindow::playPad (int pad, int velocity, bool down)
             QMetaObject::invokeMethod (this, [this, pad] { shiftPad (pad); }, Qt::QueuedConnection);
             return;
         }
+        if ((patternHeld || sceneHeld) && gridOnScreen)   // Scene Grid : SCENE + pad = choisir la scene,
+        {                                             // PATTERN + pad = ce pattern entre / sort de la scene
+            holdUsed = true;
+            const bool scene = sceneHeld;
+            QMetaObject::invokeMethod (this, [this, pad, scene, g]
+            {
+                scene ? gridChooseScene (patternBar->sceneBank * seq::kSlotsPerBank + pad - 1, true)
+                      : gridToggle (g, patternBar->patternBank * seq::kSlotsPerBank + pad - 1, true);
+            }, Qt::QueuedConnection);
+            return;
+        }
         if (patternHeld || sceneHeld)                // PATTERN / SCENE + pad : pattern ou scene de la banque
         {
             holdUsed = true;
@@ -1910,7 +1954,8 @@ void MainWindow::refreshGroups()
     }
     if (mixer)
         mixer->update();
-        if (soundMixer) soundMixer->update();
+    if (soundMixer)
+        soundMixer->update();
     if (patternView)
     {
         patternView->clearSelection();               // autre groupe : autre pattern
@@ -1958,6 +2003,7 @@ void MainWindow::refreshStats()
 void MainWindow::refreshMaschine()
 {
     arrangerMode = songView && ! songView->visibleRegion().isEmpty();   // la vue Song est devant
+    gridOnScreen = gridShown();                      // Scene Grid devant : PATTERN / SCENE + pad la modifient
     if (! maschine)
         return;
     maschine->updateLights();
@@ -2455,7 +2501,8 @@ void MainWindow::projectChanged()
     // Tempo, volumes et patterns viennent d'etre remplaces : l'affichage suit
     if (mixer)
         mixer->update();
-        if (soundMixer) soundMixer->update();
+    if (soundMixer)
+        soundMixer->update();
     {
         const QSignalBlocker block (lengthBox);
         lengthBox->setValue (sequencer.patternLength (state.group));
@@ -2986,6 +3033,8 @@ void MainWindow::undo (bool redoIt)
     patternBar->refresh (true);
     if (sceneView)
         sceneView->update();
+    if (sceneGrid)
+        sceneGrid->update();
     if (patternManagerRefresh)
         patternManagerRefresh();
     if (sceneListRefresh)
@@ -3140,7 +3189,9 @@ void MainWindow::toggleSound (int group, int sound, bool solo)
 void MainWindow::refreshMuteSolo()
 {
     if (sceneView)
-        sceneView->update();                         // vue Scenes : groupes muets en gris
+        sceneView->update();
+    if (sceneGrid)
+        sceneGrid->update();                         // vue Scenes : groupes muets en gris
     // « Unmute all » / « Unsolo all » : actifs seulement s'il y a quelque chose a reactiver
     bool anyMute = false, anySolo = false, anyGMute = false, anyGSolo = false;
     for (int s = 0; s < 16; ++s)
@@ -5532,6 +5583,8 @@ void MainWindow::patternsChanged()
         songSceneListRefresh();                      // les scenes de la vue Song
     if (palette)
         palette->update();
+    if (sceneGrid)
+        sceneGrid->update();
     if (sceneListRefresh)
         sceneListRefresh();
     if (patternManagerRefresh)
@@ -5544,6 +5597,8 @@ void MainWindow::patternsChanged()
     tracker->update();
     if (sceneView)
         sceneView->update();
+    if (sceneGrid)
+        sceneGrid->update();
 }
 
 QWidget* MainWindow::buildScenes()
@@ -5590,6 +5645,12 @@ QWidget* MainWindow::buildScenes()
     listBtn->setToolTip (tr ("List of the scenes and their patterns (S1 - AP1, BP3...)"));
     connect (listBtn, &QPushButton::clicked, this, [this] { openSceneList(); });
     head->insertWidget (1, listBtn);
+    auto* gridBtn = new QPushButton (tr ("Grid"));     // Scene Grid, facon Maschine (l'ancienne vue reste)
+    gridBtn->setCheckable (true);
+    gridBtn->setFocusPolicy (Qt::NoFocus);
+    gridBtn->setObjectName ("keys");
+    gridBtn->setToolTip (tr ("Scene Grid (Maschine style): scenes on top, one column per group with its patterns"));
+    head->insertWidget (2, gridBtn);
     auto* paletteBtn = new QPushButton (tr ("Palette"));
     paletteBtn->setCheckable (true);
     paletteBtn->setFocusPolicy (Qt::NoFocus);
@@ -5606,7 +5667,12 @@ QWidget* MainWindow::buildScenes()
     hint->setAlignment (Qt::AlignRight | Qt::AlignVCenter);
     head->addWidget (hint, 1);
     col->addLayout (head);
+    sceneEditBtn = editBtn;
+    scenePlayBtn = playBtn;
     sceneView = new SceneView (sequencer, state);
+    sceneGrid = new SceneGridView (sequencer, state);
+    gridScene = std::max (0, sequencer.currentScene());
+    sceneGrid->setScene (gridScene);
     sceneView->isPlaying = [this] { return transport && transport->playing(); };
     rotate->setChecked (QSettings().value ("scenes/rotated", false).toBool());
     editBtn->setChecked (QSettings().value ("scenes/edit", false).toBool());
@@ -5635,7 +5701,41 @@ QWidget* MainWindow::buildScenes()
     auto* area = new QBoxLayout (QBoxLayout::LeftToRight);   // la palette a gauche de la grille
     area->addWidget (palette, 0, Qt::AlignTop);
     area->addWidget (sceneView, 1);
+    area->addWidget (sceneGrid, 1);
     col->addLayout (area, 1);
+    auto placeGrid = [this, gridBtn, rotate, paletteBtn, listBtn]
+    {
+        const bool grid = gridBtn->isChecked();
+        sceneGrid->setVisible (grid);
+        sceneView->setVisible (! grid);
+        palette->setVisible (! grid && paletteBtn->isChecked());
+        for (auto* b : { rotate, paletteBtn, listBtn })
+            b->setEnabled (! grid);
+        QSettings().setValue ("scenes/grid", grid);
+        refreshMaschine();
+    };
+    gridBtn->setChecked (QSettings().value ("scenes/grid", false).toBool());
+    connect (gridBtn, &QPushButton::toggled, this, placeGrid);
+    QTimer::singleShot (0, this, placeGrid);
+    connect (sceneGrid, &SceneGridView::sceneClicked, this, [this] (int i) { gridChooseScene (i); });
+    connect (patternBar, &PatternBar::changed, sceneGrid, [this] { sceneGrid->update(); });
+    connect (sceneGrid, &SceneGridView::sceneMenu, this, [this] (int i, const QPoint& at)
+    {
+        if (sequencer.scene (i).used)
+            patternBar->sceneMenu (i, at);
+        sceneGrid->update();
+    });
+    connect (sceneGrid, &SceneGridView::renameScene, this, [this] (int i) { patternBar->renameScene (i); sceneGrid->update(); });
+    connect (sceneGrid, &SceneGridView::patternToggled, this, [this] (int g, int i) { gridToggle (g, i); });
+    connect (sceneGrid, &SceneGridView::patternMenu, this, [this] (int g, int i, const QPoint& at)
+    {
+        if (g != state.group)
+            selectGroup (g);
+        patternBar->patternMenu (i, at);
+        sceneGrid->update();
+    });
+    connect (sceneGrid, &SceneGridView::groupClicked, this, [this] (int g) { if (g != state.group) selectGroup (g); sceneGrid->update(); });
+    connect (sceneGrid, &SceneGridView::groupMenu, this, [this] (int g, const QPoint& at) { groupContextMenu (g, at); });
     auto placePalette = [this, area, rotate, paletteBtn]
     {
         // Toujours a gauche : en bas, elle prenait trop de hauteur aux groupes (Rotate)
@@ -5701,7 +5801,7 @@ QWidget* MainWindow::buildScenes()
         if (picked == mute || picked == solo)
         {
             refreshMuteSolo();
-            sceneView->update();
+            sceneView->update(); if (sceneGrid) sceneGrid->update();
         }
     });
     connect (sceneView, &SceneView::sceneClicked, this, [this] (int i) { patternBar->chooseScene (i); });
@@ -5739,6 +5839,8 @@ void MainWindow::renameGroup (int g)
         patternBar->refresh (true);
     if (sceneView)
         sceneView->update();
+    if (sceneGrid)
+        sceneGrid->update();
     maschine->updateScreens();
     toast (QString ("GROUP %1").arg (groupTitle (state, g)));
 }
@@ -7618,11 +7720,16 @@ QWidget* MainWindow::buildGroupColumn()
         r.s = new QPushButton ("S");
         for (auto* b : { r.m, r.s })
         {
-            b->setFixedSize (20, 19);
+            b->setFixedWidth (20);                   // la hauteur suit la place (lignes qui remplissent la colonne)
+            b->setMinimumHeight (19);
+            b->setMaximumHeight (34);
+            b->setSizePolicy (QSizePolicy::Fixed, QSizePolicy::Expanding);
             b->setFocusPolicy (Qt::NoFocus);
         }
         r.name = new QPushButton;
-        r.name->setFixedHeight (19);
+        r.name->setMinimumHeight (19);
+        r.name->setMaximumHeight (34);
+        r.name->setSizePolicy (QSizePolicy::Expanding, QSizePolicy::Expanding);
         r.name->setFocusPolicy (Qt::NoFocus);
         r.name->setAcceptDrops (true);               // pad ou groupe lache dessus
         r.name->installEventFilter (this);           // glisser le groupe (comme le bloc Groups)
@@ -7647,10 +7754,10 @@ QWidget* MainWindow::buildGroupColumn()
         line->addWidget (r.m);
         line->addWidget (r.s);
         line->addWidget (r.name, 1);
-        col->addLayout (line);
+        col->addLayout (line, 1);
         (*rows)[(size_t) g] = r;
     }
-    col->addStretch (1);
+    col->addStretch (0);                             // reste (lignes a leur hauteur maxi) : en bas
     // Les patterns du groupe choisi : 16 cases (banque < >) ; clic = jouer / choisir, clic droit = menu
     // (toujours visibles, sous la liste des groupes qui, elle, defile si la fenetre est basse)
     auto* ppanel = new QFrame;
@@ -7800,6 +7907,8 @@ void MainWindow::refreshCounter (int row)
 
 void MainWindow::updateColumnFor()
 {
+    if (gridOnScreen != gridShown())                 // Scene Grid montree / cachee : la Maschine suit
+        refreshMaschine();
     // Scenes / Song devant : liste des groupes cachee (ces vues ont deja une ligne par groupe) ;
     // les cases des patterns restent. Mixer et Sounds : tout reste (choisir le groupe, ses patterns)
     auto front = [] (QDockWidget* d) { return d && d->property ("front").toBool() && ! d->isFloating(); };
@@ -7821,4 +7930,79 @@ void MainWindow::updateColumnFor()
     };
     apply (groupColDock, rows);
     apply (patternSelDock, false);
+}
+
+// ------------------------------------------------------------ Scene Grid (facon Maschine)
+
+bool MainWindow::gridShown() const
+{
+    return sceneGrid && sceneGrid->isVisible() && ! sceneGrid->visibleRegion().isEmpty();
+}
+
+void MainWindow::gridChooseScene (int scene, bool fromMaschine)
+{
+    // Choisir la scene ; avec Play allume (et pleine), elle se lance aussi
+    if (scene < 0 || scene >= seq::kPatternSlots)
+        return;
+    gridScene = scene;
+    sceneGrid->setScene (scene);
+    const seq::Scene s = sequencer.scene (scene);
+    if (s.used && scenePlayBtn && scenePlayBtn->isChecked())
+        patternBar->chooseScene (scene);
+    else
+        toast (s.used ? QString ("S%1 %2").arg (scene + 1).arg (QString::fromStdString (s.name)).trimmed()
+                      : QString ("S%1 empty: PATTERN + pad (or click a pattern) to fill it").arg (scene + 1));
+    sceneGrid->update();
+    if (sceneView)
+        sceneView->update();
+    if (sceneGrid)
+        sceneGrid->update();
+    refreshCounter (counterRow);
+    if (fromMaschine)
+        refreshMaschine();
+}
+
+void MainWindow::gridToggle (int group, int pattern, bool fromMaschine)
+{
+    // Un seul pattern par groupe et par scene : clic sur celui de la scene = il sort (le groupe se
+    // tait dans cette scene) ; clic sur un autre = il entre et remplace l'ancien
+    if (sceneEditBtn && ! sceneEditBtn->isChecked())
+    {
+        toast ("Turn Edit on (Scenes view) to change scenes");
+        return;
+    }
+    seq::Scene s = sequencer.scene (gridScene);
+    if (s.used && s.locked)
+    {
+        toast (QString ("S%1 is locked").arg (gridScene + 1));
+        return;
+    }
+    rememberPatterns (-1, QString ("Scene S%1").arg (gridScene + 1));
+    if (! sequencer.hasPattern (group, pattern))       // Maschine : pad vide = nouveau pattern vide
+    {
+        seq::Pattern p;
+        p.length = sequencer.patternAt (group, sequencer.currentPattern (group)).length;
+        sequencer.setPatternAt (group, pattern, p);
+    }
+    if (! s.used)                                    // scene vide : comme la Maschine, tout se tait
+    {
+        s.used = true;
+        s.pattern.fill (seq::kOff);
+    }
+    const bool out = s.pattern[(size_t) group] == pattern;
+    s.pattern[(size_t) group] = out ? seq::kOff : pattern;
+    sequencer.setScene (gridScene, s);
+    if (sequencer.currentScene() == gridScene)       // la scene qui joue : on l'entend tout de suite
+        sequencer.selectPattern (group, s.pattern[(size_t) group], transport && transport->playing());
+    toast (QString ("S%1  %2 %3 %4").arg (gridScene + 1).arg (groupTitle (state, group))
+               .arg (out ? "out:" : "in:").arg (PatternBar::patternName (sequencer, group, pattern)));
+    patternBar->refresh (true);
+    patternsChanged();
+    sceneGrid->update();
+    if (sceneView)
+        sceneView->update();
+    if (sceneGrid)
+        sceneGrid->update();
+    if (fromMaschine)
+        refreshMaschine();
 }

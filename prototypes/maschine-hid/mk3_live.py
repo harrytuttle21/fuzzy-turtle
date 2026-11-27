@@ -546,6 +546,8 @@ class State:
         self.scene_knobs = {0: Knob(40)}
         self.scene_names = [''] * PAT_SLOTS
         self.scene_locked: set[int] = set()       # scenes verrouillees (cadenas) : se lancent, ne changent plus
+        self.scene_grid = False                  # SCENE GRID (bouton 7 en mode SCENE), comme DAW Pulses
+        self.grid_scene = 0                      # la derniere scene choisie dans la grille
         self.name_edit = None                    # nom en cours d'edition : ('pattern', g, i) / ('scene', i)
         self.name_pos = 0
         self.name_knobs = {4: Knob(40), 5: Knob(25), 6: Knob(40), 7: Knob(40)}   # sous l'ecran droit
@@ -1976,6 +1978,8 @@ def draw_left(st: State) -> Image.Image:
         return draw_plugin(st, 0)
     if st.arranger_mode:
         return draw_arranger(st, 0)
+    if st.scene_grid and (st.pattern_mode or st.scene_mode) and st.name_edit is None:
+        return draw_scene_grid(st, 0)
     if st.pattern_mode:
         return draw_patterns(st, 0)
     if st.scene_mode:
@@ -2161,6 +2165,7 @@ def draw_scenes(st: State, half: int) -> Image.Image:
         return img
     state = 'switching...' if waiting else ('playing' if st.playing else 'stopped')
     header(d, f'Scene {cur + 1:02d} {st.scene_names[cur]}' if cur is not None else 'No scene', state, acc)
+    softkey(d, st, 2, 'GRID', st.scene_grid)          # 7 : SCENE GRID (facon DAW Pulses)
     softkey(d, st, 3, 'NAME', st.name_edit is not None)
     combo = st.scenes[cur] if cur is not None and st.scenes[cur] else current_combo(st)
     for k, g in enumerate(GROUPS):                     # 16 groupes : 4 lignes de 4
@@ -2525,6 +2530,8 @@ def _draw_right(st: State) -> Image.Image:
         return draw_plugin(st, 1)
     if st.arranger_mode:
         return draw_arranger(st, 1)
+    if st.scene_grid and (st.pattern_mode or st.scene_mode) and st.name_edit is None:
+        return draw_scene_grid(st, 1)
     if st.pattern_mode:
         return draw_patterns(st, 1)
     if st.scene_mode:
@@ -3034,6 +3041,13 @@ def handle(st: State, ev: tuple) -> None:
                 st.plugin_sel.clear()
             st.sound = pad
             return
+        grid_plain = st.scene_grid and not ({'shift', 'erase', 'duplicate', 'select'} & st.held)
+        if st.pattern_mode and grid_plain:           # SCENE GRID : le pattern entre / sort de la scene
+            grid_pattern_pad(st, pad)
+            return
+        if st.scene_mode and grid_plain:             # SCENE GRID : choisir (et lancer) la scene
+            grid_scene_pad(st, pad)
+            return
         if st.pattern_mode:                          # PATTERN : pads = patterns
             pattern_pad(st, pad, vel)
             return
@@ -3267,6 +3281,13 @@ def handle(st: State, ev: tuple) -> None:
                 st.name_edit = None
             else:
                 st.name_edit, st.name_pos = ('group', st.group), 0
+            return
+        if st.scene_mode and not st.settings and name == 'screen_7':   # 7 : SCENE GRID (marche / arret)
+            st.scene_grid = not st.scene_grid
+            if st.scene_grid:
+                st.grid_scene = st.scene_current if st.scene_current is not None else st.scene_bank * 16
+            st.toast = ('SCENE GRID on: SCENE + pad = scene, PATTERN + pad = in / out' if st.scene_grid
+                        else 'SCENE GRID off', time.monotonic() + 3)
             return
         if (st.pattern_mode or st.scene_mode) and not st.settings and name == 'screen_8':   # 8 : NAME
             if st.name_edit:
@@ -4840,6 +4861,93 @@ def launch_scene(st: State, idx: int) -> None:
     st.scene_current = idx
 
 
+def grid_scene_pad(st: State, pad: int) -> None:
+    """SCENE GRID, mode SCENE : le pad choisit la scene (pleine : elle se lance aussi)."""
+    idx = st.scene_bank * 16 + pad - 1
+    st.grid_scene = idx
+    if st.scenes[idx]:
+        launch_scene(st, idx)
+    else:
+        st.toast = (f'S{idx + 1:02d} empty: PATTERN + pad to fill it', time.monotonic() + 2)
+
+
+def grid_pattern_pad(st: State, pad: int) -> None:
+    """SCENE GRID, mode PATTERN : le pattern du groupe choisi entre dans la derniere scene choisie
+    (il remplace l'ancien de ce groupe : un seul par groupe et par scene) ou en sort s'il y est."""
+    g, idx, si = st.group, st.pat_bank * 16 + pad - 1, st.grid_scene
+    now = time.monotonic()
+    if st.scenes[si] and si in st.scene_locked:
+        st.toast = (f'S{si + 1:02d} is locked', now + 2)
+        return
+    if st.patterns[g][idx] is None:                  # pad vide : un nouveau pattern vide
+        st.patterns[g][idx] = new_pattern(pattern_length(st, g))
+    sc = st.scenes[si] if st.scenes[si] else {x: OFF for x in GROUPS}   # scene vide : tout se tait
+    out = sc.get(g) == idx
+    sc[g] = OFF if out else idx
+    st.scenes[si] = sc
+    if st.scene_current == si:                       # la scene qui joue : on l'entend tout de suite
+        set_off(st, g) if out else select_pattern(st, g, idx)
+    name = st.patterns[g][idx].get('name') or f'Pattern {idx + 1}'
+    st.toast = (f"S{si + 1:02d} {g} {'out' if out else 'in'}: {name}", now + 2)
+
+
+def draw_scene_grid(st: State, half: int) -> Image.Image:
+    """SCENE GRID sur les 2 ecrans : en haut 8 scenes de la banque par ecran (la choisie vive),
+    au milieu 4 groupes par ecran avec leurs patterns (dans la scene : couleur ; sinon gris),
+    en bas les groupes et leur nom."""
+    acc = group_rgb(st)
+    img = Image.new('RGB', (W, H), (10, 10, 14))
+    d = ImageDraw.Draw(img)
+    si = st.grid_scene
+    sc = st.scenes[si]
+    if half == 0:
+        header(d, f"SCENE GRID  S{si + 1:02d} {st.scene_names[si] if sc else '(empty)'}",
+               'PATTERN + pad: in / out', acc)
+    else:
+        header(d, f'Bank {st.scene_bank + 1}/{PAT_BANKS}', 'SCENE + pad: scene   7: GRID off', acc)
+    for k in range(8):                               # scenes de la banque : 8 par ecran
+        idx = st.scene_bank * 16 + half * 8 + k
+        x, y = 4 + k * 59, 30
+        if idx == si:
+            rounded(d, (x, y, x + 55, y + 20), fill=acc, r=4)
+        elif st.scenes[idx]:
+            rounded(d, (x, y, x + 55, y + 20), fill=shade(acc, 0.3), r=4)
+        else:
+            rounded(d, (x, y, x + 55, y + 20), outline=(50, 50, 60), r=4)
+        ink = 'black' if idx == si else ('white' if st.scenes[idx] else (90, 90, 100))
+        txt = ('>' if idx == st.scene_current else '') + f'S{idx + 1}' + ('*' if idx in st.scene_locked else '')
+        d.text((x + 28 - d.textlength(txt, font=font(12)) / 2, y + 3), txt, font=font(12), fill=ink)
+    bank = GROUPS[8:] if st.group.endswith('2') else GROUPS[:8]
+    for c in range(4):                               # 4 groupes par ecran
+        g = bank[half * 4 + c]
+        color = hue_rgb(st.group_hue[g])
+        x = 4 + c * 119
+        pats = [i for i in range(PAT_SLOTS) if st.patterns[g][i]]
+        member = sc.get(g) if sc else None
+        first = 0
+        if member in pats and pats.index(member) >= 8:   # le pattern de la scene reste visible
+            first = pats.index(member) - 7
+        for row, i in enumerate(pats[first:first + 8]):
+            y = 56 + row * 21
+            on = member == i
+            rounded(d, (x, y, x + 113, y + 18), fill=color if on else (40, 40, 48), r=4)
+            name = st.patterns[g][i].get('name') or f'Pattern {i + 1}'
+            d.text((x + 5, y + 2), name[:14], font=font(12), fill='black' if on else (150, 150, 160))
+        if sc and member is None:                    # libre dans cette scene : cadre pointille
+            for yy in range(56, 222, 8):
+                d.line((x, yy, x, yy + 3), fill=color)
+                d.line((x + 113, yy, x + 113, yy + 3), fill=color)
+        if len(pats) > first + 8:
+            d.text((x + 100, 222), '..', font=font(12), fill=(150, 150, 160))
+        chosen = g == st.group                       # en bas : le groupe et son nom
+        rounded(d, (x, 236, x + 113, 268), fill=color if chosen else (30, 30, 36), r=4)
+        d.text((x + 5, 238), g, font=font(13), fill='black' if chosen else color)
+        d.text((x + 5, 253), (st.group_names.get(g) or '')[:12], font=font(11),
+               fill='black' if chosen else (210, 210, 216))
+    toast_box(st, d, acc)
+    return img
+
+
 def scene_free_toggle(st: State, g: str) -> None:
     """Shift + groupe (mode SCENE) : dans la scene en cours, ce groupe devient libre (il garde
     son pattern quand on lance la scene) ou redevient fixe (pattern qu'il joue maintenant)."""
@@ -5135,7 +5243,7 @@ def available_buttons(st: State) -> set:
                      'duplicate'}
     if st.pattern_mode or st.scene_mode:
         return on | {'nav_prev', 'nav_next', 'duplicate', 'erase', 'screen_8'} \
-            | ({'screen_7'} if st.pattern_mode else set()) \
+            | ({'screen_7'} if (st.pattern_mode or st.scene_mode) else set()) \
             | ({'select'} if st.scene_mode else set())     # 8 : NAME ; SELECT + groupe : FREE
     on.add('duplicate')                                # Shift + DUPLICATE : DOUBLE (pattern x 2)
     if kb_tracker(st):
@@ -5172,7 +5280,8 @@ def button_frame(st: State) -> bytes:
               'screen_3': (st.set_tab in ('COLORS', 'KEYS')) if st.settings else
                           (not st.mixer and (st.tracker16 or kb_tracker(st))),
               'screen_8': (st.name_edit is not None) if (st.pattern_mode or st.scene_mode)
-                          else (st.user_edit and not st.settings), 'screen_7': st.link_edit,
+                          else (st.user_edit and not st.settings),
+              'screen_7': st.scene_grid if st.scene_mode else st.link_edit,
               'settings': st.settings, 'follow': st.follow,
               'midi_channel': st.settings and st.set_tab == 'MIDI',
               'screen_1': st.settings and st.set_tab == SET_TABS[0],
@@ -5239,6 +5348,14 @@ def led_frame(st: State) -> bytes:
             idx = st.scene_bank * 16 + p - 1
             colors[p] = bright if idx == sel else (dim if st.scenes[idx] else 0)
         return pad_led_frame(colors)
+    if st.scene_grid and st.scene_mode:                # SCENE GRID : la scene choisie vive
+        return pad_led_frame({p: bright if st.scene_bank * 16 + p - 1 == st.grid_scene
+                              else dim if st.scenes[st.scene_bank * 16 + p - 1] else 0 for p in range(1, 17)})
+    if st.scene_grid and st.pattern_mode:              # SCENE GRID : dans la scene = vif
+        gsc = st.scenes[st.grid_scene] or {}
+        return pad_led_frame({p: bright if gsc.get(st.group) == st.pat_bank * 16 + p - 1
+                              else dim if st.patterns[st.group][st.pat_bank * 16 + p - 1] else 0
+                              for p in range(1, 17)})
     if st.scene_mode:                                  # SCENE : vide eteint, pleine douce,
         colors = {}                                    # en cours vive (clignote en attente)
         blink = int(now * 4) % 2 == 0
