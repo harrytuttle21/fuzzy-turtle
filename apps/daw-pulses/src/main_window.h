@@ -274,6 +274,15 @@ private:
     class SongView* songView = nullptr;              // onglet Song (morceau)
     QDockWidget* songDock = nullptr;
     QWidget* buildSong();
+    // Colonne des groupes, a gauche des onglets (toutes les vues sauf le Mixer) : M / S / nom,
+    // puis les 16 patterns de la banque du groupe choisi
+    QWidget* buildGroupColumn();
+    QDockWidget* groupColDock = nullptr;
+    std::function<void()> groupColRefresh;
+    QPushButton *colUnmute = nullptr, *colUnsolo = nullptr;
+    QToolBar* transportTool = nullptr;               // le Transport : barre en haut (detachable, flottante)
+    QLabel* counterLabel = nullptr;                  // compteur de lecture
+    void refreshCounter (int row);
     // Ligne d'aide (en bas de la fenetre) : l'aide de la vue sous la souris
     struct HelpEntry { QPointer<QLabel> label; QString view; };
     std::vector<HelpEntry> helps;
@@ -309,7 +318,8 @@ private:
     void patternsChanged();                          // pattern / scene change : les vues suivent
     void exportGroup();                              // File > Export Group (.fzgroup)
     void importGroup();                              // File > Import Group : remplace le groupe choisi
-    void renameGroup (int g);                        // nom du groupe (la lettre reste)
+    void renameGroup (int g);
+    void groupContextMenu (int g, const QPoint& at);   // clic droit sur un groupe (bloc ou colonne)                        // nom du groupe (la lettre reste)
     bool exportGroupTo (const QString& path, bool copySamples);
     void importGroupFrom (const QString& path, const QJsonObject& doc);
     QToolBar* patternsToolBar = nullptr;

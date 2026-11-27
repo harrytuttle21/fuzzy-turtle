@@ -86,7 +86,7 @@ using namespace session;
 namespace fc = fuzzy::control;
 
 namespace {
-constexpr int kLayoutVersion = 8;                  // disposition des panneaux (2 : Pattern et Mixer en panneaux)
+constexpr int kLayoutVersion = 9;                  // disposition des panneaux (2 : Pattern et Mixer en panneaux)
 
 // Clavier musical de l'ordinateur : rangee du milieu = touches blanches, rangee du haut = noires.
 struct KeyLayout { const char* notes; char octDown, octUp, velDown, velUp; };
@@ -126,7 +126,15 @@ MainWindow::MainWindow (const Options& options, QWidget* parent) : QMainWindow (
     top->toggleViewAction()->setVisible (false);
     top->addWidget (buildTopBar());
     addToolBar (Qt::TopToolBarArea, top);
-    // Barre PATTERNS / SCENES, sous la barre du haut (View > Patterns / Scenes pour la masquer)
+    // Transport : tout en haut, sur une ligne (barre detachable : elle peut flotter)
+    addToolBarBreak (Qt::TopToolBarArea);
+    transportTool = new QToolBar (tr ("Transport"));
+    transportTool->setObjectName ("transportTool2");
+    transportTool->setMovable (true);
+    transportTool->setFloatable (true);
+    transportTool->addWidget (buildTransportBar());
+    addToolBar (Qt::TopToolBarArea, transportTool);
+    // Barre PATTERNS / SCENES (masquee par defaut : la colonne des groupes a les patterns)
     addToolBarBreak (Qt::TopToolBarArea);
     patternsToolBar = new QToolBar (tr ("Patterns / Scenes"));
     patternsToolBar->setObjectName ("patternsBar");
@@ -161,7 +169,7 @@ MainWindow::MainWindow (const Options& options, QWidget* parent) : QMainWindow (
     oldKeys->hide();
     // Vue par defaut : en haut, Pattern / Piano Roll / Mixer en onglets sur toute la largeur ;
     // en bas, Groups | Keyboard | Pads cote a cote
-    patternDock = makeDock (tr ("Pattern"), "patternDock", buildLeftPanel());
+    patternDock = makeDock (tr ("Patterns"), "patternDock", buildLeftPanel());
     mixerDock = makeDock (tr ("Mixer"), "mixerDock", buildMixer());
     trackerDock = makeDock (tr ("Tracker"), "trackerDock", buildTracker());   // avant le Piano Roll (Edit / Step partages)
     rollDock = makeDock (tr ("Piano Roll"), "pianoRollDock", buildPianoRoll());
@@ -173,7 +181,7 @@ MainWindow::MainWindow (const Options& options, QWidget* parent) : QMainWindow (
     tabifyDockWidget (mixerDock, sceneDock);        // onglet Scenes, apres le Mixer
     songDock = makeDock (tr ("Song"), "songDock", buildSong());
     tabifyDockWidget (sceneDock, songDock);         // onglet Song, apres Scenes
-    groupsDock = makeDock (tr ("Groups"), "groupsDock", buildGroupBlock());
+    groupsDock = makeDock (tr ("Groups (Maschine layout)"), "groupsDock", buildGroupBlock());
     keysTabDock = makeDock (tr ("Keyboard"), "keyboardTabDock", buildKeyboardTab());
     soundDock = makeDock (tr ("Sound"), "soundDock", buildSoundTab());
     pads = new PadGrid;
@@ -247,12 +255,30 @@ MainWindow::MainWindow (const Options& options, QWidget* parent) : QMainWindow (
         helpLine->setSizePolicy (QSizePolicy::Expanding, QSizePolicy::Preferred);
         helpLine->setMinimumWidth (0);
         helpBar->addWidget (helpLine);
-        helpBar->setStyleSheet ("QToolBar { background: #1c1c22; border: none; border-top: 1px solid #6a6a76; spacing: 0; padding: 0; }");   // trait au-dessus
+        helpBar->setStyleSheet ("QToolBar { background: #1c1c22; border: none; border-top: 1px solid #6a6a76; margin-top: 6px; spacing: 0; padding: 0; }");   // de l'air, puis un trait
         addToolBar (Qt::BottomToolBarArea, helpBar);
     }
     // Transport : sa propre fenetre, sous les groupes (detachable a part)
-    transportDock = makeDock (tr ("Transport"), "transportDock", buildTransportBar());
-    splitDockWidget (groupsDock, transportDock, Qt::Vertical);
+    // Colonne des groupes : a gauche des onglets (le coin haut-gauche est a elle)
+    groupColDock = makeDock (tr ("Groups"), "groupColumnDock", buildGroupColumn());
+    setCorner (Qt::TopLeftCorner, Qt::LeftDockWidgetArea);
+    addDockWidget (Qt::LeftDockWidgetArea, groupColDock);
+    // Mixer devant (et pas detache) : la colonne se cache (les groupes y sont deja en voies)
+    connect (mixerDock, &QDockWidget::visibilityChanged, this, [this] (bool shown)
+    {
+        if (mixerDock->isFloating())
+            return;
+        if (shown && groupColDock->isVisible() && ! groupColDock->isFloating())
+        {
+            groupColDock->hide();
+            groupColDock->setProperty ("autoHidden", true);
+        }
+        else if (! shown && groupColDock->property ("autoHidden").toBool())
+        {
+            groupColDock->setProperty ("autoHidden", false);
+            groupColDock->show();
+        }
+    });
     addDockWidget (Qt::BottomDockWidgetArea, padsDock);
     splitDockWidget (keysTabDock, padsDock, Qt::Horizontal);
     tabifyDockWidget (keysTabDock, soundDock);       // Keyboard et Sound en onglets (apres les pads)
@@ -366,7 +392,11 @@ MainWindow::MainWindow (const Options& options, QWidget* parent) : QMainWindow (
     {
         resizeDocks ({ groupsDock, keysTabDock, padsDock }, { width() * 25 / 100, width() * 50 / 100, width() * 25 / 100 }, Qt::Horizontal);
         resizeDocks ({ patternDock, padsDock }, { height() * 57 / 100, height() * 43 / 100 }, Qt::Vertical);   // vue d'usine (mesuree sur la capture de reference)
-        resizeDocks ({ groupsDock, transportDock }, { height(), transportDock->widget()->sizeHint().height() }, Qt::Vertical);
+        resizeDocks ({ groupColDock, patternDock }, { 210, width() - 210 }, Qt::Horizontal);
+        resizeDocks ({ keysTabDock, padsDock }, { width() * 66 / 100, width() * 34 / 100 }, Qt::Horizontal);
+        groupsDock->setFloating (true);              // bloc 2 x 4 (Maschine) : en option, ferme
+        groupsDock->hide();
+        patternsToolBar->hide();                     // barre PATTERNS / SCENES : en option
         defaultLayout = factoryLayout = saveState (kLayoutVersion);   // vue Default (d'usine)
         if (QSettings().contains ("layout/default"))  // « Save as Default » : la sienne
             defaultLayout = QSettings().value ("layout/default").toByteArray();
@@ -608,6 +638,7 @@ MainWindow::MainWindow (const Options& options, QWidget* parent) : QMainWindow (
     });
     connect (transport, &Transport::row, this, [this] (int r)
     {
+        refreshCounter (r);                          // compteur de lecture
         const int local = sequencer.localRow (state.group, r);   // ligne dans le pattern du groupe
         patternView->setPlayRow (local);
         pianoRoll->setPlayRow (local);
@@ -1039,65 +1070,7 @@ QWidget* MainWindow::buildGroupBlock()
         b->setContextMenuPolicy (Qt::CustomContextMenu);   // clic droit : Mute (rouge), Solo (jaune)
         connect (b, &QPushButton::customContextMenuRequested, this, [this, i, b] (const QPoint& p)
         {
-            const int g = i + (state.group >= 8 ? 8 : 0);
-            const int count = (int) groupTargets (g).size();
-            const bool several = count > 1;              // groupes choisis : « Mute 3 groups »...
-            QMenu menu (this);
-            QAction* chosen = nullptr;
-            QList<QAction*> items;
-            for (const bool solo : { false, true })
-            {
-                const bool on = solo ? state.groupSolo[(size_t) g].load() : state.groupMute[(size_t) g].load();
-                auto* button = new QPushButton ((on ? QStringLiteral ("\u2713 ") : QStringLiteral ("   "))
-                                                + (solo ? "Solo " : "Mute ") + (several ? QString ("%1 groups").arg (count) : groupName (g)));
-                button->setFlat (true);
-                button->setStyleSheet (QString ("QPushButton { color: %1; text-align: left; padding: 5px 14px; border: none; font-weight: bold; }"
-                                                "QPushButton:hover { background: #2c2c36; }").arg (solo ? "#e8c040" : "#e05050"));
-                auto* action = new QWidgetAction (&menu);
-                action->setDefaultWidget (button);
-                menu.addAction (action);
-                items << action;
-                connect (button, &QPushButton::clicked, &menu, [&menu, &chosen, action] { chosen = action; menu.close(); });
-            }
-            menu.addSeparator();
-            const QList<int> targets = groupTargets (g);
-            QStringList names;
-            for (int t : targets)
-                names << groupName (t);
-            auto* copyGroup = menu.addAction (several ? tr ("Copy %1 groups").arg (count) : tr ("Copy Group %1").arg (groupName (g)));
-            auto* cutGroup = menu.addAction (several ? tr ("Cut %1 groups (move)").arg (count) : tr ("Cut Group %1 (move)").arg (groupName (g)));
-            QStringList clipNames;
-            for (int t : groupClips)
-                clipNames << groupName (t);
-            auto* pasteGroup = menu.addAction (groupClips.empty() ? tr ("Paste Group")
-                                               : groupClips.size() > 1 ? tr ("Paste %1 groups here").arg (groupClips.size()) : tr ("Paste Group %1 here").arg (clipNames.join (" ")));
-            pasteGroup->setEnabled (! groupClips.empty() && ! (groupClips.size() == 1 && groupClips[0] == g));
-            menu.addSeparator();
-            auto* renameAction = menu.addAction (tr ("Rename Group %1...").arg (groupName (g)));
-            auto* exportAction = menu.addAction (tr ("Export Group %1...").arg (groupName (g)));
-            auto* importAction = menu.addAction (tr ("Import Group into %1...").arg (groupName (g)));
-            auto* picked = menu.exec (b->mapToGlobal (p));
-            if (chosen)
-            {
-                // Mute / Solo : tous les groupes choisis comme celui-ci
-                const bool solo = chosen == items[1];
-                const bool on = ! (solo ? state.groupSolo[(size_t) g].load() : state.groupMute[(size_t) g].load());
-                for (int t : targets)
-                    (solo ? state.groupSolo : state.groupMute)[(size_t) t] = on;
-                refreshMuteSolo();
-            }
-            else if (picked == copyGroup || picked == cutGroup)
-                copyGroups (targets, picked == cutGroup);
-            else if (picked == pasteGroup)
-                pasteGroups (g);
-            else if (picked == renameAction)
-                renameGroup (g);
-            else if (picked == exportAction || picked == importAction)
-            {
-                if (g != state.group)                    // le groupe du clic devient le groupe choisi
-                    selectGroup (g);
-                picked == exportAction ? exportGroup() : importGroup();
-            }
+            groupContextMenu (i + (state.group >= 8 ? 8 : 0), b->mapToGlobal (p));
         });
         grid->addWidget (b, i / 4, i % 4);
         groupButtons[(size_t) i] = b;
@@ -1352,8 +1325,8 @@ QWidget* MainWindow::buildTransportBar()
     // en bas ⏮ ▶ ■ ● et le tempo
     auto* bar = new QFrame;
     bar->setObjectName ("transport");
-    auto* rows = new QVBoxLayout (bar);
-    rows->setContentsMargins (8, 4, 8, 4);
+    auto* rows = new QHBoxLayout (bar);              // une seule ligne (barre du haut)
+    rows->setContentsMargins (8, 2, 8, 2);
     rows->setSpacing (4);
     auto* top = new QHBoxLayout;
     auto* row = new QHBoxLayout;
@@ -1386,7 +1359,6 @@ QWidget* MainWindow::buildTransportBar()
         b->setFocusPolicy (Qt::NoFocus);
         b->setFixedSize (40, 30);                    // compacts : la fenetre Transport reste etroite
     }
-    row->addStretch();
     for (auto* b : { restart, playButton, stop, recButton })
         row->addWidget (b);
     row->addSpacing (8);
@@ -1420,8 +1392,6 @@ QWidget* MainWindow::buildTransportBar()
         refreshMaschine();
     });
     row->addWidget (swingBox);
-    row->addStretch();
-    top->addStretch();
     top->addWidget (beatLabel);
     top->addSpacing (8);
 
@@ -1459,9 +1429,20 @@ QWidget* MainWindow::buildTransportBar()
     songTransportButton->setChecked (sequencer.songMode());
     connect (songTransportButton, &QPushButton::clicked, this, [this] (bool on) { setSongMode (on); });
     top->addWidget (songTransportButton);
-    top->addStretch();
-    rows->addLayout (top);
     rows->addLayout (row);
+    rows->addSpacing (14);
+    rows->addLayout (top);
+    rows->addSpacing (14);
+    // Compteur : mesure.temps et temps ecoule ; en Song : temps dans le morceau / duree, bloc
+    counterLabel = new QLabel;
+    counterLabel->setTextFormat (Qt::RichText);
+    counterLabel->setCursor (Qt::PointingHandCursor);
+    counterLabel->setToolTip (tr ("Playback position (bar.beat) and time; in Song mode: time in the song / length and block"));
+    counterLabel->setStyleSheet ("QLabel { background: #0c0c10; border: 1px solid #2c2c34; border-radius: 4px; padding: 1px 10px;"
+                                 " font-family: Menlo, Monaco, monospace; font-size: 15px; color: #f0f0f5; }");
+    rows->addWidget (counterLabel);
+    rows->addStretch();
+    refreshCounter (0);
     bar->setToolTip (tr ("Space bar: play / pause"));
     bar->setSizePolicy (QSizePolicy::Preferred, QSizePolicy::Maximum);   // juste sa hauteur
     return bar;
@@ -2115,7 +2096,7 @@ bool MainWindow::eventFilter (QObject* watched, QEvent* event)
             {
                 auto* m = static_cast<QMouseEvent*> (event);
                 lastArea = Area::Groups;
-                const int g = i + (state.group >= 8 ? 8 : 0);
+                const int g = b->property ("groupAbs").isValid() ? b->property ("groupAbs").toInt() : i + (state.group >= 8 ? 8 : 0);
                 if (m->button() == Qt::LeftButton && (m->modifiers() & (Qt::ShiftModifier | Qt::ControlModifier)))
                 {
                     // Choisir des groupes sans changer de groupe : Cmd + clic = celui-ci, Shift + clic = de .. a
@@ -2153,7 +2134,7 @@ bool MainWindow::eventFilter (QObject* watched, QEvent* event)
                     && (m->position().toPoint() - groupPress).manhattanLength() >= QApplication::startDragDistance() * 2)
                 {
                     groupPressIndex = -1;
-                    const int g = i + (state.group >= 8 ? 8 : 0);
+                    const int g = b->property ("groupAbs").isValid() ? b->property ("groupAbs").toInt() : i + (state.group >= 8 ? 8 : 0);
                     auto* mime = new QMimeData;
                     mime->setData (kGroupMime, QByteArray::number (g));
                     auto* drag = new QDrag (b);
@@ -2185,7 +2166,8 @@ bool MainWindow::eventFilter (QObject* watched, QEvent* event)
                 for (const char* f : { kSoundMime, kGroupMime })
                     if (d->mimeData()->hasFormat (f))
                         copy->setData (f, d->mimeData()->data (f));
-                QMetaObject::invokeMethod (this, [this, i, copy] { groupDropped (i, copy); delete copy; }, Qt::QueuedConnection);
+                const int tg = b->property ("groupAbs").isValid() ? b->property ("groupAbs").toInt() : i + (state.group >= 8 ? 8 : 0);
+                QMetaObject::invokeMethod (this, [this, tg, copy] { groupDropped (tg, copy); delete copy; }, Qt::QueuedConnection);
                 return true;
             }
             default:
@@ -2641,19 +2623,20 @@ void MainWindow::buildViewMenu (QMenu* menu)
     // Panneaux : coche = visible
     struct Item { QDockWidget* dock; QKeySequence key; };
     for (const auto& item : { Item { padsDock, QKeySequence ("Ctrl+1") }, Item { groupsDock, QKeySequence ("Ctrl+2") },
-                              Item { transportDock, QKeySequence() }, Item { statusDock, QKeySequence ("Ctrl+I") } })
+                              Item { groupColDock, QKeySequence() }, Item { statusDock, QKeySequence ("Ctrl+I") } })
     {
         auto* a = item.dock->toggleViewAction();
         a->setShortcut (item.key);
         menu->addAction (a);
     }
     menu->addSeparator();
+    menu->addAction (transportTool->toggleViewAction());     // barre Transport
     menu->addAction (patternsToolBar->toggleViewAction());   // barre Patterns / Scenes
     menu->addAction (tr ("Display Diagnostics (F12)"), this, [this] { showDisplayDiagnostics(); });
     menu->addSeparator();
     auto* mixerAction = menu->addAction (tr ("Mixer"), this, [this] { showLeftTab (0); });
     mixerAction->setShortcut (QKeySequence ("Ctrl+M"));
-    auto* patternAction = menu->addAction (tr ("Pattern"), this, [this] { showLeftTab (1); });
+    auto* patternAction = menu->addAction (tr ("Patterns"), this, [this] { showLeftTab (1); });
     patternAction->setShortcut (QKeySequence ("Ctrl+P"));
     auto* scenesAction = menu->addAction (tr ("Scenes"), this, [this] { showLeftTab (6); });
     scenesAction->setShortcut (QKeySequence ("Ctrl+Shift+S"));
@@ -3076,6 +3059,13 @@ void MainWindow::refreshMuteSolo()
     mixUnsolo->setEnabled (anyGSolo);
     groupUnmute->setEnabled (anyGMute);
     groupUnsolo->setEnabled (anyGSolo);
+    if (colUnmute)
+    {
+        colUnmute->setEnabled (anyGMute);
+        colUnsolo->setEnabled (anyGSolo);
+    }
+    if (groupColRefresh)
+        groupColRefresh();                           // colonne des groupes : M / S, noms, patterns
     std::array<char, 16> tags {};
     for (int p = 1; p <= 16; ++p)
         tags[(size_t) p - 1] = state.soundTag (state.group, p);
@@ -4766,9 +4756,8 @@ void MainWindow::soundDropMenu (int fg, int fp, int tp, const QPoint& at)
         transferSound (fg, fp, tg, tp, picked == copy ? Transfer::Copy : picked == move ? Transfer::Move : Transfer::Swap);
 }
 
-void MainWindow::groupDropped (int index, const QMimeData* mime)
+void MainWindow::groupDropped (int tg, const QMimeData* mime)
 {
-    const int tg = index + (state.group >= 8 ? 8 : 0);
     if (mime->hasFormat (kGroupMime))                // groupe lache sur un groupe
     {
         const int fg = mime->data (kGroupMime).toInt();
@@ -7409,4 +7398,260 @@ void MainWindow::sceneColorMenu (QMenu* menu, int scene)
             songView->update();
         });
     }
+}
+
+void MainWindow::groupContextMenu (int g, const QPoint& at)
+{
+    // Clic droit sur un groupe (bloc Groups, colonne des groupes) : Mute / Solo, copier, coller,
+    // renommer, exporter / importer
+    const int count = (int) groupTargets (g).size();
+    const bool several = count > 1;              // groupes choisis : « Mute 3 groups »...
+    QMenu menu (this);
+    QAction* chosen = nullptr;
+    QList<QAction*> items;
+    for (const bool solo : { false, true })
+    {
+        const bool on = solo ? state.groupSolo[(size_t) g].load() : state.groupMute[(size_t) g].load();
+        auto* button = new QPushButton ((on ? QStringLiteral ("\u2713 ") : QStringLiteral ("   "))
+                                        + (solo ? "Solo " : "Mute ") + (several ? QString ("%1 groups").arg (count) : groupName (g)));
+        button->setFlat (true);
+        button->setStyleSheet (QString ("QPushButton { color: %1; text-align: left; padding: 5px 14px; border: none; font-weight: bold; }"
+                                        "QPushButton:hover { background: #2c2c36; }").arg (solo ? "#e8c040" : "#e05050"));
+        auto* action = new QWidgetAction (&menu);
+        action->setDefaultWidget (button);
+        menu.addAction (action);
+        items << action;
+        connect (button, &QPushButton::clicked, &menu, [&menu, &chosen, action] { chosen = action; menu.close(); });
+    }
+    menu.addSeparator();
+    const QList<int> targets = groupTargets (g);
+    QStringList names;
+    for (int t : targets)
+        names << groupName (t);
+    auto* copyGroup = menu.addAction (several ? tr ("Copy %1 groups").arg (count) : tr ("Copy Group %1").arg (groupName (g)));
+    auto* cutGroup = menu.addAction (several ? tr ("Cut %1 groups (move)").arg (count) : tr ("Cut Group %1 (move)").arg (groupName (g)));
+    QStringList clipNames;
+    for (int t : groupClips)
+        clipNames << groupName (t);
+    auto* pasteGroup = menu.addAction (groupClips.empty() ? tr ("Paste Group")
+                                       : groupClips.size() > 1 ? tr ("Paste %1 groups here").arg (groupClips.size()) : tr ("Paste Group %1 here").arg (clipNames.join (" ")));
+    pasteGroup->setEnabled (! groupClips.empty() && ! (groupClips.size() == 1 && groupClips[0] == g));
+    menu.addSeparator();
+    auto* renameAction = menu.addAction (tr ("Rename Group %1...").arg (groupName (g)));
+    auto* exportAction = menu.addAction (tr ("Export Group %1...").arg (groupName (g)));
+    auto* importAction = menu.addAction (tr ("Import Group into %1...").arg (groupName (g)));
+    auto* picked = menu.exec (at);
+    if (chosen)
+    {
+        // Mute / Solo : tous les groupes choisis comme celui-ci
+        const bool solo = chosen == items[1];
+        const bool on = ! (solo ? state.groupSolo[(size_t) g].load() : state.groupMute[(size_t) g].load());
+        for (int t : targets)
+            (solo ? state.groupSolo : state.groupMute)[(size_t) t] = on;
+        refreshMuteSolo();
+    }
+    else if (picked == copyGroup || picked == cutGroup)
+        copyGroups (targets, picked == cutGroup);
+    else if (picked == pasteGroup)
+        pasteGroups (g);
+    else if (picked == renameAction)
+        renameGroup (g);
+    else if (picked == exportAction || picked == importAction)
+    {
+        if (g != state.group)                    // le groupe du clic devient le groupe choisi
+            selectGroup (g);
+        picked == exportAction ? exportGroup() : importGroup();
+    }
+}
+
+// ------------------------------------------------------------ colonne des groupes (a gauche)
+
+QWidget* MainWindow::buildGroupColumn()
+{
+    auto* panel = new QFrame;
+    panel->setObjectName ("panel");
+    auto* col = new QVBoxLayout (panel);
+    col->setContentsMargins (6, 4, 6, 4);
+    col->setSpacing (3);
+    auto* head = new QHBoxLayout;
+    head->addWidget (muteSoloRow (colUnmute, colUnsolo, true));
+    head->addStretch();
+    col->addLayout (head);
+    // Une ligne par groupe : M, S, nom (clic = choisir ; clic droit = menu ; glisser = copier / deplacer)
+    struct Row { QPushButton *m, *s, *name; };
+    auto rows = std::make_shared<std::array<Row, kGroups>>();
+    for (int g = 0; g < kGroups; ++g)
+    {
+        auto* line = new QHBoxLayout;
+        line->setSpacing (3);
+        Row r;
+        r.m = new QPushButton ("M");
+        r.s = new QPushButton ("S");
+        for (auto* b : { r.m, r.s })
+        {
+            b->setFixedSize (20, 19);
+            b->setFocusPolicy (Qt::NoFocus);
+        }
+        r.name = new QPushButton;
+        r.name->setFixedHeight (19);
+        r.name->setFocusPolicy (Qt::NoFocus);
+        r.name->setAcceptDrops (true);               // pad ou groupe lache dessus
+        r.name->installEventFilter (this);           // glisser le groupe (comme le bloc Groups)
+        r.name->setProperty ("groupIndex", 100 + g);
+        r.name->setProperty ("groupAbs", g);
+        r.name->setContextMenuPolicy (Qt::CustomContextMenu);
+        connect (r.name, &QPushButton::clicked, this, [this, g] { selectGroup (g); });
+        connect (r.name, &QPushButton::customContextMenuRequested, this, [this, g, b = r.name] (const QPoint& p)
+        {
+            groupContextMenu (g, b->mapToGlobal (p));
+        });
+        connect (r.m, &QPushButton::clicked, this, [this, g]
+        {
+            state.groupMute[(size_t) g] = ! state.groupMute[(size_t) g];
+            refreshMuteSolo();
+        });
+        connect (r.s, &QPushButton::clicked, this, [this, g]
+        {
+            state.groupSolo[(size_t) g] = ! state.groupSolo[(size_t) g];
+            refreshMuteSolo();
+        });
+        line->addWidget (r.m);
+        line->addWidget (r.s);
+        line->addWidget (r.name, 1);
+        col->addLayout (line);
+        (*rows)[(size_t) g] = r;
+    }
+    col->addStretch (1);
+    // Les patterns du groupe choisi : 16 cases (banque < >) ; clic = jouer / choisir, clic droit = menu
+    // (toujours visibles, sous la liste des groupes qui, elle, defile si la fenetre est basse)
+    auto* ppanel = new QFrame;
+    ppanel->setObjectName ("panel");
+    auto* pcol = new QVBoxLayout (ppanel);
+    pcol->setContentsMargins (6, 6, 6, 6);
+    pcol->setSpacing (3);
+    auto* phead = new QHBoxLayout;
+    auto* ptitle = new QLabel;
+    ptitle->setObjectName ("hint");
+    auto* prev = new QPushButton (QStringLiteral ("\u25C0"));
+    auto* next = new QPushButton (QStringLiteral ("\u25B6"));
+    auto* bankLabel = new QLabel;
+    bankLabel->setObjectName ("hint");
+    for (auto* b : { prev, next })
+    {
+        b->setFixedSize (22, 20);
+        b->setFocusPolicy (Qt::NoFocus);
+        b->setStyleSheet ("QPushButton { padding: 0; font-size: 9px; }");
+    }
+    phead->addWidget (ptitle, 1);
+    phead->addWidget (prev);
+    phead->addWidget (bankLabel);
+    phead->addWidget (next);
+    pcol->addLayout (phead);
+    auto* pgrid = new QGridLayout;
+    pgrid->setSpacing (3);
+    auto cells = std::make_shared<std::array<QPushButton*, 16>>();
+    for (int k = 0; k < 16; ++k)
+    {
+        auto* c = new QPushButton;
+        c->setFixedHeight (26);
+        c->setFocusPolicy (Qt::NoFocus);
+        c->setContextMenuPolicy (Qt::CustomContextMenu);
+        const int slot = k;                          // case 0-15 de la banque (rangees de 4)
+        connect (c, &QPushButton::clicked, this, [this, slot] { patternBar->choosePattern (patternBar->patternBank * 16 + slot); });
+        connect (c, &QPushButton::customContextMenuRequested, this, [this, slot, c] (const QPoint& p)
+        {
+            patternBar->patternMenu (patternBar->patternBank * 16 + slot, c->mapToGlobal (p));
+        });
+        pgrid->addWidget (c, k / 4, k % 4);
+        (*cells)[(size_t) k] = c;
+    }
+    pcol->addLayout (pgrid);
+    connect (prev, &QPushButton::clicked, this, [this] { patternBar->patternBank = (patternBar->patternBank + 3) % 4; patternBar->refresh (true); if (groupColRefresh) groupColRefresh(); });
+    connect (next, &QPushButton::clicked, this, [this] { patternBar->patternBank = (patternBar->patternBank + 1) % 4; patternBar->refresh (true); if (groupColRefresh) groupColRefresh(); });
+
+    groupColRefresh = [this, rows, cells, ptitle, bankLabel]
+    {
+        for (int g = 0; g < kGroups; ++g)
+        {
+            const Row& r = (*rows)[(size_t) g];
+            const bool mute = state.groupMute[(size_t) g], solo = state.groupSolo[(size_t) g];
+            r.m->setStyleSheet (mute ? "QPushButton { padding: 0; font-size: 10px; background: #e05050; color: #111; font-weight: bold; border: none; }"
+                                     : "QPushButton { padding: 0; font-size: 10px; background: #17171c; color: #8a8a94; border: 1px solid #3a3a44; }");
+            r.s->setStyleSheet (solo ? "QPushButton { padding: 0; font-size: 10px; background: #e8c040; color: #111; font-weight: bold; border: none; }"
+                                     : "QPushButton { padding: 0; font-size: 10px; background: #17171c; color: #8a8a94; border: 1px solid #3a3a44; }");
+            const QColor c = state.groupAudible (g) ? groupColor (g) : QColor (90, 90, 98);
+            const bool chosen = g == state.group;
+            r.name->setText (groupTitle (state, g));
+            r.name->setStyleSheet (QString ("QPushButton { text-align: left; padding: 0 6px; font-weight: bold; color: %1; background: %2; border: %3; }")
+                                       .arg (chosen ? "#111" : css (c.lighter (130)), chosen ? css (c) : css (c.darker (330)),
+                                             groupChosen.contains (g) ? "2px dashed #fc8c28" : chosen ? "2px solid #ffffff" : "1px solid " + css (c.darker (200))));
+        }
+        const int g = state.group;
+        ptitle->setText (tr ("PATTERNS %1").arg (groupTitle (state, g)));
+        bankLabel->setText (QString ("%1/4").arg (patternBar->patternBank + 1));
+        const int cur = sequencer.groupOff (g) ? -1 : sequencer.currentPattern (g);
+        const int queued = sequencer.queuedPattern (g);
+        const QColor c = groupColor (g);
+        for (int k = 0; k < 16; ++k)
+        {
+            const int i = patternBar->patternBank * 16 + k;
+            auto* b = (*cells)[(size_t) k];
+            const bool exists = sequencer.hasPattern (g, i);
+            QString name = QString::fromStdString (sequencer.patternName (g, i));
+            b->setText (exists && ! name.isEmpty() ? name.left (6) : QString::number (i + 1));
+            b->setToolTip (exists ? QString ("%1 %2").arg (i + 1).arg (PatternBar::patternName (sequencer, g, i)) : tr ("Empty: click = new pattern"));
+            b->setStyleSheet (QString ("QPushButton { font-size: 11px; padding: 0; color: %1; background: %2; border: %3; }")
+                                  .arg (i == cur ? "#111" : exists ? "#f0f0f5" : "#5a5a64",
+                                        i == cur ? css (c) : exists ? css (c.darker (260)) : "#141418",
+                                        i == queued ? "2px dashed #fc8c28" : i == cur ? "2px solid #ffffff" : exists ? "1px solid " + css (c.darker (180)) : "1px solid #26262e"));
+        }
+    };
+    connect (patternBar, &PatternBar::changed, this, [this] { if (groupColRefresh) groupColRefresh(); });
+    QTimer::singleShot (0, this, [this] { if (groupColRefresh) groupColRefresh(); });
+    auto* scroll = new QScrollArea;                  // si la fenetre est basse : la colonne defile
+    scroll->setWidget (panel);
+    scroll->setWidgetResizable (true);
+    scroll->setHorizontalScrollBarPolicy (Qt::ScrollBarAlwaysOff);
+    scroll->setFrameShape (QFrame::NoFrame);
+    auto* outer = new QWidget;
+    auto* ov = new QVBoxLayout (outer);
+    ov->setContentsMargins (0, 0, 0, 0);
+    ov->setSpacing (4);
+    ov->addWidget (scroll, 1);
+    ov->addWidget (ppanel);
+    return outer;
+}
+
+void MainWindow::refreshCounter (int row)
+{
+    // Position : mesure.temps (16 lignes = 1 mesure), temps ecoule ; en Song : dans le morceau
+    if (! counterLabel)
+        return;
+    const double bpm = bpmBox ? std::max (1, bpmBox->value()) : 120;
+    auto clock = [bpm] (int rows, bool tenths)
+    {
+        const double secs = rows / 4.0 * 60.0 / bpm;
+        const int whole = (int) secs;
+        return tenths ? QString ("%1:%2.%3").arg (whole / 60).arg (whole % 60, 2, 10, QChar ('0')).arg ((int) ((secs - whole) * 10))
+                      : QString ("%1:%2").arg (whole / 60).arg (whole % 60, 2, 10, QChar ('0'));
+    };
+    QString text = QString ("<b>%1.%2</b>&nbsp;&nbsp;<span style='color:#b8b8c4'>%3</span>")
+                       .arg (row / seq::kRowsPerBar + 1, 3, 10, QChar ('0')).arg (row % seq::kRowsPerBar / 4 + 1).arg (clock (row, true));
+    if (sequencer.songMode() && ! sequencer.song().empty())
+    {
+        const auto song = sequencer.song();
+        int entry = 0, inEntry = 0, before = 0, total = 0;
+        sequencer.songPosition (entry, inEntry);
+        for (int i = 0; i < (int) song.size(); ++i)
+        {
+            const int len = sequencer.entryRows (song[(size_t) i]);
+            if (i < entry)
+                before += len;
+            total += len;
+        }
+        text += QString ("&nbsp;&nbsp;<span style='color:#f5c9a0'>SONG %1 / %2 \u00B7 Block %3/%4</span>")
+                    .arg (clock (std::min (total, before + inEntry), false), clock (total, false))
+                    .arg (std::min (entry + 1, (int) song.size())).arg (song.size());
+    }
+    counterLabel->setText (text);
 }
