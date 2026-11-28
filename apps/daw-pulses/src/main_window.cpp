@@ -185,18 +185,38 @@ MainWindow::MainWindow (const Options& options, QWidget* parent) : QMainWindow (
     tabifyDockWidget (soundMixDock, sceneDock);     // onglet Scenes, apres Sounds
     songDock = makeDock (tr ("Song"), "songDock", buildSong());
     tabifyDockWidget (sceneDock, songDock);         // onglet Song, apres Scenes
+    // Les grandes vues dans une zone qui defile si le panneau est trop petit : n'importe quel onglet
+    // peut aller dans la barre du bas (ou du haut) sans que Qt le refuse pour sa taille minimale
+    for (auto* d : { patternDock, rollDock, trackerDock, mixerDock, soundMixDock, sceneDock, songDock })
+    {
+        auto* area = new QScrollArea;
+        area->setFrameShape (QFrame::NoFrame);
+        area->setWidgetResizable (true);
+        area->setWidget (d->widget());
+        area->setMinimumSize (200, 120);
+        d->setWidget (area);
+    }
     groupsDock = makeDock (tr ("Groups (Maschine layout)"), "groupsDock", buildGroupBlock());
     keysTabDock = makeDock (tr ("Keyboard"), "keyboardTabDock", buildKeyboardTab());
     soundDock = makeDock (tr ("Sound"), "soundDock", buildSoundTab());
+    for (auto* d : { keysTabDock, soundDock })
+    {
+        auto* area = new QScrollArea;
+        area->setFrameShape (QFrame::NoFrame);
+        area->setWidgetResizable (true);
+        area->setWidget (d->widget());
+        area->setMinimumSize (200, 120);
+        d->setWidget (area);
+    }
     pads = new PadGrid;
     auto* padsPanel = new QWidget;                   // pads, et dessous : tout reactiver
-    auto* padsCol = new QHBoxLayout (padsPanel);     // pads, et a leur droite les modes (panneau etroit)
+    auto* padsCol = new QVBoxLayout (padsPanel);
     padsCol->setContentsMargins (4, 2, 4, 2);
     padsCol->addWidget (pads, 1);
     {
-        // A droite des pads : modes des pads (en colonne), puis Unmute all / Unsolo all en bas
-        auto* row = new QVBoxLayout;
-        row->setContentsMargins (4, 4, 0, 4);
+        // En bas des pads : modes des pads, puis Unmute all / Unsolo all
+        auto* row = new QHBoxLayout;
+        row->setContentsMargins (0, 0, 0, 0);
         // Trois boutons, comme PAD MODE / KEYBOARD / CHORDS de la Maschine : le mode actif est orange
         padsOnlyButton = new QPushButton (tr ("Pad mode"));
         padModeButton = new QPushButton (tr ("Keyboard mode"));
@@ -230,8 +250,9 @@ MainWindow::MainWindow (const Options& options, QWidget* parent) : QMainWindow (
                 b->setFixedWidth (w + 4);
         });
         padsOnlyButton->setChecked (true);
+        row->insertStretch (0, 1);                   // les 3 boutons au centre
         row->addStretch (1);
-        row->addWidget (muteSoloRow (padsUnmute, padsUnsolo, false, true), 0, Qt::AlignRight);   // A/M sur A/S, en bas
+        row->addWidget (muteSoloRow (padsUnmute, padsUnsolo, false, true));   // A/M sur A/S, a droite
         padsCol->addLayout (row);
     }
     padsDock = makeDock (tr ("Pads"), "padsDock", padsPanel);
@@ -318,6 +339,11 @@ MainWindow::MainWindow (const Options& options, QWidget* parent) : QMainWindow (
     };
     addFile (tr ("New Project"), QKeySequence::New, [this] { newProject(); });
     addFile (tr ("Open Project..."), QKeySequence::Open, [this] { openProject(); });
+    {
+        auto* recent = fileMenu->addMenu (tr ("Open Recent"));   // les 10 derniers projets
+        connect (recent, &QMenu::aboutToShow, this, [this, recent] { fillRecentMenu (recent); });
+        fillRecentMenu (recent);
+    }
     addFile (tr ("Save"), QKeySequence::Save, [this] { saveProject(); });
     addFile (tr ("Save As..."), QKeySequence::SaveAs, [this] { saveProjectAs(); });
     fileMenu->addAction (tr ("Save With Samples..."), this, [this] { saveProjectAs (true); });
@@ -420,7 +446,8 @@ MainWindow::MainWindow (const Options& options, QWidget* parent) : QMainWindow (
         // Pads : panneau resserre a droite, juste la largeur des 16 carres + la colonne des modes
         {
             const int both = keysTabDock->width() + padsDock->width();
-            const int padsW = pads->height() + 150;  // carres (hauteur = largeur) + boutons de mode
+            // carres (hauteur = largeur) ; au moins la largeur des 3 boutons de mode + A/M A/S dessous
+            const int padsW = std::max (pads->height() * 135 / 100, padsOnlyButton->width() * 3 + 90) + 16;
             if (both - padsW > 400)
                 resizeDocks ({ keysTabDock, padsDock }, { both - padsW, padsW }, Qt::Horizontal);
         }
@@ -559,13 +586,13 @@ MainWindow::MainWindow (const Options& options, QWidget* parent) : QMainWindow (
         // Lecture du son : One-shot / Gate / Loop (la boucle demande un sample)
         auto* playGroup = new QActionGroup (&menu);
         QList<QAction*> modeActions;
-        const QStringList modeNames { tr ("One-shot"), tr ("Gate"), tr ("Loop") };
-        for (int m = 0; m < 3; ++m)
+        const QStringList modeNames { tr ("One-shot"), tr ("Gate"), tr ("Loop"), tr ("Loop SP (press = on / off)") };
+        for (int m = 0; m < 4; ++m)
         {
             auto* a = menu.addAction (modeNames[m]);
             a->setCheckable (true);
             a->setChecked (state.playMode[i] == m);
-            a->setEnabled (m != session::State::Loop || ! state.samples[i].isEmpty());
+            a->setEnabled (m < session::State::Loop || ! state.samples[i].isEmpty());
             playGroup->addAction (a);
             modeActions << a;
         }
@@ -623,10 +650,11 @@ MainWindow::MainWindow (const Options& options, QWidget* parent) : QMainWindow (
         {
             const int m = (int) modeActions.indexOf (chosen);
             for (int p : targets)                        // Loop : seulement les pads avec un sample
-                if (m != session::State::Loop || ! state.samples[(size_t) state.index (g, p)].isEmpty())
+                if (m < session::State::Loop || ! state.samples[(size_t) state.index (g, p)].isEmpty())
                     state.playMode[(size_t) state.index (g, p)] = m;
             syncSamples();
             refreshAll();
+            refreshSpLoops();                        // plus en Loop SP : sa boucle s'arrete
         }
         else if (chosen == editLoopAction)
             editLoop (pad);
@@ -800,6 +828,11 @@ MainWindow::MainWindow (const Options& options, QWidget* parent) : QMainWindow (
                 const bool playable = state.hasInstrument[(size_t) state.index (g, state.sound)];
                 l.setPad (p, hue, ! playable ? fc::Shade::Off
                                   : (padNote (p) - keySettings.root) % 12 == 0 ? fc::Shade::Bright : fc::Shade::Dim);
+                continue;
+            }
+            if (state.spLatched[(size_t) state.index (g, p)])   // Loop SP en marche : le pad clignote
+            {
+                l.setPad (p, hue, spPhase ? fc::Shade::Bright : fc::Shade::Dim);
                 continue;
             }
             l.setPad (p, hue, tag == 'M' || tag == 'm' || ! state.hasInstrument[(size_t) state.index (g, p)] ? fc::Shade::Off
@@ -1793,6 +1826,27 @@ void MainWindow::playPad (int pad, int velocity, bool down)
             return;
         }
         const int v = state.outVelocity (g, pad, velocity);   // volume du son, du groupe et master
+        if (state.mode (g, pad) == session::State::LoopSP)    // Loop SP : appui = marche / arret
+        {
+            const size_t si = (size_t) state.index (g, pad);
+            if (state.spLatched[si].exchange (false))
+            {
+                engine->noteOff (pad, state.spNote[si], g);
+                QMetaObject::invokeMethod (this, [this] { refreshSpLoops(); }, Qt::QueuedConnection);
+                return;
+            }
+            if (v > 0 && state.audible (g, pad) && state.hasInstrument[si])
+            {
+                state.spNote[si] = state.pitched (g, pad, defaultNote (pad));
+                state.spLatched[si] = true;
+                engine->hit (pad, v, state.spNote[si], g, true, state.releaseMs[si],
+                             -1, state.effSynth (g, pad), state.pan (g, pad), state.poly (g, pad));   // -1 : Loop SP
+                QMetaObject::invokeMethod (this, [this] { refreshSpLoops(); }, Qt::QueuedConnection);
+            }
+            std::lock_guard<std::mutex> lk (recLock);
+            recordStart (padRec[(size_t) pad], pad - 1, defaultNote (pad), velocity);
+            return;
+        }
         padSent[(size_t) pad] = state.pitched (g, pad, defaultNote (pad));   // la fin de note coupera celle-ci
         if (v > 0 && state.audible (g, pad) && state.hasInstrument[(size_t) state.index (g, pad)])
             engine->hit (pad, v, padSent[(size_t) pad], g, state.held (g, pad), state.releaseMs[(size_t) state.index (g, pad)],
@@ -1808,7 +1862,8 @@ void MainWindow::playPad (int pad, int velocity, bool down)
             QMetaObject::invokeMethod (this, [this, note] { playKey (note, 0, false); }, Qt::QueuedConnection);   // puis liveCheck
             return;
         }
-        if (state.held (padGroup[(size_t) pad], pad))
+        if (state.held (padGroup[(size_t) pad], pad)
+            && state.mode (padGroup[(size_t) pad], pad) != session::State::LoopSP)   // Loop SP : elle continue
             engine->noteOff (pad, padSent[(size_t) pad], padGroup[(size_t) pad]);
         {
             std::lock_guard<std::mutex> lk (recLock);
@@ -2614,7 +2669,7 @@ bool MainWindow::openProjectFile (const QString& path, bool quiet)
         }
     clearHistory();
     project.markSaved();
-    QSettings().setValue ("lastProject", project.file);
+    rememberRecent (project.file);   // dernier projet + File > Open Recent
     if (projectLabel)
         projectChanged();
     return true;
@@ -2633,7 +2688,7 @@ bool MainWindow::saveProject()
         QMessageBox::warning (this, tr ("Save Project"), error);
         return false;
     }
-    QSettings().setValue ("lastProject", project.file);
+    rememberRecent (project.file);   // dernier projet + File > Open Recent
     projectModified = false;
     updateTitle();
     statusBar()->showMessage (tr ("Saved %1").arg (project.file), 3000);
@@ -2708,7 +2763,7 @@ bool MainWindow::saveProjectAs (bool withSamples)
         return false;
     }
     QSettings().setValue ("projectsDir", dir);       // la prochaine fois : ici
-    QSettings().setValue ("lastProject", project.file);
+    rememberRecent (project.file);   // dernier projet + File > Open Recent
     projectModified = false;
     updateTitle();
     if (! withSamples)
@@ -3369,7 +3424,7 @@ void MainWindow::syncSamples (bool all)
                 sentReverse[i] = rev;
             }
             // Boucle (envoyee apres le sample : le moteur garde l'ordre)
-            const bool loop = state.playMode[i] == session::State::Loop;
+            const bool loop = state.playMode[i] == session::State::Loop || state.playMode[i] == session::State::LoopSP;
             const QString key = QString ("%1;%2;%3").arg (loop).arg (state.loopStart[i].load()).arg (state.loopEnd[i].load());
             if (all || sentLoops[i] != key)
             {
@@ -3400,7 +3455,7 @@ void MainWindow::editLoop (int pad)
     openLoopDialog = nullptr;
     // Ce que la fenetre a envoye au moteur est maintenant la reference
     const size_t i = (size_t) session::State::index (state.group, pad);
-    sentLoops[i] = QString ("%1;%2;%3").arg (state.playMode[i] == session::State::Loop)
+    sentLoops[i] = QString ("%1;%2;%3").arg (state.playMode[i] == session::State::Loop || state.playMode[i] == session::State::LoopSP)
                        .arg (state.loopStart[i].load()).arg (state.loopEnd[i].load());
     refreshAll();
 }
@@ -3781,13 +3836,14 @@ void MainWindow::quickVariation()
 void MainWindow::cyclePlayMode()
 {
     const size_t i = (size_t) session::State::index (state.group, state.sound);
-    int m = (state.playMode[i] + 1) % 3;
-    if (m == session::State::Loop && state.samples[i].isEmpty())   // boucle : samples seulement
+    int m = (state.playMode[i] + 1) % 4;
+    if (m >= session::State::Loop && state.samples[i].isEmpty())   // boucles : samples seulement
         m = session::State::OneShot;
     state.playMode[i] = m;
     syncSamples();
     refreshAll();
-    toast (QString ("Sound %1 : %2").arg (state.sound.load(), 2, 10, QChar ('0')).arg (QStringList { "ONE-SHOT", "GATE", "LOOP" }[m]));
+    refreshSpLoops();
+    toast (QString ("Sound %1 : %2").arg (state.sound.load(), 2, 10, QChar ('0')).arg (QStringList { "ONE-SHOT", "GATE", "LOOP", "LOOP SP" }[m]));
 }
 
 // ------------------------------------------------------------------------------- vues, clavier
@@ -4348,16 +4404,18 @@ QWidget* MainWindow::buildSoundTab()
 
     // Lecture : One-shot / Gate / Loop, boucle, release
     soundUi.mode = new QComboBox;
-    soundUi.mode->addItems ({ tr ("One-shot"), tr ("Gate"), tr ("Loop") });
+    soundUi.mode->addItems ({ tr ("One-shot"), tr ("Gate"), tr ("Loop"), tr ("Loop SP") });
+    soundUi.mode->setItemData (3, tr ("Like a SP-404: press = the loop plays on, press again = stop"), Qt::ToolTipRole);
     soundUi.mode->setFocusPolicy (Qt::ClickFocus);
     connect (soundUi.mode, &QComboBox::currentIndexChanged, this, [this] (int m)
     {
         const size_t i = (size_t) state.index (state.group, state.sound);
-        if (m == session::State::Loop && state.samples[i].isEmpty())
+        if (m >= session::State::Loop && state.samples[i].isEmpty())
             m = session::State::Gate;                // boucle : samples seulement
         state.playMode[i] = m;
         syncSamples();
         refreshAll();
+        refreshSpLoops();
     });
     soundUi.editLoop = button (tr ("Edit Loop..."), tr ("Loop start and end, on the waveform"));
     reverseBox = new QCheckBox (tr ("Reverse"));
@@ -6787,7 +6845,7 @@ QWidget* MainWindow::buildSong()
     songArea->addWidget (songScroll, 1);
     col->addLayout (songArea, 1);
     auto* hint = new QLabel (tr ("click a group cell = its pattern in the scene \u00B7 drag on the ruler = loop zone \u00B7 drag a block = move · drag its right edge = length · double-click = scene · "
-                                 "right-click = repeats, length, duplicate, delete · click the ruler = song cursor (Play starts there, Stop = pause) · 1 bar = 16 lines"));
+                                 "right-click = repeats, length, duplicate, delete · click the ruler = song cursor on a beat (Shift = any line; Play starts there, Stop = pause) · 1 bar = 16 lines"));
     hint->setObjectName ("hint");
     registerHint (hint, "SONG");
     hint->setWordWrap (true);
@@ -8140,13 +8198,59 @@ void MainWindow::stopPressed()
         else                                         // deja en pause : Stop = retour au curseur
         {
             transport->stop();
+            stopSpLoops();                           // et les boucles SP s'arretent
             toast ("STOP: back to the song cursor");
         }
         songView->update();
         return;
     }
+    // Stop pendant la lecture : les boucles SP continuent ; Stop a l'arret : tout s'arrete
+    if (transport->playing() && state.anySpLatched())
+    {
+        transport->stop();
+        toast ("STOP: Loop SP still playing (Stop again = stop them)");
+        return;
+    }
     transport->stop();
+    stopSpLoops();
     engine->panic();
+}
+
+void MainWindow::stopSpLoops()
+{
+    for (int i = 0; i < session::kGroups * 16; ++i)
+        if (state.spLatched[(size_t) i].exchange (false))
+            engine->noteOff (i % 16 + 1, state.spNote[(size_t) i], i / 16);
+    refreshSpLoops();
+}
+
+void MainWindow::refreshSpLoops()
+{
+    // Un son qui n'est plus en Loop SP : sa boucle s'arrete
+    for (int i = 0; i < session::kGroups * 16; ++i)
+        if (state.playMode[(size_t) i] != session::State::LoopSP && state.spLatched[(size_t) i].exchange (false))
+            engine->noteOff (i % 16 + 1, state.spNote[(size_t) i], i / 16);
+    // Pads en boucle SP : ils clignotent (appli et Maschine) tant qu'une boucle tourne
+    std::array<bool, 16> on {};
+    for (int p = 1; p <= 16; ++p)
+        on[(size_t) p - 1] = state.spLatched[(size_t) state.index (state.group, p)];
+    pads->setLatched (on);
+    if (! spBlink)
+    {
+        spBlink = new QTimer (this);
+        spBlink->setInterval (350);
+        connect (spBlink, &QTimer::timeout, this, [this]
+        {
+            spPhase = ! spPhase;
+            pads->setBlink (spPhase);
+            refreshMaschine();
+            if (! state.anySpLatched())
+                spBlink->stop();
+        });
+    }
+    if (state.anySpLatched() && ! spBlink->isActive())
+        spBlink->start();
+    refreshMaschine();
 }
 
 void MainWindow::restartPressed()
@@ -8166,22 +8270,24 @@ void MainWindow::hookTabBars()
         if (! bar->property ("dockTabs").toBool())
         {
             bar->setProperty ("dockTabs", true);
+            bar->setMovable (true);                  // l'ordre des onglets se change en glissant
             bar->installEventFilter (this);
         }
 }
 
 bool MainWindow::tabDrag (QTabBar* bar, QEvent* event)
 {
-    // Clic maintenu sur un onglet, puis glisser : lache sur l'autre barre d'onglets (ou sur un
-    // panneau), il y rejoint ses onglets ; les tailles des deux zones se reajustent
+    // Dans la barre : glisser un onglet change l'ordre (Qt). En sortant de la barre (vers le haut
+    // ou le bas), on le porte : lache sur l'autre barre d'onglets (ou sur un panneau), il y rejoint
+    // ses onglets.
     auto dockOfTab = [this] (QTabBar* b, int index) -> QDockWidget*
     {
         if (index < 0)
             return nullptr;
-        const QString title = b->tabText (index);
+        const quintptr id = b->tabData (index).value<quintptr>();   // Qt range le panneau ici
         for (auto* d : findChildren<QDockWidget*>())
-            if (d->windowTitle() == title && ! d->isFloating())
-                return d;
+            if ((quintptr) d == id || (id == 0 && d->windowTitle() == b->tabText (index)))
+                return d->isFloating() ? nullptr : d;
         return nullptr;
     };
     if (event->type() == QEvent::MouseButtonPress)
@@ -8198,27 +8304,28 @@ bool MainWindow::tabDrag (QTabBar* bar, QEvent* event)
     if (event->type() == QEvent::MouseMove && tabDragDock)
     {
         auto* me = static_cast<QMouseEvent*> (event);
-        if (! tabDragging && (me->globalPosition().toPoint() - tabDragFrom).manhattanLength() > 24)
+        const QPoint local = me->position().toPoint();
+        const bool outside = local.y() < -20 || local.y() > bar->height() + 20;
+        if (! tabDragging && outside)
         {
             tabDragging = true;
-            bar->setCursor (Qt::ClosedHandCursor);
+            QApplication::setOverrideCursor (Qt::ClosedHandCursor);
             toast (QString ("Drop %1 on the other tab bar (or on a panel)").arg (tabDragDock->windowTitle()));
         }
-        return tabDragging;                          // pendant le glisser, Qt ne detache pas le panneau
+        return tabDragging;                          // hors de la barre : Qt ne detache pas le panneau
     }
     if (event->type() == QEvent::MouseButtonRelease && tabDragDock)
     {
         auto* me = static_cast<QMouseEvent*> (event);
-        QDockWidget* moved = tabDragDock;
+        QPointer<QDockWidget> moved = tabDragDock;
         const bool wasDragging = tabDragging;
         tabDragDock = nullptr;
         tabDragging = false;
-        bar->unsetCursor();
         if (! wasDragging)
-            return false;
-        // Sous la souris : une barre d'onglets (son onglet visible) ou un panneau
+            return false;                            // simple clic ou ordre change dans la barre
+        QApplication::restoreOverrideCursor();
         const QPoint at = me->globalPosition().toPoint();
-        QDockWidget* target = nullptr;
+        QPointer<QDockWidget> target;
         QWidget* w = QApplication::widgetAt (at);
         if (auto* other = qobject_cast<QTabBar*> (w); other && other != bar)
             target = dockOfTab (other, other->currentIndex());
@@ -8226,23 +8333,76 @@ bool MainWindow::tabDrag (QTabBar* bar, QEvent* event)
             if (auto* d = qobject_cast<QDockWidget*> (p))
                 target = d;
         if (! target || target == moved || target->isFloating() || tabifiedDockWidgets (moved).contains (target))
-            return true;                             // meme barre ou rien dessous : rien ne change
-        const Qt::DockWidgetArea from = dockWidgetArea (moved);
-        tabifyDockWidget (target, moved);
-        moved->show();
-        moved->raise();
-        // Tailles : la zone qui recoit un panneau haut (Patterns, Mixer...) grandit un peu
-        QTimer::singleShot (0, this, [this, moved, from]
         {
-            const int need = moved->widget() ? moved->widget()->minimumSizeHint().height() + 40 : 0;
-            if (need > moved->height())
-                resizeDocks ({ moved }, { need }, Qt::Vertical);
-            fixSeparators();
-            hookTabBars();
-            Q_UNUSED (from);
+            toast ("Drop it on the other tab bar");
+            return false;                            // la barre finit son geste normalement
+        }
+        // Apres le geste (la barre d'onglets peut etre recreee par Qt) : on deplace
+        QTimer::singleShot (0, this, [this, moved, target]
+        {
+            if (! moved || ! target)
+                return;
+            tabifyDockWidget (target, moved);
+            moved->show();
+            moved->raise();
+            QTimer::singleShot (0, this, [this, moved]
+            {
+                if (moved && moved->height() < 220)  // la zone qui recoit grandit un peu si besoin
+                    resizeDocks ({ moved }, { 220 }, Qt::Vertical);
+                fixSeparators();
+                hookTabBars();
+            });
+            toast (QString ("%1 moved next to %2").arg (moved->windowTitle(), target->windowTitle()));
         });
-        toast (QString ("%1 moved next to %2").arg (moved->windowTitle(), target->windowTitle()));
-        return true;
+        return false;
     }
     return false;
+}
+
+// ------------------------------------------------------------ File > Open Recent
+
+void MainWindow::rememberRecent (const QString& file)
+{
+    if (file.isEmpty())
+        return;
+    QSettings s;
+    s.setValue ("lastProject", file);
+    QStringList list = s.value ("recentProjects").toStringList();
+    list.removeAll (file);
+    list.prepend (file);
+    while (list.size() > 10)
+        list.removeLast();
+    s.setValue ("recentProjects", list);
+}
+
+void MainWindow::fillRecentMenu (QMenu* menu)
+{
+    menu->clear();
+    QStringList list = QSettings().value ("recentProjects").toStringList();
+    if (list.isEmpty() && ! QSettings().value ("lastProject").toString().isEmpty())
+        list << QSettings().value ("lastProject").toString();   // avant cette version : le dernier
+    int shown = 0;
+    for (const QString& file : list)
+    {
+        if (! QFileInfo::exists (file))
+            continue;                                // projet deplace ou efface : pas dans la liste
+        // Nom du projet = le dossier NOM.fuzzy ; le chemin en infobulle
+        const QString name = QFileInfo (QFileInfo (file).absolutePath()).completeBaseName();
+        auto* a = menu->addAction (name, this, [this, file]
+        {
+            if (maybeSave())
+                openProjectFile (file);
+        });
+        a->setToolTip (file);
+        a->setStatusTip (file);
+        ++shown;
+    }
+    if (shown == 0)
+        menu->addAction (tr ("(no recent project)"))->setEnabled (false);
+    menu->addSeparator();
+    menu->addAction (tr ("Clear Menu"), this, []
+    {
+        QSettings().remove ("recentProjects");
+    });
+    menu->setToolTipsVisible (true);
 }

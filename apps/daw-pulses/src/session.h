@@ -121,7 +121,12 @@ struct State
 
     // Comment joue chaque son : One-shot (va au bout), Gate (s'arrete au relachement),
     // Loop (boucle de loopStart a loopEnd, fractions du fichier, tant que la note tient)
-    enum PlayMode { OneShot = 0, Gate = 1, Loop = 2 };
+    // LoopSP : boucle verrouillee (facon SP-404) : un appui lance la boucle, un 2e l'arrete
+    enum PlayMode { OneShot = 0, Gate = 1, Loop = 2, LoopSP = 3 };
+    std::array<std::atomic<bool>, kGroups * 16> spLatched {};   // boucle SP en marche
+    std::array<std::atomic<int>, kGroups * 16> spNote {};       // la note envoyee (pour l'arreter)
+    bool looped (int g, int sound) const { const int m = mode (g, sound); return m == Loop || m == LoopSP; }
+    bool anySpLatched() const { for (const auto& l : spLatched) if (l) return true; return false; }
     std::array<std::atomic<int>, kGroups * 16> playMode {};
     std::array<std::atomic<float>, kGroups * 16> loopStart {}, loopEnd {};
     std::array<std::atomic<int>, kGroups * 16> releaseMs {};

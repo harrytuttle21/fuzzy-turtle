@@ -519,7 +519,8 @@ class State:
         self.samples: dict = {}                # (groupe, son) -> fichier audio (sinon : synthese)
         self.kit_names = {g: '' for g in GROUPS}   # kit charge sur chaque groupe
         self.sent_samples: dict = {}           # ce que le moteur a deja recu
-        self.loops: dict = {}                  # (groupe, son) -> boucle {'on', 'start', 'end'} (reglee dans DAW Pulses)
+        self.loops: dict = {}                  # (groupe, son) -> boucle {'on', 'start', 'end', 'sp'} (reglee dans DAW Pulses)
+        self.sp_latched: dict = {}             # Loop SP en marche : (groupe, son) -> note (un appui = marche / arret)
         self.reverse: set = set()              # (groupe, son) joues a l'envers (regle dans DAW Pulses)
         self.poly: dict = {}                   # (groupe, son) -> polyphonie 1-16 (reglee dans DAW Pulses ; 4 sinon)
         self.sent_reverse: dict = {}
@@ -1829,6 +1830,19 @@ def play_note(st: State, group: str, snd: int, vel: int, note: int, gate: float 
                   int(env['release']), int(gate * 1000), st.synth.get((group, snd), 0),
                   max(0, min(127, st.params[(group, snd)][1] + st.group_pan[group] - 64)),   # Pan son + groupe
                   st.poly.get((group, snd), 4))                                             # polyphonie (DAW Pulses)
+
+
+def is_loop_sp(st: State, group: str, snd: int) -> bool:
+    """Son en Loop SP (reglage de DAW Pulses) : un appui lance la boucle, un 2e l'arrete."""
+    lp = st.loops.get((group, snd))
+    return bool(lp and lp.get('on') and lp.get('sp')) and st.env[(group, snd)]['mode'] != 'ONE-SHOT'
+
+
+def stop_sp_loops(st: State) -> None:
+    """Toutes les boucles Loop SP s'arretent."""
+    for (g, snd), note in list(st.sp_latched.items()):
+        release_notes(st, g, [(snd, note)])
+    st.sp_latched.clear()
 
 
 def release_notes(st: State, group: str, notes: list) -> None:
@@ -3386,6 +3400,11 @@ def handle(st: State, ev: tuple) -> None:
             st.step_manual = None
             st.next_row_time = time.monotonic()
         elif name == 'stop':
+            if not st.playing and st.sp_latched:     # Stop a l'arret : les boucles SP s'arretent
+                stop_sp_loops(st)
+                st.toast = ('LOOP SP stopped', time.monotonic() + 2)
+            elif st.sp_latched:
+                st.toast = ('STOP: Loop SP still playing (STOP again = stop them)', time.monotonic() + 3)
             st.playing = False
             st.countin = None
             reset_playback(st)
@@ -4159,7 +4178,8 @@ def load_project(st: State, name: str) -> None:
             if isinstance(sd.get('loop'), dict):         # boucle reglee dans DAW Pulses
                 st.loops[(g, int(s))] = {'on': bool(sd['loop'].get('on')),
                                          'start': float(sd['loop'].get('start', 0)),
-                                         'end': float(sd['loop'].get('end', 1))}
+                                         'end': float(sd['loop'].get('end', 1)),
+                                         **({'sp': True} if sd['loop'].get('sp') else {})}
             if sd.get('synth') in SYNTHS:
                 st.synth[(g, int(s))] = SYNTHS.index(sd['synth']) + 1
             elif sd.get('synth') == 'None':
@@ -5424,7 +5444,10 @@ def led_frame(st: State) -> bytes:
             else:
                 colors[p] = 0
         return pad_led_frame(colors)
-    return pad_led_frame({p: (pad_pair(st, p)[0] if p == st.sound else 0)     # son vide : eteint
+    blink = int(now * 3) % 2 == 0                      # Loop SP en marche : le pad clignote
+    return pad_led_frame({p: (pad_pair(st, p)[1] if blink else pad_pair(st, p)[0])
+                          if (st.group, p) in st.sp_latched else
+                          (pad_pair(st, p)[0] if p == st.sound else 0)     # son vide : eteint
                           if not st.instrument(st.group, p) and p not in st.down
                           else pad_pair(st, p)[1] if (p in st.down or st.flash.get(p, 0) > now
                                                    or p == st.sound or (st.group, p) in st.sound_solo)
@@ -5644,6 +5667,19 @@ def main() -> int:
                 if ev[0] == 'pad_on':
                     # Lecture simple de l'etat, sans attendre le verrou (pris pendant le dessin)
                     notes = sound_for(st, ev[1])
+                    sp = [(snd, n) for snd, n in notes if is_loop_sp(st, st.group, snd)]
+                    if sp and len(notes) == 1 and not st.arp:   # Loop SP : un appui = marche / arret
+                        snd, note = sp[0]
+                        key = (st.group, snd)
+                        if key in st.sp_latched:
+                            release_notes(st, st.group, [(snd, st.sp_latched.pop(key))])
+                        else:
+                            v = out_vel(st, st.group, snd, ev[2])
+                            if v:
+                                st.sp_latched[key] = note
+                                play_note(st, st.group, snd, v, note, -0.001)   # -1 ms : Loop SP
+                        events.put(ev)
+                        continue
                     old = st.held_play.get(ev[1])
                     if old and not st.arp:           # frappe sans relachement recu : on libere d'abord
                         release_notes(st, old[3], old[2])

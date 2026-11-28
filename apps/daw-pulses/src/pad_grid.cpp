@@ -83,6 +83,14 @@ void PadGrid::paintEvent (QPaintEvent*)
             g.setBrush (Qt::NoBrush);
             g.drawRoundedRect (r.adjusted (3, 3, -3, -3), 6, 6);
         }
+        if (latched[(size_t) pad - 1])               // Loop SP : la boucle tourne (cadre qui clignote)
+        {
+            g.setPen (QPen (blink ? QColor (90, 230, 120) : QColor (40, 120, 60), 3));
+            g.setBrush (Qt::NoBrush);
+            g.drawRoundedRect (r.adjusted (2, 2, -2, -2), 7, 7);
+            g.setPen (QColor (120, 240, 150));
+            g.drawText (r.adjusted (8, 6, -8, -6), Qt::AlignRight | Qt::AlignBottom, QStringLiteral ("LOOP"));
+        }
         g.setPen (hit ? QColor (20, 20, 20) : QColor (230, 230, 230));
         g.drawText (r.adjusted (8, 6, -8, -6), Qt::AlignLeft | Qt::AlignTop, QString ("%1").arg (pad, 2, 10, QChar ('0')));
         if (tag == 'M' || tag == 'S')                    // M / S en haut a droite

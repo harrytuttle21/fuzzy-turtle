@@ -58,7 +58,7 @@ struct PadEvent
     int tag = -1;         // groupe (0-15) : une fin de note ne touche que ce groupe
     int mode = 0;         // 0 = ONE-SHOT (le son va au bout), 1 = ADSR (tient, puis relache)
     int releaseMs = 150;  // ADSR : relachement apres la fin de note
-    int gateMs = 0;       // ADSR : duree de la note (0 = jusqu'a /fuzzy/proto/off)
+    int gateMs = 0;       // ADSR : duree de la note (0 = jusqu'a /fuzzy/proto/off ; -1 = Loop SP : seulement /off)
     bool off = false;     // fin de note (ADSR)
     int synth = 0;        // synthe : 1 Kick, 2 Snare, 3 Closed HH, 4 Open HH, 5 Tone, 6 Click (0 = celui du pad)
     int pan = 64;         // stereo : 0 gauche, 64 centre, 127 droite
@@ -224,6 +224,7 @@ struct Voice
     const Sample* sample = nullptr;          // fichier joue (nullptr = son de synthese)
     double pos = 0, step = 1;                // lecture du fichier
     bool looping = false;                    // boucle : de loopStart a loopEnd tant que la note tient
+    bool latched = false;                    // Loop SP : le filet « plus aucun pad tenu » ne l'arrete pas
     bool autoSustain = false;                // note tenue sans boucle reglee : tenue longue (piano)
     bool wrapped = false;                    // la boucle a deja fait un tour
     double sustainGain = 1;                  // tenue longue : descend lentement (comme une corde)
@@ -246,6 +247,7 @@ struct Voice
         adsr = e.mode == 1;
         held = adsr;
         gate = adsr && e.gateMs > 0 ? e.gateMs / 1000.0 : 0;
+        latched = e.gateMs < 0;                  // Loop SP : ne s'arrete que sur sa fin de note
         releaseTime = juce::jlimit (0.005, 5.0, e.releaseMs / 1000.0);
         drumRatio = std::pow (2.0, (e.note - 60) / 12.0);   // batterie de synthese : hauteur jouee
         // Boucle : seulement pour un sample tenu (mode ADSR), et assez longue (>= 5 ms)
@@ -439,7 +441,7 @@ public:
             if (e.pad == kLiveOff)
             {   // plus aucun pad tenu : toute note encore "tenue" sans duree est relachee
                 for (auto& v : voices)
-                    if (v.active && v.held && v.gate <= 0) v.noteOff (sampleRate);
+                    if (v.active && v.held && v.gate <= 0 && ! v.latched) v.noteOff (sampleRate);
                 continue;
             }
             if (e.pad == kPanic)

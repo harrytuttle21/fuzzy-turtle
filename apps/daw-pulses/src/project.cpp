@@ -163,12 +163,15 @@ QJsonObject build (QJsonObject d, const QString& name, const seq::Sequencer& seq
                 sd.remove ("synth");
             else
                 sd["synth"] = syn == 0 ? QString ("None") : synthNames.value (syn - 1, "Tone");
-            if (mode == session::State::Loop || sd.contains ("loop"))
+            if (mode == session::State::Loop || mode == session::State::LoopSP || sd.contains ("loop"))
             {
                 auto round4 = [] (float v) { return std::round (v * 10000.0) / 10000.0; };
-                sd["loop"] = QJsonObject { { "on", mode == session::State::Loop },
-                                           { "start", round4 (state.loopStart[i]) },
-                                           { "end", round4 (state.loopEnd[i]) } };
+                QJsonObject lo { { "on", mode == session::State::Loop || mode == session::State::LoopSP },
+                                 { "start", round4 (state.loopStart[i]) },
+                                 { "end", round4 (state.loopEnd[i]) } };
+                if (mode == session::State::LoopSP)
+                    lo["sp"] = true;                 // boucle SP : un appui = marche, un appui = arret
+                sd["loop"] = lo;
             }
             if (! sd.isEmpty() || sounds.contains (QString::number (s)))
                 sounds[QString::number (s)] = sd;
@@ -309,7 +312,8 @@ void Project::toApp (seq::Sequencer& sequencer, session::State& state, int& bpm)
             const QJsonObject loop = sd["loop"].toObject();
             state.playMode[i] = ! env.contains ("mode") ? session::State::defaultMode (s)
                               : env["mode"].toString() == "ONE-SHOT" ? session::State::OneShot
-                              : loop["on"].toBool() ? session::State::Loop : session::State::Gate;
+                              : loop["on"].toBool() ? (loop["sp"].toBool() ? session::State::LoopSP : session::State::Loop)
+                              : session::State::Gate;
             state.releaseMs[i] = std::clamp (env["release"].toInt (150), 5, 5000);
             state.loopStart[i] = (float) std::clamp (loop["start"].toDouble (0), 0.0, 1.0);
             state.loopEnd[i] = (float) std::clamp (loop["end"].toDouble (1), 0.0, 1.0);

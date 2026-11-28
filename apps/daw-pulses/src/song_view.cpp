@@ -642,7 +642,8 @@ void SongView::mouseReleaseEvent (QMouseEvent* e)
 {
     if (drag == Drag::Ruler)                         // simple clic : le curseur ici (au pas choisi ; la zone reste)
     {
-        const double snap = std::max (1.0, step * seq::kRowsPerBar);
+        // Au temps pres (1/4 de mesure) ; Shift + clic : a la ligne pres
+        const double snap = (e->modifiers() & Qt::ShiftModifier) ? 1.0 : seq::kRowsPerBar / 4.0;
         const auto rows = startRows();
         const int row = (int) std::clamp (std::floor (rowOfX (pressPos.x()) / snap) * snap, 0.0, (double) std::max (0, rows.back() - 1));
         emit cursorAt (row);

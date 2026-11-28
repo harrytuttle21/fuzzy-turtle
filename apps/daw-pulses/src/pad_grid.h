@@ -19,6 +19,9 @@ public:
     explicit PadGrid (QWidget* parent = nullptr);
 
     void setColor (const QColor& c) { color = c; update(); }
+    // Loop SP : pads dont la boucle tourne (cadre qui clignote, mot LOOP)
+    void setLatched (const std::array<bool, 16>& on) { latched = on; update(); }
+    void setBlink (bool on) { blink = on; update(); }
     void setGroup (int g) { group = g; }             // groupe affiche (pour glisser un son)
     // Plusieurs pads choisis : Shift + clic = ligne / colonne / rectangle depuis le dernier pad,
     // Cmd (Ctrl) + clic = ajouter / retirer un pad. Un clic simple efface la selection.
@@ -60,6 +63,10 @@ private:
     QRectF padRect (int pad) const;
 
     QColor color { 252, 95, 0 };
+
+    std::array<bool, 16> latched {};
+
+    bool blink = false;
     int selected = 1, mousePad = 0;
     QPointF pressPos;
     int dropPad = 0;
