@@ -3400,11 +3400,14 @@ def handle(st: State, ev: tuple) -> None:
             st.step_manual = None
             st.next_row_time = time.monotonic()
         elif name == 'stop':
-            if not st.playing and st.sp_latched:     # Stop a l'arret : les boucles SP s'arretent
+            now_s = time.monotonic()                 # STOP deux fois de suite (1,5 s) : boucles SP coupees
+            double = now_s - getattr(st, 'last_stop', 0.0) < 1.5
+            st.last_stop = 0.0 if double else now_s
+            if double and st.sp_latched:
                 stop_sp_loops(st)
-                st.toast = ('LOOP SP stopped', time.monotonic() + 2)
+                st.toast = ('LOOP SP stopped', now_s + 2)
             elif st.sp_latched:
-                st.toast = ('STOP: Loop SP still playing (STOP again = stop them)', time.monotonic() + 3)
+                st.toast = ('STOP: Loop SP still playing (STOP again = stop them)', now_s + 3)
             st.playing = False
             st.countin = None
             reset_playback(st)

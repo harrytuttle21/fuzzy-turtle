@@ -89,14 +89,14 @@ void PadGrid::paintEvent (QPaintEvent*)
             g.setBrush (Qt::NoBrush);
             g.drawRoundedRect (r.adjusted (2, 2, -2, -2), 7, 7);
             g.setPen (QColor (120, 240, 150));
-            g.drawText (r.adjusted (8, 6, -8, -6), Qt::AlignRight | Qt::AlignBottom, QStringLiteral ("LOOP"));
+            g.drawText (r.adjusted (8, 6, -8, -6), Qt::AlignRight | Qt::AlignTop, QStringLiteral ("LOOP"));   // en haut a droite
         }
         g.setPen (hit ? QColor (20, 20, 20) : QColor (230, 230, 230));
         g.drawText (r.adjusted (8, 6, -8, -6), Qt::AlignLeft | Qt::AlignTop, QString ("%1").arg (pad, 2, 10, QChar ('0')));
         if (tag == 'M' || tag == 'S')                    // M / S en haut a droite
         {
             g.setPen (tag == 'S' ? QColor (250, 210, 60) : QColor (150, 150, 158));
-            g.drawText (r.adjusted (8, 6, -8, -6), Qt::AlignRight | Qt::AlignTop, QString (QChar (tag)));
+            g.drawText (r.adjusted (8, 6, latched[(size_t) pad - 1] ? -48 : -8, -6), Qt::AlignRight | Qt::AlignTop, QString (QChar (tag)));   // a gauche de LOOP
             g.setPen (hit ? QColor (20, 20, 20) : QColor (230, 230, 230));
         }
         if ((silent || empty[(size_t) pad - 1]) && ! hit)

@@ -391,7 +391,7 @@ struct Voice
         // La voix s'arrete quand elle est devenue inaudible (plus de coupure franche)
         if (time > 0.01 && level < 0.0005) active = false;
         if (held && gate > 0 && time >= gate) noteOff (sr);       // fin de note programmee
-        if (held && time > 30) noteOff (sr);                      // securite : note oubliee
+        if (held && time > 30 && ! latched) noteOff (sr);         // securite : note oubliee (pas la Loop SP)
         if (fadeStep > 0)
         {
             fade -= fadeStep;

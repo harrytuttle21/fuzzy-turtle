@@ -312,6 +312,7 @@ private:
     void stopSpLoops();                              // Loop SP : tout arreter
     void refreshSpLoops();                           // pads en boucle : clignotement
     QTimer* spBlink = nullptr;
+    qint64 lastStopMs = 0;                           // Stop deux fois de suite : couper les boucles SP
     bool spPhase = false;                           // Song : depuis le debut du morceau
     // Ligne d'aide (en bas de la fenetre) : l'aide de la vue sous la souris
     struct HelpEntry { QPointer<QLabel> label; QString view; };

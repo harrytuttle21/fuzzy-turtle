@@ -2117,6 +2117,9 @@ void MainWindow::onMaschineButton (const QString& name, bool down)
     {
         releaseAllKeys();
         engine->panic();                             // tous les sons se coupent
+        for (auto& l : state.spLatched)              // boucles SP comprises
+            l = false;
+        refreshSpLoops();
         toast ("ALL SOUNDS OFF");
         return;
     }
@@ -8186,29 +8189,38 @@ bool MainWindow::scenesLocked() const
 
 void MainWindow::stopPressed()
 {
+    // Double Stop : deux appuis en moins de 1,5 s
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    const bool doubleStop = now - lastStopMs < 1500;
+    lastStopMs = doubleStop ? 0 : now;
     // Song : Stop = pause (Play reprend au meme endroit ; RESTART = debut) ; Patterns : arret
     if (sequencer.songMode() && ! sequencer.song().empty())
     {
         if (transport->playing())
         {
             transport->pause();
-            engine->panic();
+            if (! state.anySpLatched())              // les boucles SP continuent (2e Stop = les couper)
+                engine->panic();
             toast ("PAUSE: Play = resume here, \u23EE = start of the song");
         }
         else                                         // deja en pause : Stop = retour au curseur
         {
             transport->stop();
-            stopSpLoops();                           // et les boucles SP s'arretent
             toast ("STOP: back to the song cursor");
+        }
+        if (doubleStop && state.anySpLatched())      // Stop deux fois de suite : les boucles SP s'arretent
+        {
+            stopSpLoops();
+            toast ("LOOP SP stopped");
         }
         songView->update();
         return;
     }
-    // Stop pendant la lecture : les boucles SP continuent ; Stop a l'arret : tout s'arrete
-    if (transport->playing() && state.anySpLatched())
+    // Les boucles SP continuent ; Stop deux fois de suite (en 1,5 s) : elles s'arretent aussi
+    if (state.anySpLatched() && ! doubleStop)
     {
         transport->stop();
-        toast ("STOP: Loop SP still playing (Stop again = stop them)");
+        toast ("STOP: Loop SP still playing (press Stop again to stop them)");
         return;
     }
     transport->stop();
