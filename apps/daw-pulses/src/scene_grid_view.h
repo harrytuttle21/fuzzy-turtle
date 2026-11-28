@@ -20,6 +20,7 @@ public:
     void setScene (int index);                       // la scene choisie (celle que l'on modifie)
     int scene() const { return chosen; }
     QSize minimumSizeHint() const override { return { 400, 200 }; }
+    std::function<bool()> globalLock;                // Lock de la vue : tous les cadenas fermes
 
 signals:
     void sceneClicked (int scene);                   // clic sur une scene (en haut)

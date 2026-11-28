@@ -40,7 +40,8 @@ signals:
     void entryMenu (int entry, const QPoint& globalPos);
     void emptyMenu (const QPoint& globalPos);        // clic droit dans le vide : ajouter
     void chooseScene (int entry, const QPoint& globalPos);   // double-clic : changer la scene
-    void startFrom (int entry);                      // clic sur la regle
+    void startFrom (int entry);                      // (ancien) depart au debut d'un bloc
+    void cursorAt (int row);                         // clic sur la regle : curseur libre (lignes depuis le debut)
     void insertScene (int scene, int before);        // scene lachee (liste des scenes, vue Scenes)
     void cellClicked (int entry, int group, const QPoint& globalPos);   // case groupe x bloc : son pattern
     void loopRegion (int from, int to);              // zone de boucle glissee sur la regle (-1 : effacer)
@@ -70,6 +71,7 @@ private:
     int hoverLane = -1;                              // groupe sous la souris (surligne)
     enum class Edge { None, Left, Right } edge = Edge::None;   // bord de la zone de boucle tire
     double xOfRow (int row) const { return kLabelW + 4 + row / double (seq::kRowsPerBar) * barPx - scrollPx; }
+    double rowOfX (double x) const { return (x - kLabelW - 4 + scrollPx) / barPx * seq::kRowsPerBar; }
     QRectF entryRect (int i) const;                  // le bloc de l'entree i (ligne SONG)
     int entryAt (const QPointF& p) const;            // -1 : aucune
     int insertIndexAt (double x) const;              // ou inserer / deplacer, d'apres x

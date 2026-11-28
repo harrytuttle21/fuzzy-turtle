@@ -126,12 +126,13 @@ void SceneGridView::paintEvent (QPaintEvent*)
         if (s.used)                                  // cadenas : ferme en couleur, ouvert en gris (clic = changer)
         {
             const QRectF lr = lockRect (i);
-            const QColor lc = s.locked ? c.lighter (130) : QColor (110, 110, 120);
+            const bool shut = s.locked || (globalLock && globalLock());   // Lock : tout est ferme
+            const QColor lc = shut ? c.lighter (130) : QColor (110, 110, 120);
             const QRectF b (lr.center().x() - 4.5, lr.center().y() - 1, 9, 7);
             g.setPen (QPen (lc, 1.5));
             g.setBrush (Qt::NoBrush);
             const QRectF arc (b.left() + 1.5, b.top() - 6, 6, 9);
-            if (s.locked)
+            if (shut)
                 g.drawArc (arc, 0, 180 * 16);
             else
                 g.drawArc (arc.translated (3.5, -1.5), 30 * 16, 150 * 16);   // anse ouverte

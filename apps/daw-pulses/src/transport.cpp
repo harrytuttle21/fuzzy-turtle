@@ -45,6 +45,13 @@ void Transport::play()
     if (clock.joinable())
         clock.join();
     quit = false;
+    // Song : curseur pose (vue Song) ou retour au curseur apres Stop -> l'horloge part de cette ligne
+    // (les mesures et le metronome restent justes). Apres une pause : on reprend la ou on etait.
+    if (const int seek = sequencer.takeSeekRow(); seek >= 0)
+    {
+        rowIndex = seek;
+        currentRow = seek;
+    }
     isPlaying = true;
     clock = std::thread ([this] { run(); });
     emit playingChanged (true);

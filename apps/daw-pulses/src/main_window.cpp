@@ -190,13 +190,13 @@ MainWindow::MainWindow (const Options& options, QWidget* parent) : QMainWindow (
     soundDock = makeDock (tr ("Sound"), "soundDock", buildSoundTab());
     pads = new PadGrid;
     auto* padsPanel = new QWidget;                   // pads, et dessous : tout reactiver
-    auto* padsCol = new QVBoxLayout (padsPanel);
+    auto* padsCol = new QHBoxLayout (padsPanel);     // pads, et a leur droite les modes (panneau etroit)
     padsCol->setContentsMargins (4, 2, 4, 2);
     padsCol->addWidget (pads, 1);
     {
-        // En bas des pads : modes des pads, puis Unmute all / Unsolo all
-        auto* row = new QHBoxLayout;
-        row->setContentsMargins (0, 0, 0, 0);
+        // A droite des pads : modes des pads (en colonne), puis Unmute all / Unsolo all en bas
+        auto* row = new QVBoxLayout;
+        row->setContentsMargins (4, 4, 0, 4);
         // Trois boutons, comme PAD MODE / KEYBOARD / CHORDS de la Maschine : le mode actif est orange
         padsOnlyButton = new QPushButton (tr ("Pad mode"));
         padModeButton = new QPushButton (tr ("Keyboard mode"));
@@ -230,9 +230,8 @@ MainWindow::MainWindow (const Options& options, QWidget* parent) : QMainWindow (
                 b->setFixedWidth (w + 4);
         });
         padsOnlyButton->setChecked (true);
-        row->insertStretch (0, 1);                   // les 3 boutons au centre
         row->addStretch (1);
-        row->addWidget (muteSoloRow (padsUnmute, padsUnsolo, false, true));   // A/M sur A/S, a droite
+        row->addWidget (muteSoloRow (padsUnmute, padsUnsolo, false, true), 0, Qt::AlignRight);   // A/M sur A/S, en bas
         padsCol->addLayout (row);
     }
     padsDock = makeDock (tr ("Pads"), "padsDock", padsPanel);
@@ -240,6 +239,7 @@ MainWindow::MainWindow (const Options& options, QWidget* parent) : QMainWindow (
     addDockWidget (Qt::BottomDockWidgetArea, groupsDock);
     addDockWidget (Qt::BottomDockWidgetArea, keysTabDock);
     splitDockWidget (groupsDock, keysTabDock, Qt::Horizontal);
+    groupsDock->hide();                              // bloc Groups (Maschine) : ferme des le depart (pas d'apparition)
     // Ligne d'aide, tout en bas : l'aide de la vue sous la souris (les barres gardent leur place)
     {
         auto* helpBar = new QToolBar (tr ("Help line"));
@@ -402,7 +402,8 @@ MainWindow::MainWindow (const Options& options, QWidget* parent) : QMainWindow (
         resizeDocks ({ keysTabDock, padsDock }, { width() * 66 / 100, width() * 34 / 100 }, Qt::Horizontal);
         for (auto* d : { groupColDock, patternSelDock })
             d->setFixedWidth (210);                  // colonne de gauche : 210 px au depart (puis libre)
-        groupsDock->setFloating (true);              // bloc 2 x 4 (Maschine) : en option, ferme
+        groupsDock->hide();                          // bloc 2 x 4 (Maschine) : en option, ferme
+        groupsDock->setFloating (true);
         groupsDock->resize (410, 250);
         groupsDock->hide();
         patternsToolBar->hide();                     // barre PATTERNS / SCENES : en option
@@ -415,6 +416,13 @@ MainWindow::MainWindow (const Options& options, QWidget* parent) : QMainWindow (
             const int lower = 255;                   // titre + PATTERNS < 1/4 > + 4 rangees de cases
             if (total - lower > 200)
                 resizeDocks ({ groupColDock, patternSelDock }, { total - lower, lower }, Qt::Vertical);
+        }
+        // Pads : panneau resserre a droite, juste la largeur des 16 carres + la colonne des modes
+        {
+            const int both = keysTabDock->width() + padsDock->width();
+            const int padsW = pads->height() + 150;  // carres (hauteur = largeur) + boutons de mode
+            if (both - padsW > 400)
+                resizeDocks ({ keysTabDock, padsDock }, { both - padsW, padsW }, Qt::Horizontal);
         }
         QTimer::singleShot (150, this, [this]
         {
@@ -431,11 +439,14 @@ MainWindow::MainWindow (const Options& options, QWidget* parent) : QMainWindow (
         QSettings s;
         if (s.contains ("windowState"))
             restoreState (s.value ("windowState").toByteArray(), kLayoutVersion);
+        if (! s.value ("layout/groupsBlockOpen", false).toBool())
+            groupsDock->hide();                      // tout de suite : pas d'apparition avant l'interface
         placeTracker();                              // disposition d'avant le Tracker : on l'ajoute
         // et une 2e fois quand les onglets sont dessines (sur Mac, ils arrivent un peu apres)
         QTimer::singleShot (250, this, [this]
         {
             placeTracker();
+            hookTabBars();                           // onglets : glisser vers l'autre barre
             // Bloc Groups (Maschine layout) : ferme au demarrage, sauf s'il etait ouvert en quittant
             if (! QSettings().value ("layout/groupsBlockOpen", false).toBool())
                 groupsDock->hide();
@@ -1451,14 +1462,14 @@ QWidget* MainWindow::buildTransportBar()
 
     auto* restart = new QPushButton (QStringLiteral ("⏮"));                  // retour au debut
     restart->setToolTip (tr ("Restart from the beginning (Maschine: RESTART)"));
-    connect (restart, &QPushButton::clicked, this, [this] { transport->restart(); });
+    connect (restart, &QPushButton::clicked, this, [this] { restartPressed(); });
     playButton = new QPushButton (QStringLiteral ("▶"));                    // lecture / pause
     playButton->setCheckable (true);
     playButton->setToolTip (tr ("Play / pause (space bar, Maschine: PLAY)"));
     connect (playButton, &QPushButton::clicked, this, [this] (bool on) { on ? transport->play() : transport->pause(); });
     auto* stop = new QPushButton (QStringLiteral ("■"));                     // arret
     stop->setToolTip (tr ("Stop and back to the beginning (Maschine: STOP)"));
-    connect (stop, &QPushButton::clicked, this, [this] { transport->stop(); engine->panic(); });
+    connect (stop, &QPushButton::clicked, this, [this] { stopPressed(); });
     recButton = new QPushButton (QStringLiteral ("●"));                      // enregistrement
     recButton->setCheckable (true);
     recButton->setObjectName ("rec");
@@ -2122,14 +2133,11 @@ void MainWindow::onMaschineButton (const QString& name, bool down)
     else if (name == "play")
         transport->playing() ? transport->pause() : transport->play();
     else if (name == "restart")
-        transport->restart();
+        restartPressed();
     else if (name == "rec")
         recButton->toggle();
     else if (name == "stop")
-    {
-        transport->stop();
-        engine->panic();
-    }
+        stopPressed();                               // Song : pause
     else if (name.startsWith ("group_") && name.size() == 7)
     {
         const int i = name.at (6).toLatin1() - 'a';                // A-H ; Shift = A2-H2
@@ -2214,6 +2222,9 @@ void MainWindow::onMaschineButton (const QString& name, bool down)
 
 bool MainWindow::eventFilter (QObject* watched, QEvent* event)
 {
+    if (auto* bar = qobject_cast<QTabBar*> (watched); bar && bar->property ("dockTabs").toBool())
+        if (tabDrag (bar, event))
+            return true;
     if (event->type() == QEvent::Enter && helpLine && watched->isWidgetType())   // aide de la vue survolee
         showHelpFor (static_cast<QWidget*> (watched));
     if (event->type() == QEvent::MouseButtonPress)    // zone cliquee : la cible de Cmd+C / X / V
@@ -2760,7 +2771,7 @@ QDockWidget* MainWindow::makeDock (const QString& title, const QString& name, QW
     dock->setFeatures (QDockWidget::DockWidgetMovable | QDockWidget::DockWidgetFloatable
                        | QDockWidget::DockWidgetClosable);
     // Panneau deplace, detache ou redimensionne : toute la fenetre est repeinte (sans trait oublie)
-    auto repaintAll = [this] { QTimer::singleShot (0, this, [this] { fixSeparators(); repaint(); for (auto* w : findChildren<QWidget*>()) w->update(); }); };
+    auto repaintAll = [this] { QTimer::singleShot (0, this, [this] { fixSeparators(); hookTabBars(); repaint(); for (auto* w : findChildren<QWidget*>()) w->update(); }); };
     connect (dock, &QDockWidget::dockLocationChanged, this, repaintAll);
     connect (dock, &QDockWidget::topLevelChanged, this, repaintAll);
     connect (dock, &QDockWidget::visibilityChanged, this, repaintAll);
@@ -3614,6 +3625,15 @@ QWidget* MainWindow::buildPianoRoll()
         head->addWidget (w);
     head->addWidget (hint, 1);
     hint->setAlignment (Qt::AlignRight | Qt::AlignVCenter);
+    hint->setMinimumWidth (0);                       // l'aide cede la place, pas les boutons
+    hint->setSizePolicy (QSizePolicy::Ignored, QSizePolicy::Preferred);
+    // Roll / Steps / Track et les boutons communs : la meme taille dans les 3 affichages
+    for (auto* b : modes->buttons())
+        b->setFixedWidth (78);
+    for (QWidget* w : std::initializer_list<QWidget*> { twice, gen, clear })
+        w->setSizePolicy (QSizePolicy::Fixed, QSizePolicy::Fixed);
+    for (auto* t : transposes)
+        t->setSizePolicy (QSizePolicy::Fixed, QSizePolicy::Fixed);
     auto showMode = [this, rollOnly, trackOnly, hint] (int id)
     {
         rollStack->setCurrentIndex (id);
@@ -5695,10 +5715,18 @@ QWidget* MainWindow::buildScenes()
     sceneGrid = new SceneGridView (sequencer, state);
     gridScene = std::max (0, sequencer.currentScene());
     sceneGrid->setScene (gridScene);
+    sceneGrid->globalLock = [this] { return scenesLocked(); };
     sceneView->isPlaying = [this] { return transport && transport->playing(); };
     rotate->setChecked (QSettings().value ("scenes/rotated", false).toBool());
-    head->removeWidget (lockBtn);                    // Lock : le premier bouton de la ligne
-    head->insertWidget (1, lockBtn);
+    // Ordre : Lock, List, Store, Alternative View, puis Rotate et Palette (Alternative View seulement)
+    {
+        int at = 1;
+        for (QWidget* w : std::initializer_list<QWidget*> { lockBtn, listBtn, store, altBtn, rotate, paletteBtn })
+        {
+            head->removeWidget (w);
+            head->insertWidget (at++, w);
+        }
+    }
     lockBtn->setChecked (QSettings().value ("scenes/lock", true).toBool());
     auto modes = [this, lockBtn, hint]
     {
@@ -5729,8 +5757,9 @@ QWidget* MainWindow::buildScenes()
         sceneGrid->setVisible (grid);
         sceneView->setVisible (! grid);
         palette->setVisible (! grid && paletteBtn->isChecked());
-        for (auto* b : { rotate, paletteBtn, listBtn })
-            b->setEnabled (! grid);
+        rotate->setVisible (! grid);                 // Rotate et Palette : seulement dans l'Alternative View
+        paletteBtn->setVisible (! grid);
+        listBtn->setEnabled (! grid);
         QSettings().setValue ("scenes/alternative", ! grid);
         refreshMaschine();
     };
@@ -6650,6 +6679,7 @@ QWidget* MainWindow::buildSong()
     songButton = button (tr ("SONG"), tr ("Song mode: PLAY follows the song (off = patterns and scenes by hand)"), true);
     loopButton = button (tr ("Loop"), tr ("At the end of the song, start again (off = stop)"), true);
     auto* from = button (tr ("▶ From here"), tr ("Play the song from the chosen block"));
+    from->hide();                                    // remplace par le curseur libre (clic sur la regle)
     auto* add = button (tr ("+ Scene"), tr ("Add a scene after the chosen block (or drag a scene name from the Scenes view)"));
     auto* dup = button (tr ("Duplicate"), tr ("Copy the chosen block just after it"));
     auto* del = button (tr ("Delete"), tr ("Remove the chosen block from the song"));
@@ -6750,7 +6780,7 @@ QWidget* MainWindow::buildSong()
     songArea->addWidget (songScroll, 1);
     col->addLayout (songArea, 1);
     auto* hint = new QLabel (tr ("click a group cell = its pattern in the scene \u00B7 drag on the ruler = loop zone \u00B7 drag a block = move · drag its right edge = length · double-click = scene · "
-                                 "right-click = repeats, length, duplicate, delete · click the ruler = play from there · 1 bar = 16 lines"));
+                                 "right-click = repeats, length, duplicate, delete · click the ruler = song cursor (Play starts there, Stop = pause) · 1 bar = 16 lines"));
     hint->setObjectName ("hint");
     registerHint (hint, "SONG");
     hint->setWordWrap (true);
@@ -6914,6 +6944,16 @@ QWidget* MainWindow::buildSong()
     });
     connect (dup, &QPushButton::clicked, this, [this] { songDuplicateBlocks(); });
     connect (del, &QPushButton::clicked, this, [this] { songDeleteBlocks(); });
+    connect (songView, &SongView::cursorAt, this, [this] (int row)
+    {
+        // Curseur libre : lecture en cours = saut a la fin de la mesure ; sinon Play part d'ici
+        const bool playing = transport->playing() && sequencer.songMode();
+        sequencer.songSeekRow (row, playing);
+        const int bar = row / seq::kRowsPerBar + 1, beat = row % seq::kRowsPerBar / 4 + 1;
+        toast (QString ("SONG CURSOR %1.%2%3").arg (bar).arg (beat).arg (playing ? " (next bar)" : ""));
+        refreshCounter (counterRow);
+        songView->update();
+    });
     connect (songView, &SongView::startFrom, this, [this] (int i)
     {
         songView->selectOnly (i);
@@ -7902,6 +7942,16 @@ void MainWindow::refreshCounter (int row)
         return tenths ? QString ("%1:%2.%3").arg (whole / 60).arg (whole % 60, 2, 10, QChar ('0')).arg ((int) ((secs - whole) * 10))
                       : QString ("%1:%2").arg (whole / 60).arg (whole % 60, 2, 10, QChar ('0'));
     };
+    // Noms coupes a 16 caracteres (en entier dans l'infobulle) : la largeur du compteur reste fixe
+    QString tip;
+    auto cut = [&tip] (const QString& name, int n)
+    {
+        if (! name.isEmpty())
+            tip += (tip.isEmpty() ? "" : "\n") + name;
+        return (name.size() > n ? name.left (n - 1) + QChar (0x2026) : name).toHtmlEscaped();
+    };
+    if (sequencer.songMode() && ! sequencer.song().empty())   // Song : la position dans le morceau
+        row = transport && (transport->playing() || transport->position() > 0) ? sequencer.songPlayRow() : sequencer.songCursorRow();
     QString text = QString ("<b>%1.%2</b>&nbsp;&nbsp;<span style='color:#b8b8c4'>%3</span>")
                        .arg (row / seq::kRowsPerBar + 1, 3, 10, QChar ('0')).arg (row % seq::kRowsPerBar / 4 + 1).arg (clock (row, true));
     if (sequencer.songMode() && ! sequencer.song().empty())
@@ -7920,21 +7970,29 @@ void MainWindow::refreshCounter (int row)
         const int cs = sequencer.currentSong();
         const QString songName = cs >= 0 && cs < (int) songs.size() ? QString::fromStdString (songs[(size_t) cs].name) : QString();
         const int sc = song[(size_t) std::clamp (entry, 0, (int) song.size() - 1)].scene;
-        const QString scName = QString::fromStdString (sequencer.scene (sc).name).toHtmlEscaped();
+        const QString scName = cut (QString::fromStdString (sequencer.scene (sc).name), 16);
         text += QString ("&nbsp;&nbsp;<span style='color:#f5c9a0'>SONG <b>%1</b> %2 / %3 \u00B7 Block %4/%5 \u00B7 SCENE %6%7</span>")
-                    .arg (songName.toHtmlEscaped(), clock (std::min (total, before + inEntry), false), clock (total, false))
+                    .arg (cut (songName, 12), clock (std::min (total, before + inEntry), false), clock (total, false))
                     .arg (std::min (entry + 1, (int) song.size())).arg (song.size())
                     .arg (sc + 1, 2, 10, QChar ('0')).arg (scName.isEmpty() ? QString() : " " + scName);
     }
     else if (sequencer.currentScene() >= 0)          // mode Patterns : la derniere scene lancee
     {
         const int sc = sequencer.currentScene();
-        const QString scName = QString::fromStdString (sequencer.scene (sc).name).toHtmlEscaped();
+        const QString scName = cut (QString::fromStdString (sequencer.scene (sc).name), 16);
         text += QString ("&nbsp;&nbsp;<span style='color:%1'>SCENE %2%3</span>")
                     .arg (css (seq::sceneColor (sc, sequencer.scene (sc).color).lighter (140)))
                     .arg (sc + 1, 2, 10, QChar ('0')).arg (scName.isEmpty() ? QString() : " " + scName);
     }
     counterLabel->setText (text);
+    // Largeur fixe selon le mode (mesuree sur un texte modele, police a chasse fixe)
+    const bool songText = sequencer.songMode() && ! sequencer.song().empty();
+    const QString model = songText ? QString ("001.1  0:00.0  SONG WWWWWWWWWWWW 00:00 / 00:00 - Block 00/00 - SCENE 00 WWWWWWWWWWWWWWWW")
+                                   : QString ("001.1  0:00.0  SCENE 00 WWWWWWWWWWWWWWWW");
+    const int w = counterLabel->fontMetrics().horizontalAdvance (model) + 26;
+    if (counterLabel->width() != w)
+        counterLabel->setFixedWidth (w);
+    counterLabel->setToolTip (tip.isEmpty() ? tr ("Playback position (bar.beat) and time; in Song mode: time in the song / length and block") : tip);
 }
 
 void MainWindow::updateColumnFor()
@@ -8057,4 +8115,125 @@ void MainWindow::gridToggle (int group, int pattern, bool fromMaschine)
 bool MainWindow::scenesLocked() const
 {
     return ! sceneLockBtn || sceneLockBtn->isChecked();
+}
+
+void MainWindow::stopPressed()
+{
+    // Song : Stop = pause (Play reprend au meme endroit ; RESTART = debut) ; Patterns : arret
+    if (sequencer.songMode() && ! sequencer.song().empty())
+    {
+        if (transport->playing())
+        {
+            transport->pause();
+            engine->panic();
+            toast ("PAUSE: Play = resume here, \u23EE = start of the song");
+        }
+        else                                         // deja en pause : Stop = retour au curseur
+        {
+            transport->stop();
+            toast ("STOP: back to the song cursor");
+        }
+        songView->update();
+        return;
+    }
+    transport->stop();
+    engine->panic();
+}
+
+void MainWindow::restartPressed()
+{
+    if (sequencer.songMode() && ! sequencer.song().empty())
+        sequencer.songSeekRow (0);                   // Song : le curseur revient au debut
+    transport->restart();
+    songView->update();
+}
+
+// ------------------------------------------------------------ glisser un onglet vers l'autre barre
+
+void MainWindow::hookTabBars()
+{
+    // Les barres d'onglets des panneaux sont creees par Qt (et recreees quand la disposition change)
+    for (auto* bar : findChildren<QTabBar*> (QString(), Qt::FindDirectChildrenOnly))
+        if (! bar->property ("dockTabs").toBool())
+        {
+            bar->setProperty ("dockTabs", true);
+            bar->installEventFilter (this);
+        }
+}
+
+bool MainWindow::tabDrag (QTabBar* bar, QEvent* event)
+{
+    // Clic maintenu sur un onglet, puis glisser : lache sur l'autre barre d'onglets (ou sur un
+    // panneau), il y rejoint ses onglets ; les tailles des deux zones se reajustent
+    auto dockOfTab = [this] (QTabBar* b, int index) -> QDockWidget*
+    {
+        if (index < 0)
+            return nullptr;
+        const QString title = b->tabText (index);
+        for (auto* d : findChildren<QDockWidget*>())
+            if (d->windowTitle() == title && ! d->isFloating())
+                return d;
+        return nullptr;
+    };
+    if (event->type() == QEvent::MouseButtonPress)
+    {
+        auto* me = static_cast<QMouseEvent*> (event);
+        if (me->button() == Qt::LeftButton)
+        {
+            tabDragDock = dockOfTab (bar, bar->tabAt (me->position().toPoint()));
+            tabDragFrom = me->globalPosition().toPoint();
+            tabDragging = false;
+        }
+        return false;
+    }
+    if (event->type() == QEvent::MouseMove && tabDragDock)
+    {
+        auto* me = static_cast<QMouseEvent*> (event);
+        if (! tabDragging && (me->globalPosition().toPoint() - tabDragFrom).manhattanLength() > 24)
+        {
+            tabDragging = true;
+            bar->setCursor (Qt::ClosedHandCursor);
+            toast (QString ("Drop %1 on the other tab bar (or on a panel)").arg (tabDragDock->windowTitle()));
+        }
+        return tabDragging;                          // pendant le glisser, Qt ne detache pas le panneau
+    }
+    if (event->type() == QEvent::MouseButtonRelease && tabDragDock)
+    {
+        auto* me = static_cast<QMouseEvent*> (event);
+        QDockWidget* moved = tabDragDock;
+        const bool wasDragging = tabDragging;
+        tabDragDock = nullptr;
+        tabDragging = false;
+        bar->unsetCursor();
+        if (! wasDragging)
+            return false;
+        // Sous la souris : une barre d'onglets (son onglet visible) ou un panneau
+        const QPoint at = me->globalPosition().toPoint();
+        QDockWidget* target = nullptr;
+        QWidget* w = QApplication::widgetAt (at);
+        if (auto* other = qobject_cast<QTabBar*> (w); other && other != bar)
+            target = dockOfTab (other, other->currentIndex());
+        for (QWidget* p = w; p && ! target; p = p->parentWidget())
+            if (auto* d = qobject_cast<QDockWidget*> (p))
+                target = d;
+        if (! target || target == moved || target->isFloating() || tabifiedDockWidgets (moved).contains (target))
+            return true;                             // meme barre ou rien dessous : rien ne change
+        const Qt::DockWidgetArea from = dockWidgetArea (moved);
+        tabifyDockWidget (target, moved);
+        moved->show();
+        moved->raise();
+        // Tailles : la zone qui recoit un panneau haut (Patterns, Mixer...) grandit un peu
+        QTimer::singleShot (0, this, [this, moved, from]
+        {
+            const int need = moved->widget() ? moved->widget()->minimumSizeHint().height() + 40 : 0;
+            if (need > moved->height())
+                resizeDocks ({ moved }, { need }, Qt::Vertical);
+            fixSeparators();
+            hookTabBars();
+            Q_UNUSED (from);
+        });
+        toast (QString ("%1 moved next to %2").arg (moved->windowTitle(), target->windowTitle()));
+        return true;
+    }
+    return false;
 }

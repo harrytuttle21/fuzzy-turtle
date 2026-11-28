@@ -290,13 +290,14 @@ void SongView::paintEvent (QPaintEvent*)
     }
     if (! song.empty())                              // depart de la lecture (choisi par la regle)
     {
-        const int from = std::clamp (sequencer.songFrom(), 0, (int) song.size() - 1);
-        const double x = xOfRow (rows[(size_t) from]);
+        const double x = xOfRow (std::min (sequencer.songCursorRow(), rows.back()));   // le curseur (libre)
         if (x >= kLabelW)
         {
             p.setPen (Qt::NoPen);
             p.setBrush (QColor (252, 140, 40));
             p.drawPolygon (QPolygonF ({ QPointF (x, kRulerH - 2), QPointF (x - 6, kRulerH - 12), QPointF (x + 6, kRulerH - 12) }));
+            p.setPen (QPen (QColor (252, 140, 40, 150), 1, Qt::DashLine));   // le curseur, sur toute la hauteur
+            p.drawLine (QPointF (x, kRulerH), QPointF (x, height()));
         }
     }
 
@@ -639,8 +640,13 @@ void SongView::mouseMoveEvent (QMouseEvent* e)
 
 void SongView::mouseReleaseEvent (QMouseEvent* e)
 {
-    if (drag == Drag::Ruler)                         // simple clic : jouer d'ici (la zone reste)
-        emit startFrom (regionA);
+    if (drag == Drag::Ruler)                         // simple clic : le curseur ici (au pas choisi ; la zone reste)
+    {
+        const double snap = std::max (1.0, step * seq::kRowsPerBar);
+        const auto rows = startRows();
+        const int row = (int) std::clamp (std::floor (rowOfX (pressPos.x()) / snap) * snap, 0.0, (double) std::max (0, rows.back() - 1));
+        emit cursorAt (row);
+    }
     else if (drag == Drag::Region)
         emit loopRegion (std::min (regionA, regionB), std::max (regionA, regionB));
     else if (drag == Drag::Resize && pressEntry >= 0)

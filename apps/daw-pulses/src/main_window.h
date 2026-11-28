@@ -300,6 +300,13 @@ private:
     QToolBar* transportTool = nullptr;               // le Transport : barre en haut (detachable, flottante)
     QLabel* counterLabel = nullptr;                  // compteur de lecture
     void refreshCounter (int row);
+    void stopPressed();
+    void hookTabBars();                              // onglets des panneaux : glisser vers l'autre barre
+    bool tabDrag (QTabBar* bar, QEvent* event);
+    QDockWidget* tabDragDock = nullptr;
+    QPoint tabDragFrom;
+    bool tabDragging = false;                              // Song : pause (reprise au meme endroit) ; sinon arret
+    void restartPressed();                           // Song : depuis le debut du morceau
     // Ligne d'aide (en bas de la fenetre) : l'aide de la vue sous la souris
     struct HelpEntry { QPointer<QLabel> label; QString view; };
     std::vector<HelpEntry> helps;

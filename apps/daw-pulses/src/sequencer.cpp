@@ -36,6 +36,8 @@ void Sequencer::reset()
     loopOn = true;
     songEnded = false;
     songPos = songRows = songStart = 0;
+    songStartOff = songSeek = songJumpSeek = 0;
+    seekRow = -1;
     sceneNow = -1;
 }
 
@@ -60,6 +62,8 @@ std::vector<Hit> Sequencer::hitsForRow (int row, double rowMs)
         songPos = std::clamp (songJump, 0, (int) entries.size() - 1);
         songRows = 0;
         songJump = -1;
+        songSeek = songJumpSeek;                     // curseur libre : au milieu du bloc
+        songJumpSeek = 0;
     }
     if (songPlays)                                   // morceau : debut d'une entree ?
     {
@@ -144,12 +148,13 @@ void Sequencer::startEntry (int row)
                 current[gi] = v;
                 off[gi] = false;
             }
-            start[gi] = row;                         // tous ensemble, depuis le debut
+            start[gi] = row - songSeek;              // tous ensemble (curseur libre : deja avances)
         }
         sceneNow = e.scene;
     }
     songLen = std::max (1, entryRowsLocked (e));
-    songRows = 0;
+    songRows = std::clamp (songSeek, 0, songLen - 1);
+    songSeek = 0;
 }
 
 int Sequencer::sceneRowsLocked (int scene) const
@@ -213,8 +218,11 @@ bool Sequencer::songMode() const
 void Sequencer::setSongMode (bool on)
 {
     std::lock_guard<std::mutex> g (lock);
-    if (on && ! songOn)                              // le morceau reprend a l'entree choisie,
-        songJump = songStart;                        // au debut de la mesure (sans couper)
+    if (on && ! songOn)                              // le morceau reprend au curseur,
+    {                                                // au debut de la mesure (sans couper)
+        songJump = songStart;
+        songJumpSeek = songStartOff;
+    }
     if (! on)
         songJump = -1;
     songOn = on;
@@ -236,14 +244,81 @@ void Sequencer::songStartFrom (int entry, bool atBar)
 {
     std::lock_guard<std::mutex> g (lock);
     songStart = std::clamp (entry, 0, std::max (0, (int) entries.size() - 1));
+    songStartOff = 0;                                // le curseur au debut du bloc
     if (atBar)                                       // en lecture : a la fin de la mesure, sans a-coup
     {
         songJump = songStart;
+        songJumpSeek = 0;
         return;
     }
     songJump = -1;
     songPos = songStart;
     songRows = 0;
+    songStartOff = songSeek = 0;
+    seekRow = rowsBefore (songStart);                // l'horloge repart de la (mesures justes)
+}
+
+int Sequencer::rowsBefore (int entry) const
+{
+    int rows = 0;
+    for (int i = 0; i < entry && i < (int) entries.size(); ++i)
+        rows += std::max (1, entryRowsLocked (entries[(size_t) i]));
+    return rows;
+}
+
+void Sequencer::songSeekRow (int absRow, bool atBar)
+{
+    std::lock_guard<std::mutex> g (lock);
+    if (entries.empty())
+        return;
+    int e = 0, before = 0;
+    absRow = std::max (0, absRow);
+    for (; e < (int) entries.size(); ++e)
+    {
+        const int len = std::max (1, entryRowsLocked (entries[(size_t) e]));
+        if (absRow < before + len)
+            break;
+        before += len;
+    }
+    if (e >= (int) entries.size())                   // apres la fin : debut du dernier bloc
+    {
+        e = (int) entries.size() - 1;
+        before -= std::max (1, entryRowsLocked (entries[(size_t) e]));
+        absRow = before;
+    }
+    songStart = e;
+    songStartOff = absRow - before;
+    if (atBar)                                       // en lecture : a la fin de la mesure
+    {
+        songJump = e;
+        songJumpSeek = songStartOff;
+        return;
+    }
+    songJump = -1;
+    songPos = e;
+    songRows = 0;
+    songSeek = songStartOff;
+    seekRow = absRow;
+}
+
+int Sequencer::songCursorRow() const
+{
+    std::lock_guard<std::mutex> g (lock);
+    return rowsBefore (std::clamp (songStart, 0, std::max (0, (int) entries.size() - 1))) + songStartOff;
+}
+
+int Sequencer::songPlayRow() const
+{
+    std::lock_guard<std::mutex> g (lock);
+    return rowsBefore (songPos) + songRows;
+}
+
+int Sequencer::takeSeekRow()
+{
+    std::lock_guard<std::mutex> g (lock);
+    const int r = seekRow;
+    seekRow = -1;
+    return r;
 }
 
 void Sequencer::storeSong()
@@ -264,6 +339,7 @@ void Sequencer::loadSong (int index)
     loopA = s.loopFrom;
     loopB = s.loopTo;
     songStart = songPos = songRows = 0;
+    songStartOff = songSeek = songJumpSeek = 0;
     songJump = -1;
 }
 
@@ -558,9 +634,11 @@ int Sequencer::localRow (int group, int row) const
 void Sequencer::resetPlayback()
 {
     std::lock_guard<std::mutex> g (lock);
-    songPos = songStart;                             // le morceau repart de l'entree choisie
+    songPos = songStart;                             // le morceau repart du curseur (bloc + lignes)
     songRows = 0;
     songJump = -1;
+    songSeek = songStartOff;
+    seekRow = songOn ? rowsBefore (songStart) + songStartOff : -1;
     for (int grp = 0; grp < session::kGroups; ++grp)
     {
         const size_t gi = (size_t) grp;

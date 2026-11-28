@@ -156,6 +156,11 @@ public:
     int sceneRows (int scene) const;                     // le plus long pattern de la scene (16 sinon)
     void songStartFrom (int entry, bool atBar = false);  // la lecture part de cette entree (atBar : a la fin de la mesure)
     int songFrom() const;
+    // Curseur libre (vue Song) : une position en lignes depuis le debut du morceau, meme au milieu d'un bloc
+    void songSeekRow (int absRow, bool atBar = false);
+    int songCursorRow() const;                           // ou est le curseur (lignes depuis le debut)
+    int songPlayRow() const;                             // ou en est la lecture (lignes depuis le debut)
+    int takeSeekRow();                                   // pour l'horloge : ligne de depart a reprendre (-1 : rien)
     void songPosition (int& entry, int& rowInEntry) const;   // ou en est la lecture
     bool takeSongEnd();                                  // fin du morceau (sans boucle) : l'horloge s'arrete
     void setSongLoopRange (int from, int to);            // Loop sur les blocs from..to (-1 : tout le morceau)
@@ -188,6 +193,10 @@ private:
     int songPos = 0, songRows = 0, songLen = 16, songStart = 0;
     int loopA = -1, loopB = -1;                          // zone de boucle (blocs), -1 : aucune
     int songJump = -1;                                   // saut demande (fin de mesure)
+    int songStartOff = 0;                                // curseur : lignes dans le bloc songStart
+    int songSeek = 0, songJumpSeek = 0;                  // a appliquer au prochain debut de bloc
+    int seekRow = -1;                                    // l'horloge doit repartir de cette ligne
+    int rowsBefore (int entry) const;                    // lignes des blocs avant celui-ci (verrou pris)
     std::vector<SongSlot> songList { SongSlot() };       // les songs ; songList[songIndex] = la choisie
     int songIndex = 0;
     void storeSong();                                    // la song en cours -> songList (sans verrou)
