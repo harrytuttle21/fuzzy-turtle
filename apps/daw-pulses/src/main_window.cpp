@@ -1023,7 +1023,7 @@ MainWindow::MainWindow (const Options& options, QWidget* parent) : QMainWindow (
         const bool showToast = QDateTime::currentMSecsSinceEpoch() < toastUntil;
         const QString bottom = showToast ? toastText
                              : QString ("Sound %1 : %2").arg (state.sound.load(), 2, 10, QChar ('0'))
-                                   .arg (QStringList { "ONE-SHOT", "GATE", "LOOP" }[state.mode (state.group, state.sound)]);
+                                   .arg (QStringList { "ONE-SHOT", "GATE", "LOOP", "LOOP SP" }.value (state.mode (state.group, state.sound), "GATE"));
         right.text (8, 244, bottom.toStdString(), showToast ? rgb (acc) : fc::Rgb { 140, 140, 140 }, showToast ? 2 : 1);
     });
     if (opts.maschine)
@@ -2002,7 +2002,7 @@ void MainWindow::refreshAll()
                              .arg (groupName (state.group))
                              .arg (state.sound.load(), 2, 10, QChar ('0'))
                              .arg (soundName (state.sound))
-                             .arg (QStringList { "ONE-SHOT", "GATE", "LOOP" }[state.mode (state.group, state.sound)]));
+                             .arg (QStringList { "ONE-SHOT", "GATE", "LOOP", "LOOP SP" }.value (state.mode (state.group, state.sound), "GATE")));
     refreshMaschine();
 }
 
@@ -3843,7 +3843,7 @@ void MainWindow::cyclePlayMode()
     syncSamples();
     refreshAll();
     refreshSpLoops();
-    toast (QString ("Sound %1 : %2").arg (state.sound.load(), 2, 10, QChar ('0')).arg (QStringList { "ONE-SHOT", "GATE", "LOOP", "LOOP SP" }[m]));
+    toast (QString ("Sound %1 : %2").arg (state.sound.load(), 2, 10, QChar ('0')).arg (QStringList { "ONE-SHOT", "GATE", "LOOP", "LOOP SP" }.value (m)));
 }
 
 // ------------------------------------------------------------------------------- vues, clavier

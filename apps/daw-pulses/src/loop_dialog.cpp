@@ -142,21 +142,22 @@ LoopDialog::LoopDialog (EngineLink& e, session::State& s, int g, int snd, const 
     // Mode de lecture
     auto* row = new QHBoxLayout;
     modes = new QButtonGroup (this);
-    const QStringList names { tr ("One-shot (plays to the end)"), tr ("Gate (stops on release)"), tr ("Loop (while held)") };
+    const QStringList names { tr ("One-shot (plays to the end)"), tr ("Gate (stops on release)"), tr ("Loop (while held)"), tr ("Loop SP (press = on / off)") };
     for (int i = 0; i < names.size(); ++i)
     {
         auto* b = new QRadioButton (names[i]);
-        b->setEnabled (i != session::State::Loop || hasSample);   // boucle : samples seulement
+        b->setEnabled (i < session::State::Loop || hasSample);    // boucles : samples seulement
         modes->addButton (b, i);
         row->addWidget (b);
     }
-    modes->button (oldMode)->setChecked (true);
+    if (auto* b = modes->button (oldMode))
+        b->setChecked (true);
     row->addStretch();
     col->addLayout (row);
 
     wave = new WaveView;
     wave->setColor (color);
-    wave->setLoop (oldStart, oldEnd, oldMode == session::State::Loop);
+    wave->setLoop (oldStart, oldEnd, oldMode >= session::State::Loop);
     wave->setEnabled (hasSample);
     col->addWidget (wave, 1);
 
@@ -186,14 +187,14 @@ LoopDialog::LoopDialog (EngineLink& e, session::State& s, int g, int snd, const 
     connect (modes, &QButtonGroup::idClicked, this, [this] (int id)
     {
         state.playMode[slot] = id;
-        wave->setLoop (state.loopStart[slot], state.loopEnd[slot], id == session::State::Loop);
+        wave->setLoop (state.loopStart[slot], state.loopEnd[slot], id >= session::State::Loop);
         apply();
     });
     connect (wave, &WaveView::loopChanged, this, [this] (float s, float e)
     {
         state.loopStart[slot] = s;
         state.loopEnd[slot] = e;
-        if (state.playMode[slot] != session::State::Loop)   // toucher la boucle = passer en Loop
+        if (state.playMode[slot] < session::State::Loop)    // toucher la boucle = passer en Loop
         {
             state.playMode[slot] = session::State::Loop;
             modes->button (session::State::Loop)->setChecked (true);
@@ -218,13 +219,13 @@ LoopDialog::LoopDialog (EngineLink& e, session::State& s, int g, int snd, const 
 
 void LoopDialog::apply()
 {
-    engine.setLoop (group, sound, state.playMode[slot] == session::State::Loop, state.loopStart[slot], state.loopEnd[slot]);
+    engine.setLoop (group, sound, state.playMode[slot] >= session::State::Loop, state.loopStart[slot], state.loopEnd[slot]);
     refreshText();
 }
 
 void LoopDialog::refreshText()
 {
-    if (state.playMode[slot] != session::State::Loop || seconds <= 0)
+    if (state.playMode[slot] < session::State::Loop || seconds <= 0)
     {
         info->setText (seconds > 0 ? tr ("Length %1 s").arg (seconds, 0, 'f', 3) : QString());
         return;
