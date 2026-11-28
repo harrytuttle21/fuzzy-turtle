@@ -231,7 +231,7 @@ void SceneView::paintEvent (QPaintEvent*)
             const QRectF lb = lockBox (k);
             // Edit eteint : tout est ferme (gris) ; Edit : ouvert, sauf les scenes verrouillees (orange)
             const bool closed = sc.locked || ! editMode;
-            const QColor ink = sc.locked ? QColor (252, 140, 40) : ! editMode ? QColor (90, 90, 100) : QColor (150, 150, 162);
+            const QColor ink = sc.locked ? QColor (232, 192, 64) : ! editMode ? QColor (90, 90, 100) : QColor (150, 150, 162);   // jaune = verrouillee une a une
             p.setBrush (Qt::NoBrush);
             p.setPen (QPen (ink, 1.6));
             const QRectF body (lb.left() + 2, lb.top() + 7, 12, 8);

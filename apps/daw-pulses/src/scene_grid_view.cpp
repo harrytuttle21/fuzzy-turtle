@@ -126,8 +126,9 @@ void SceneGridView::paintEvent (QPaintEvent*)
         if (s.used)                                  // cadenas : ferme en couleur, ouvert en gris (clic = changer)
         {
             const QRectF lr = lockRect (i);
-            const bool shut = s.locked || (globalLock && globalLock());   // Lock : tout est ferme
-            const QColor lc = shut ? c.lighter (130) : QColor (110, 110, 120);
+            // Verrouillee une a une : jaune (toujours) ; Lock general : fermes en gris ; sinon ouverts
+            const bool shut = s.locked || (globalLock && globalLock());
+            const QColor lc = s.locked ? QColor (232, 192, 64) : QColor (110, 110, 120);
             const QRectF b (lr.center().x() - 4.5, lr.center().y() - 1, 9, 7);
             g.setPen (QPen (lc, 1.5));
             g.setBrush (Qt::NoBrush);

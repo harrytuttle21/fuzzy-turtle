@@ -5655,6 +5655,7 @@ QWidget* MainWindow::buildScenes()
     auto* head = new QHBoxLayout;
     auto* title = new QLabel (tr ("SCENES"));
     title->setObjectName ("section");
+    title->setSizePolicy (QSizePolicy::Fixed, QSizePolicy::Preferred);   // les boutons juste apres le titre
     head->addWidget (title);
     auto* store = new QPushButton (tr ("Store playing as new scene"));
     store->setFocusPolicy (Qt::NoFocus);
@@ -5718,14 +5719,20 @@ QWidget* MainWindow::buildScenes()
     sceneGrid->globalLock = [this] { return scenesLocked(); };
     sceneView->isPlaying = [this] { return transport && transport->playing(); };
     rotate->setChecked (QSettings().value ("scenes/rotated", false).toBool());
-    // Ordre : Lock, List, Store, Alternative View, puis Rotate et Palette (Alternative View seulement)
+    // Ordre : Lock, List, Store, Alternative View, puis Rotate et Palette (Alternative View seulement).
+    // Largeur fixe ; Rotate et Palette gardent leur place cachee (rien ne bouge quand ils apparaissent)
     {
         int at = 1;
-        for (QWidget* w : std::initializer_list<QWidget*> { lockBtn, listBtn, store, altBtn, rotate, paletteBtn })
+        for (QPushButton* w : { lockBtn, listBtn, store, altBtn, rotate, paletteBtn })
         {
             head->removeWidget (w);
             head->insertWidget (at++, w);
+            w->setFixedWidth (w == store ? 215 : 140);
+            QSizePolicy sp = w->sizePolicy();
+            sp.setRetainSizeWhenHidden (true);
+            w->setSizePolicy (sp);
         }
+        head->insertStretch (at, 1);                 // le reste de la place : apres les boutons
     }
     lockBtn->setChecked (QSettings().value ("scenes/lock", true).toBool());
     auto modes = [this, lockBtn, hint]
@@ -6947,6 +6954,8 @@ QWidget* MainWindow::buildSong()
     connect (songView, &SongView::cursorAt, this, [this] (int row)
     {
         // Curseur libre : lecture en cours = saut a la fin de la mesure ; sinon Play part d'ici
+        if (! sequencer.songMode())                  // le curseur du morceau : le mode SONG s'allume
+            setSongMode (true);
         const bool playing = transport->playing() && sequencer.songMode();
         sequencer.songSeekRow (row, playing);
         const int bar = row / seq::kRowsPerBar + 1, beat = row % seq::kRowsPerBar / 4 + 1;
