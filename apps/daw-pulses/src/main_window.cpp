@@ -10,6 +10,7 @@
 #include "pattern_bar.h"
 #include "scene_view.h"
 #include "scene_grid_view.h"
+#include "sound_links.h"
 #include "palette_view.h"
 #include "song_view.h"
 #include "loop_dialog.h"
@@ -596,6 +597,54 @@ MainWindow::MainWindow (const Options& options, QWidget* parent) : QMainWindow (
             playGroup->addAction (a);
             modeActions << a;
         }
+        // Sons lies (jouer aussi, tous groupes) et coupures (couper) : un sous-menu par groupe
+        auto maskMenu = [this, &menu, g, targets] (const QString& title, bool cuts)
+        {
+            auto* sub = menu.addMenu (title);
+            const auto& first = (cuts ? state.cutMask : state.linkMask)[(size_t) state.index (g, targets.first())];
+            int count = 0;
+            for (int tg = 0; tg < kGroups; ++tg)
+            {
+                auto* gm = sub->addMenu (groupTitle (state, tg));
+                int inGroup = 0;
+                for (int tp = 1; tp <= 16; ++tp)
+                {
+                    const int j = state.index (tg, tp);
+                    const bool on = session::State::hasBit (first, j);
+                    inGroup += on;
+                    auto* a = gm->addAction (QString ("%1  %2").arg (tp, 2, 10, QChar ('0')).arg (padName (tg, tp)));
+                    a->setCheckable (true);
+                    a->setChecked (on);
+                    a->setEnabled (! (tg == g && targets.contains (tp)));   // pas lui-meme
+                    connect (a, &QAction::toggled, this, [this, g, targets, j, cuts] (bool v)
+                    {
+                        for (int p : targets)
+                            session::State::setBit ((cuts ? state.cutMask : state.linkMask)[(size_t) state.index (g, p)], j, v);
+                        projectModified = true;
+                        updateTitle();
+                        refreshAll();
+                    });
+                }
+                if (inGroup)
+                    gm->setTitle (QString ("%1  (%2)").arg (groupTitle (state, tg)).arg (inGroup));
+                count += inGroup;
+            }
+            sub->addSeparator();
+            sub->addAction (tr ("Clear"), this, [this, g, targets, cuts]
+            {
+                for (int p : targets)
+                    session::State::clearMask ((cuts ? state.cutMask : state.linkMask)[(size_t) state.index (g, p)]);
+                projectModified = true;
+                updateTitle();
+                refreshAll();
+            });
+            if (count)
+                sub->setTitle (QString ("%1 (%2)").arg (title).arg (count));
+        };
+        menu.addSeparator();
+        maskMenu (tr ("Link with (plays too)"), false);
+        maskMenu (tr ("Cuts (stops)"), true);
+        menu.addSeparator();
         auto* editLoopAction = menu.addAction (tr ("Edit Loop..."));
         editLoopAction->setEnabled (! state.samples[i].isEmpty() && ! many);
         menu.addSeparator();
@@ -1832,15 +1881,20 @@ void MainWindow::playPad (int pad, int velocity, bool down)
             if (state.spLatched[si].exchange (false))
             {
                 engine->noteOff (pad, state.spNote[si], g);
+                for (int j = 0; j < session::kGroups * 16; ++j)   // ses sons lies s'arretent avec elle
+                    if (session::State::hasBit (state.linkMask[si], j))
+                        engine->cut (j % 16 + 1, j / 16);
                 QMetaObject::invokeMethod (this, [this] { refreshSpLoops(); }, Qt::QueuedConnection);
                 return;
             }
             if (v > 0 && state.audible (g, pad) && state.hasInstrument[si])
             {
                 state.spNote[si] = state.pitched (g, pad, defaultNote (pad));
+                links::applyCuts (*engine, state, g, pad);
                 state.spLatched[si] = true;
                 engine->hit (pad, v, state.spNote[si], g, true, state.releaseMs[si],
                              -1, state.effSynth (g, pad), state.pan (g, pad), state.poly (g, pad));   // -1 : Loop SP
+                links::playLinks (*engine, state, g, pad, velocity, defaultNote (pad), -1);   // lies : en boucle aussi
                 QMetaObject::invokeMethod (this, [this] { refreshSpLoops(); }, Qt::QueuedConnection);
             }
             std::lock_guard<std::mutex> lk (recLock);
@@ -1849,8 +1903,15 @@ void MainWindow::playPad (int pad, int velocity, bool down)
         }
         padSent[(size_t) pad] = state.pitched (g, pad, defaultNote (pad));   // la fin de note coupera celle-ci
         if (v > 0 && state.audible (g, pad) && state.hasInstrument[(size_t) state.index (g, pad)])
+        {
+            if (links::applyCuts (*engine, state, g, pad))   // ce pad coupe ses « Cuts »
+                QMetaObject::invokeMethod (this, [this] { refreshSpLoops(); }, Qt::QueuedConnection);
             engine->hit (pad, v, padSent[(size_t) pad], g, state.held (g, pad), state.releaseMs[(size_t) state.index (g, pad)],
                          0, state.effSynth (g, pad), state.pan (g, pad), state.poly (g, pad));
+            auto held = links::playLinks (*engine, state, g, pad, velocity, defaultNote (pad), 0);   // sons lies
+            std::lock_guard<std::mutex> lk (linkLock);
+            padLinkHeld[(size_t) pad] = std::move (held);
+        }
         std::lock_guard<std::mutex> lk (recLock);
         recordStart (padRec[(size_t) pad], pad - 1, defaultNote (pad), velocity);
     }
@@ -1865,6 +1926,12 @@ void MainWindow::playPad (int pad, int velocity, bool down)
         if (state.held (padGroup[(size_t) pad], pad)
             && state.mode (padGroup[(size_t) pad], pad) != session::State::LoopSP)   // Loop SP : elle continue
             engine->noteOff (pad, padSent[(size_t) pad], padGroup[(size_t) pad]);
+        {
+            std::lock_guard<std::mutex> lk (linkLock);   // sons lies tenus : fin de note aussi
+            for (const auto& h : padLinkHeld[(size_t) pad])
+                engine->noteOff (h.sound, h.note, h.group);
+            padLinkHeld[(size_t) pad].clear();
+        }
         {
             std::lock_guard<std::mutex> lk (recLock);
             recordEnd (padRec[(size_t) pad]);
@@ -1980,7 +2047,16 @@ void MainWindow::refreshAll()
     }
     pads->setSelected (state.sound);
     for (int p = 1; p <= 16; ++p)
+    {
         pads->setLabel (p, padLabel (p));
+        const size_t li = (size_t) state.index (state.group, p);   // sons lies / coupures
+        QStringList mk;
+        if (session::State::anyBit (state.linkMask[li]))
+            mk << "LINK";
+        if (session::State::anyBit (state.cutMask[li]))
+            mk << "CUT";
+        pads->setMarks (p, mk.join (" "));
+    }
     {
         std::array<bool, 16> empty {};
         for (int p = 1; p <= 16; ++p)
@@ -8232,7 +8308,12 @@ void MainWindow::stopSpLoops()
 {
     for (int i = 0; i < session::kGroups * 16; ++i)
         if (state.spLatched[(size_t) i].exchange (false))
+        {
             engine->noteOff (i % 16 + 1, state.spNote[(size_t) i], i / 16);
+            for (int j = 0; j < session::kGroups * 16; ++j)   // et ses sons lies
+                if (session::State::hasBit (state.linkMask[(size_t) i], j))
+                    engine->cut (j % 16 + 1, j / 16);
+        }
     refreshSpLoops();
 }
 

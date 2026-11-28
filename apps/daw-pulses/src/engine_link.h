@@ -49,6 +49,7 @@ public:
     void hit (int sound, int velocity, int note, int group, bool adsr, int releaseMs = 150,
               int gateMs = 0, int synth = 0, int pan = 64, int poly = 4) const;   // poly : notes en meme temps du son
     void noteOff (int sound, int note, int group) const;
+    void cut (int sound, int group) const;           // couper ce son tout de suite (pads « Cuts »)
     void offLive() const;                            // plus rien de tenu : le moteur relache les notes jouees en direct
     void click (bool accent, int volume) const;   // metronome
     void panic() const;

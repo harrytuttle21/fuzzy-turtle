@@ -61,6 +61,7 @@ struct PadEvent
     int releaseMs = 150;  // ADSR : relachement apres la fin de note
     int gateMs = 0;       // ADSR : duree de la note (0 = jusqu'a /fuzzy/proto/off ; -1 = Loop SP : seulement /off)
     bool off = false;     // fin de note (ADSR)
+    bool cut = false;     // couper ce son tout de suite (fondu court), meme ONE-SHOT ou Loop SP
     int synth = 0;        // synthe : 1 Kick, 2 Snare, 3 Closed HH, 4 Open HH, 5 Tone, 6 Click (0 = celui du pad)
     int pan = 64;         // stereo : 0 gauche, 64 centre, 127 droite
     int poly = 4;         // polyphonie du son : notes en meme temps (1 = mono, comme Polyphony de Maschine)
@@ -451,6 +452,13 @@ public:
                     if (v.active) v.release (sampleRate);   // fondu de 10 ms, sans clic
                 continue;
             }
+            if (e.cut)
+            {
+                for (auto& v : voices)                   // coupure (un autre pad coupe ce son)
+                    if (v.active && v.pad == e.pad && v.tag == e.tag)
+                        v.release (sampleRate);          // fondu de 10 ms, sans clic
+                continue;
+            }
             if (e.off)
             {
                 for (auto& v : voices)                   // ADSR : fin des notes de ce son
@@ -708,6 +716,16 @@ private:
         if (address == "/fuzzy/proto/off_live")        // plus aucun pad tenu
         {
             queue.push ({ kLiveOff, 0, -1, juce::Time::getHighResolutionTicks() });
+            return;
+        }
+        if (address == "/fuzzy/proto/cut")             // couper un son (son, groupe) : pads « Cuts »
+        {
+            const int pad = num (0);
+            if (pad < 1 || pad > 16) return;
+            PadEvent e { pad, 0, -1, juce::Time::getHighResolutionTicks() };
+            e.tag = m.size() > 1 ? num (1) : -1;
+            e.cut = true;
+            queue.push (e);
             return;
         }
         if (address == "/fuzzy/proto/off")             // fin de note (son, note, groupe)

@@ -156,6 +156,19 @@ QJsonObject build (QJsonObject d, const QString& name, const seq::Sequencer& seq
                 sd["polyphony"] = state.poly (g, s);
             else
                 sd.remove ("polyphony");
+            // Sons lies et coupures : "B-03" = groupe B, son 3 (meme format pour le pilote)
+            for (const bool cuts : { false, true })
+            {
+                QJsonArray list;
+                const auto& m = (cuts ? state.cutMask : state.linkMask)[i];
+                for (int j = 0; j < session::kGroups * 16; ++j)
+                    if (session::State::hasBit (m, j))
+                        list.append (QString ("%1-%2").arg (session::groupName (j / 16)).arg (j % 16 + 1, 2, 10, QChar ('0')));
+                if (list.isEmpty())
+                    sd.remove (cuts ? "cuts" : "links");
+                else
+                    sd[cuts ? "cuts" : "links"] = list;
+            }
             // Synthe comme le pilote : nom, « None » = son vide, sans cle = celui du pad
             static const QStringList synthNames { "Kick", "Snare", "Closed HH", "Open HH", "Tone" };
             const int syn = state.synth[i];
@@ -303,6 +316,24 @@ void Project::toApp (seq::Sequencer& sequencer, session::State& state, int& bpm)
             state.synth[i] = syn == "None" ? 0 : synthNames.contains (syn) ? (int) synthNames.indexOf (syn) + 1 : -1;
             state.soundReverse[i] = sd["reverse"].toBool (false);
             state.soundPoly[i] = std::clamp (sd["polyphony"].toInt (4), 1, 16);
+            for (const bool cuts : { false, true })      // sons lies et coupures ("B-03")
+            {
+                auto& m = (cuts ? state.cutMask : state.linkMask)[i];
+                session::State::clearMask (m);
+                for (const auto& v : sd[cuts ? "cuts" : "links"].toArray())
+                {
+                    const QStringList parts = v.toString().split ('-');
+                    if (parts.size() != 2)
+                        continue;
+                    int tg = -1;
+                    for (int k = 0; k < session::kGroups; ++k)
+                        if (session::groupName (k) == parts[0])
+                            tg = k;
+                    const int ts = parts[1].toInt();
+                    if (tg >= 0 && ts >= 1 && ts <= 16)
+                        session::State::setBit (m, tg * 16 + ts - 1, true);
+                }
+            }
             const QJsonArray params = sd["params"].toArray();
             state.soundVolume[i] = std::clamp (sd["volume"].toInt (params.size() > 0 ? params[0].toInt (100) : 100), 0, 127);
             state.soundPan[i] = std::clamp (params.size() > 1 ? params[1].toInt (64) : 64, 0, 127);

@@ -83,6 +83,17 @@ void PadGrid::paintEvent (QPaintEvent*)
             g.setBrush (Qt::NoBrush);
             g.drawRoundedRect (r.adjusted (3, 3, -3, -3), 6, 6);
         }
+        if (! marks[(size_t) pad - 1].isEmpty())     // sons lies / coupures : en bas a gauche
+        {
+            QFont small = g.font();
+            small.setPixelSize (9);
+            small.setBold (true);
+            const QFont keep = g.font();
+            g.setFont (small);
+            g.setPen (QColor (150, 200, 255));
+            g.drawText (r.adjusted (7, 4, -6, -4), Qt::AlignLeft | Qt::AlignBottom, marks[(size_t) pad - 1]);
+            g.setFont (keep);
+        }
         if (latched[(size_t) pad - 1])               // Loop SP : la boucle tourne (cadre qui clignote)
         {
             g.setPen (QPen (blink ? QColor (90, 230, 120) : QColor (40, 120, 60), 3));

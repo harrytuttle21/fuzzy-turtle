@@ -22,6 +22,7 @@ public:
     // Loop SP : pads dont la boucle tourne (cadre qui clignote, mot LOOP)
     void setLatched (const std::array<bool, 16>& on) { latched = on; update(); }
     void setBlink (bool on) { blink = on; update(); }
+    void setMarks (int pad, const QString& text) { marks[(size_t) pad - 1] = text; update(); }   // LINK / CUT
     void setGroup (int g) { group = g; }             // groupe affiche (pour glisser un son)
     // Plusieurs pads choisis : Shift + clic = ligne / colonne / rectangle depuis le dernier pad,
     // Cmd (Ctrl) + clic = ajouter / retirer un pad. Un clic simple efface la selection.
@@ -67,6 +68,7 @@ private:
     std::array<bool, 16> latched {};
 
     bool blink = false;
+    std::array<QString, 16> marks;
     int selected = 1, mousePad = 0;
     QPointF pressPos;
     int dropPad = 0;

@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cstdint>
 #include <cmath>
 #include <algorithm>
 #include <atomic>
@@ -127,6 +128,18 @@ struct State
     std::array<std::atomic<int>, kGroups * 16> spNote {};       // la note envoyee (pour l'arreter)
     bool looped (int g, int sound) const { const int m = mode (g, sound); return m == Loop || m == LoopSP; }
     bool anySpLatched() const { for (const auto& l : spLatched) if (l) return true; return false; }
+    // Sons lies (un pad joue aussi d'autres sons, tous groupes) et coupures (un pad coupe des sons) :
+    // un bit par son (groupe x 16 + son - 1), 4 x 64 bits
+    using SoundMask = std::array<std::atomic<std::uint64_t>, 4>;
+    std::array<SoundMask, kGroups * 16> linkMask {}, cutMask {};
+    static bool hasBit (const SoundMask& m, int j) { return (m[(size_t) j / 64].load() >> (j % 64)) & 1u; }
+    static void setBit (SoundMask& m, int j, bool on)
+    {
+        const std::uint64_t bit = std::uint64_t (1) << (j % 64);
+        on ? m[(size_t) j / 64].fetch_or (bit) : m[(size_t) j / 64].fetch_and (~bit);
+    }
+    static bool anyBit (const SoundMask& m) { for (const auto& w : m) if (w.load()) return true; return false; }
+    static void clearMask (SoundMask& m) { for (auto& w : m) w = 0; }
     std::array<std::atomic<int>, kGroups * 16> playMode {};
     std::array<std::atomic<float>, kGroups * 16> loopStart {}, loopEnd {};
     std::array<std::atomic<int>, kGroups * 16> releaseMs {};
@@ -193,6 +206,8 @@ struct State
             synth[(size_t) i] = i < 16 ? -1 : i < 8 * 16 ? 0 : -1;
             hasInstrument[(size_t) i] = i < 16;
             resetSoundSettings ((size_t) i);
+            clearMask (linkMask[(size_t) i]);       // ni liens ni coupures
+            clearMask (cutMask[(size_t) i]);
         }
     }
 

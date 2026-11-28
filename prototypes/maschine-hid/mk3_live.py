@@ -521,6 +521,9 @@ class State:
         self.sent_samples: dict = {}           # ce que le moteur a deja recu
         self.loops: dict = {}                  # (groupe, son) -> boucle {'on', 'start', 'end', 'sp'} (reglee dans DAW Pulses)
         self.sp_latched: dict = {}             # Loop SP en marche : (groupe, son) -> note (un appui = marche / arret)
+        self.sound_links: dict = {}            # (groupe, son) -> [(groupe, son)] joues aussi (DAW Pulses : Link with)
+        self.sound_cuts: dict = {}             # (groupe, son) -> [(groupe, son)] coupes (DAW Pulses : Cuts)
+        self.link_held: dict = {}              # pad -> [(groupe, son, note)] sons lies tenus
         self.reverse: set = set()              # (groupe, son) joues a l'envers (regle dans DAW Pulses)
         self.poly: dict = {}                   # (groupe, son) -> polyphonie 1-16 (reglee dans DAW Pulses ; 4 sinon)
         self.sent_reverse: dict = {}
@@ -1815,11 +1818,33 @@ def engine_sync(st: State, keep_output: bool) -> None:
     threading.Thread(target=scan_card_types, args=(st,), daemon=True).start()
 
 
-def play_note(st: State, group: str, snd: int, vel: int, note: int, gate: float = 0.0) -> None:
+def play_note(st: State, group: str, snd: int, vel: int, note: int, gate: float = 0.0,
+              chain: bool = True) -> list:
     """Joue une note : moteur interne, ou MIDI OUT si le groupe est envoye dehors (gate en s ;
-    0 = note-off envoye au relachement)."""
+    0 = note-off envoye au relachement). Puis les coupures et sons lies (DAW Pulses) : renvoie les
+    sons lies tenus [(groupe, son, note)] (fin de note au relachement)."""
     if not st.sound_audible(group, snd) or not st.audible(group):   # MUTE / SOLO (son ou groupe)
-        return
+        return []
+    held = []
+    if chain:
+        for g2, s2 in st.sound_cuts.get((group, snd), []):   # ce son coupe ses « Cuts »
+            SOUND.send('/fuzzy/proto/cut', s2, GROUPS.index(g2))
+            st.sp_latched.pop((g2, s2), None)
+    _play_one(st, group, snd, vel, note, gate)
+    if chain:
+        shift = note - default_note(snd)
+        for g2, s2 in st.sound_links.get((group, snd), []):  # sons lies : joues aussi
+            if (g2, s2) == (group, snd) or not st.sound_audible(g2, s2) or not st.audible(g2):
+                continue
+            n2 = max(0, min(127, default_note(s2) + shift))
+            _play_one(st, g2, s2, vel, n2, gate)
+            if gate == 0 and st.env[(g2, s2)]['mode'] != 'ONE-SHOT':
+                held.append((g2, s2, n2))
+    return held
+
+
+def _play_one(st: State, group: str, snd: int, vel: int, note: int, gate: float) -> None:
+    """Une note sur un son (moteur ou MIDI OUT), sans sons lies."""
     ch = st.midi['out_ch'].get(group, 0) if st.midi['out'] else 0
     if ch:
         SOUND.send('/fuzzy/proto/midi/note', ch, note, vel, int(gate * 1000))
@@ -1842,6 +1867,8 @@ def stop_sp_loops(st: State) -> None:
     """Toutes les boucles Loop SP s'arretent."""
     for (g, snd), note in list(st.sp_latched.items()):
         release_notes(st, g, [(snd, note)])
+        for g2, s2 in st.sound_links.get((g, snd), []):
+            SOUND.send('/fuzzy/proto/cut', s2, GROUPS.index(g2))
     st.sp_latched.clear()
 
 
@@ -4052,6 +4079,10 @@ def project_data(st: State) -> dict:
                                          **({'loop': st.loops[(g, s)]} if (g, s) in st.loops else {}),
                                          **({'reverse': True} if (g, s) in st.reverse else {}),
                                          **({'polyphony': st.poly[(g, s)]} if st.poly.get((g, s), 4) != 4 else {}),
+                                         **({'links': [f'{x}-{y:02d}' for x, y in st.sound_links[(g, s)]]}
+                                            if st.sound_links.get((g, s)) else {}),
+                                         **({'cuts': [f'{x}-{y:02d}' for x, y in st.sound_cuts[(g, s)]]}
+                                            if st.sound_cuts.get((g, s)) else {}),
                                          **({'synth': SYNTHS[st.synth[(g, s)] - 1] if st.synth[(g, s)] else 'None'}
                                             if (g, s) in st.synth else {})}
                                 for s in range(1, 17)}}
@@ -4176,6 +4207,16 @@ def load_project(st: State, name: str) -> None:
                 st.samples[(g, int(s))] = sd['sample']
             if sd.get('reverse'):                         # a l'envers (DAW Pulses)
                 st.reverse.add((g, int(s)))
+            for key, table in (('links', st.sound_links), ('cuts', st.sound_cuts)):   # DAW Pulses
+                lst = []
+                for v in sd.get(key) or []:
+                    gx, _, sx = str(v).partition('-')
+                    if gx in GROUPS and sx.isdigit() and 1 <= int(sx) <= 16:
+                        lst.append((gx, int(sx)))
+                if lst:
+                    table[(g, int(s))] = lst
+                else:
+                    table.pop((g, int(s)), None)
             if sd.get('polyphony'):                       # polyphonie (DAW Pulses)
                 st.poly[(g, int(s))] = max(1, min(16, int(sd['polyphony'])))
             if isinstance(sd.get('loop'), dict):         # boucle reglee dans DAW Pulses
@@ -5676,6 +5717,8 @@ def main() -> int:
                         key = (st.group, snd)
                         if key in st.sp_latched:
                             release_notes(st, st.group, [(snd, st.sp_latched.pop(key))])
+                            for g2, s2 in st.sound_links.get(key, []):   # ses sons lies s'arretent
+                                SOUND.send('/fuzzy/proto/cut', s2, GROUPS.index(g2))
                         else:
                             v = out_vel(st, st.group, snd, ev[2])
                             if v:
@@ -5696,14 +5739,19 @@ def main() -> int:
                         notes = []
                     elif st.nr_active and notes:
                         st.nr_next = time.monotonic() + nr_interval(st)
+                    linked = []
                     for snd, note in notes:
                         v = out_vel(st, st.group, snd, ev[2])
                         if v:
-                            play_note(st, st.group, snd, v, note)   # moteur, ou MIDI OUT
+                            linked += play_note(st, st.group, snd, v, note)   # moteur, ou MIDI OUT
+                    if linked:
+                        st.link_held[ev[1]] = linked
                 elif ev[0] == 'pad_off':
                     held = st.held_play.pop(ev[1], None)
                     if held and not st.arp:
                         release_notes(st, held[3], held[2])
+                    for g2, s2, n2 in st.link_held.pop(ev[1], []):   # sons lies tenus
+                        release_notes(st, g2, [(s2, n2)])
                     if not dec.down and not st.held_play and not st.midi_held:
                         # plus aucun pad tenu : filet de securite, aucune note jouee en
                         # direct ne doit rester tenue (fins de note perdues quand on joue vite)

@@ -7,6 +7,7 @@
 #include "project.h"
 #include "sequencer.h"
 #include "session.h"
+#include "sound_links.h"
 #include "system_stats.h"
 
 #include <QDialog>
@@ -312,7 +313,9 @@ private:
     void stopSpLoops();                              // Loop SP : tout arreter
     void refreshSpLoops();                           // pads en boucle : clignotement
     QTimer* spBlink = nullptr;
-    qint64 lastStopMs = 0;                           // Stop deux fois de suite : couper les boucles SP
+    qint64 lastStopMs = 0;
+    std::array<std::vector<links::Held>, 17> padLinkHeld;   // sons lies tenus, par pad (fin au relachement)
+    std::mutex linkLock;                           // Stop deux fois de suite : couper les boucles SP
     bool spPhase = false;                           // Song : depuis le debut du morceau
     // Ligne d'aide (en bas de la fenetre) : l'aide de la vue sous la souris
     struct HelpEntry { QPointer<QLabel> label; QString view; };

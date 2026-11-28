@@ -1,5 +1,6 @@
 // Fuzzy John DAW Pulses — transport : horloge, sequenceur, metronome. Licence : GPLv3.
 #include "transport.h"
+#include "sound_links.h"
 #include "engine_link.h"
 #include "sequencer.h"
 
@@ -96,9 +97,11 @@ void Transport::run()
         if (v > 0 && state.playAudible (h.group, sound)   // mute / solo / ecoute d'un groupe ; son vide : rien
             && state.hasInstrument[(size_t) state.index (h.group, sound)])
         {
+            links::applyCuts (engine, state, h.group, sound);   // ce son coupe ses « Cuts »
             engine.hit (sound, v, state.pitched (h.group, sound, h.note), h.group, state.held (h.group, sound),
                         state.releaseMs[(size_t) state.index (h.group, sound)], std::max (10, h.gateMs),
                         state.effSynth (h.group, sound), state.pan (h.group, sound), state.poly (h.group, sound));
+            links::playLinks (engine, state, h.group, sound, h.velocity, h.note, std::max (10, h.gateMs));   // sons lies
             emit played (h.group, sound, h.note, h.gateMs);
         }
     };

@@ -138,6 +138,11 @@ void EngineLink::hit (int sound, int velocity, int note, int group, bool adsr, i
                                { sound, velocity, note, group, adsr ? 1 : 0, releaseMs, gateMs, synth, pan, poly }));
 }
 
+void EngineLink::cut (int sound, int group) const
+{
+    send (fuzzy::osc::message ("/fuzzy/proto/cut", { sound, group }));
+}
+
 void EngineLink::noteOff (int sound, int note, int group) const
 {
     send (fuzzy::osc::message ("/fuzzy/proto/off", { sound, note, group }));
