@@ -1,3 +1,4 @@
+#include <unistd.h>
 // Fuzzy Turtle - prototype 4 : un son joue par JUCE au toucher d'un pad Maschine MK3.
 //
 // - lit les pads en HID (hidapi), comme le prototype 1 (protocole du pilote r22yb3m, MIT) ;
@@ -886,6 +887,13 @@ int main (int argc, char* argv[])
     bool metersWereOn = false, soundMetersWereOn = false;
     while (gRunning.load())
     {
+        // Mode OSC : l'appli (ou mk3_live.py) qui nous a lance a disparu (plantage) : on s'arrete,
+        // sinon on garderait le port et le moteur suivant ne pourrait pas demarrer
+        if (oscMode && ::getppid() == 1)
+        {
+            std::printf ("Interface fermee : arret du moteur.\n");
+            break;
+        }
         std::this_thread::sleep_for (std::chrono::milliseconds (50));
 
         // Reglages demandes par SETTINGS > AUDIO / MIDI

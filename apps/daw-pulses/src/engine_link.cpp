@@ -1,3 +1,4 @@
+#include <QThread>
 // Fuzzy John DAW Pulses — lien avec le moteur audio. Licence : GPLv3.
 #include "engine_link.h"
 #include "osc.h"
@@ -77,6 +78,12 @@ bool EngineLink::start (const QString& output)
     QStringList args { "--osc", "--quiet" };
     if (! output.isEmpty())
         args << "--output" << output;
+#ifndef Q_OS_WIN
+    // Un ancien moteur reste parfois en marche (appli plantee) : il garde le port, le nouveau
+    // ne peut pas demarrer et les samples ne sont plus envoyes. On l'arrete d'abord.
+    if (QProcess::execute ("pkill", { "-f", QFileInfo (program).fileName() + " --osc" }) == 0)
+        QThread::msleep (300);
+#endif
     process.start (program, args);
     if (! process.waitForStarted (3000))
     {
