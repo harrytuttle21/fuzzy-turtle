@@ -274,7 +274,8 @@ private:
     class PatternBar* patternBar = nullptr;          // barre PATTERNS / SCENES
     class SceneView* sceneView = nullptr;            // onglet Scenes
     class SceneGridView* sceneGrid = nullptr;        // onglet Scenes, bouton Grid (facon Maschine)
-    QPushButton *sceneEditBtn = nullptr, *scenePlayBtn = nullptr;
+    QPushButton* sceneLockBtn = nullptr;             // Scenes : Lock (allume = ecriture verrouillee, lecture libre)
+    bool scenesLocked() const;
     int gridScene = 0;                               // Scene Grid : la derniere scene choisie
     std::atomic<bool> gridOnScreen { false };         // pour la tache des pads (lu sans toucher aux widgets)
     bool gridShown() const;                          // la Scene Grid est a l'ecran

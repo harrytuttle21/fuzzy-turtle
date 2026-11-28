@@ -4876,8 +4876,13 @@ def grid_pattern_pad(st: State, pad: int) -> None:
     (il remplace l'ancien de ce groupe : un seul par groupe et par scene) ou en sort s'il y est."""
     g, idx, si = st.group, st.pat_bank * 16 + pad - 1, st.grid_scene
     now = time.monotonic()
-    if st.scenes[si] and si in st.scene_locked:
-        st.toast = (f'S{si + 1:02d} is locked', now + 2)
+    if st.scenes[si] and si in st.scene_locked:      # verrouillee : essai en live, la scene ne change pas
+        if st.patterns[g][idx] is None:
+            st.toast = (f'Pattern {idx + 1} is empty', now + 2)
+            return
+        on = st.pat_index[g] == idx and g not in st.pat_off and g not in st.pat_queue
+        set_off(st, g) if on else select_pattern(st, g, idx)
+        st.toast = (f"LIVE {g} {'off' if on else idx + 1} (S{si + 1:02d} locked)", now + 2)
         return
     if st.patterns[g][idx] is None:                  # pad vide : un nouveau pattern vide
         st.patterns[g][idx] = new_pattern(pattern_length(st, g))

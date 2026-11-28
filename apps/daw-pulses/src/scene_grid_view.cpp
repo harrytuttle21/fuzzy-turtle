@@ -121,16 +121,22 @@ void SceneGridView::paintEvent (QPaintEvent*)
             label += " " + QString::fromStdString (s.name);
         else if (! s.used)
             label += " +";
-        g.drawText (r.adjusted (6, 2, s.locked ? -16 : -4, 0), Qt::AlignVCenter | Qt::AlignLeft,
-                    g.fontMetrics().elidedText (label, Qt::ElideRight, (int) r.width() - (s.locked ? 22 : 10)));
-        if (s.used && s.locked)                      // cadenas
+        g.drawText (r.adjusted (6, 2, s.used ? -20 : -4, 0), Qt::AlignVCenter | Qt::AlignLeft,
+                    g.fontMetrics().elidedText (label, Qt::ElideRight, (int) r.width() - (s.used ? 26 : 10)));
+        if (s.used)                                  // cadenas : ferme en couleur, ouvert en gris (clic = changer)
         {
-            const QRectF b (r.right() - 14, r.center().y() - 2, 9, 7);
-            g.setPen (QPen (c, 1.4));
+            const QRectF lr = lockRect (i);
+            const QColor lc = s.locked ? c.lighter (130) : QColor (110, 110, 120);
+            const QRectF b (lr.center().x() - 4.5, lr.center().y() - 1, 9, 7);
+            g.setPen (QPen (lc, 1.5));
             g.setBrush (Qt::NoBrush);
-            g.drawArc (QRectF (b.left() + 1.5, b.top() - 5, 6, 8), 0, 180 * 16);
+            const QRectF arc (b.left() + 1.5, b.top() - 6, 6, 9);
+            if (s.locked)
+                g.drawArc (arc, 0, 180 * 16);
+            else
+                g.drawArc (arc.translated (3.5, -1.5), 30 * 16, 150 * 16);   // anse ouverte
             g.setPen (Qt::NoPen);
-            g.setBrush (c);
+            g.setBrush (lc);
             g.drawRect (b);
         }
     }
@@ -157,9 +163,27 @@ void SceneGridView::paintEvent (QPaintEvent*)
             QString name = QString::fromStdString (sequencer.patternName (grp, idx));
             if (name.isEmpty())
                 name = QString ("Pattern %1").arg (idx + 1);
-            g.setPen (member ? QColor (17, 17, 17) : QColor (138, 138, 148));
-            g.drawText (r.adjusted (6, 0, -4, 0), Qt::AlignVCenter | Qt::AlignLeft,
-                        g.fontMetrics().elidedText (name, Qt::ElideRight, (int) r.width() - 10));
+            // Ce qui joue vraiment (essai en live compris) : petit triangle ; en attente : pointilles orange
+            const bool nowOn = ! sequencer.groupOff (grp) && sequencer.currentPattern (grp) == idx;
+            const bool queued = sequencer.queuedPattern (grp) == idx;
+            if (queued)
+            {
+                g.setPen (QPen (QColor (252, 140, 40), 1.5, Qt::DashLine));
+                g.setBrush (Qt::NoBrush);
+                g.drawRoundedRect (r.adjusted (1, 1, -1, -1), 3, 3);
+            }
+            if (nowOn)
+            {
+                QPainterPath tri;
+                tri.moveTo (r.left() + 5, r.top() + 6);
+                tri.lineTo (r.left() + 11, r.center().y());
+                tri.lineTo (r.left() + 5, r.bottom() - 6);
+                tri.closeSubpath();
+                g.fillPath (tri, member ? QColor (17, 17, 17) : QColor (235, 235, 240));
+            }
+            g.setPen (member ? QColor (17, 17, 17) : nowOn ? QColor (235, 235, 240) : QColor (138, 138, 148));
+            g.drawText (r.adjusted (nowOn ? 15 : 6, 0, -4, 0), Qt::AlignVCenter | Qt::AlignLeft,
+                        g.fontMetrics().elidedText (name, Qt::ElideRight, (int) r.width() - (nowOn ? 19 : 10)));
         }
         if (sc.used && inScene == seq::kFree)        // groupe libre dans cette scene : pointilles
         {
@@ -214,6 +238,11 @@ void SceneGridView::mousePressEvent (QMouseEvent* e)
     const QPoint at = e->globalPosition().toPoint();
     if (scene >= 0)
     {
+        if (! right && sequencer.scene (scene).used && lockRect (scene).adjusted (-3, -4, 3, 4).contains (e->position()))
+        {
+            emit lockClicked (scene);
+            return;
+        }
         if (right)
             emit sceneMenu (scene, at);
         else

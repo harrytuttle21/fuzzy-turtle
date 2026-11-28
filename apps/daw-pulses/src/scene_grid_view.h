@@ -25,6 +25,7 @@ signals:
     void sceneClicked (int scene);                   // clic sur une scene (en haut)
     void sceneMenu (int scene, const QPoint& globalPos);
     void renameScene (int scene);                    // double-clic sur une scene
+    void lockClicked (int scene);                    // clic sur le cadenas d'une scene
     void patternToggled (int group, int pattern);    // clic sur un pattern : entre / sort de la scene
     void patternMenu (int group, int pattern, const QPoint& globalPos);
     void groupClicked (int group);                   // clic sur un groupe (en bas)
@@ -46,6 +47,7 @@ private:
     int visibleRows() const { return std::max (1, (height() - kHeadH - kFootH - 8) / kRowH); }
     std::vector<int> patternsOf (int group) const;   // les patterns qui existent, dans l'ordre
     QRectF sceneRect (int scene) const;
+    QRectF lockRect (int scene) const { const QRectF r = sceneRect (scene); return { r.right() - 18, r.top() + 4, 15, r.height() - 8 }; }
     QRectF cellRect (int column, int row) const;     // row = rang dans la liste (avant defilement)
     QRectF footRect (int column) const;
     bool hit (const QPointF& p, int& scene, int& group, int& pattern, bool& foot) const;
